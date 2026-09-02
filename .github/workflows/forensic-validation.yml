@@ -1,0 +1,89 @@
+name: Forensic Validation
+
+on:
+  push:
+    branches: [main, forensic-hardening-20260902]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forensic-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: ''
+  NPM_CONFIG_NODE_OPTIONS: ''
+
+jobs:
+  web:
+    name: Web lint + production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify clean Node environment
+        run: |
+          node --version
+          npm --version
+          test -z "${NODE_OPTIONS:-}"
+          test -z "${NPM_CONFIG_NODE_OPTIONS:-}"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify build output
+        run: test -f dist/index.html
+
+  android:
+    name: Android debug regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Verify Android project
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Run JVM unit tests
+        working-directory: android
+        run: ./gradlew test --no-daemon --stacktrace
+
+      - name: Verify APK exists
+        run: test -n "$(find android/app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xclone-debug-apk-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

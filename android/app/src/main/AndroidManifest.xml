@@ -31,7 +31,6 @@
     <application
         android:allowBackup="true"
         android:hardwareAccelerated="true"
-        android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -45,7 +44,7 @@
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="ca-app-pub-7234579833875016~4829778821"/>
 
-        <!-- Optimize AdMob initialisation -->
+        <!-- Optimize AdMob initialization -->
         <meta-data
             android:name="com.google.android.gms.ads.flag.OPTIMIZE_INITIALIZATION"
             android:value="true"/>
@@ -54,11 +53,6 @@
         <meta-data
             android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT"
             android:value="true"/>
-
-        <!-- WebView dark-mode support (API 33+) -->
-        <meta-data
-            android:name="android.webkit.WebView.EnableSafeBrowsing"
-            android:value="false"/>
 
         <activity
             android:name=".MainActivity"
