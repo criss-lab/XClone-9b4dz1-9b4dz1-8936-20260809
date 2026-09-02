@@ -1,0 +1,31 @@
+name: Edge Architecture Check
+
+on:
+  push:
+    branches: [main, edge-native-serverless-migration]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate VPS-free architecture
+        run: python3 tools/python/validate_edge_architecture.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: TypeScript/Vite build
+        run: npm run build
