@@ -1,0 +1,20 @@
+# Supabase project configuration committed to the repository.
+# Secrets and project_id remain environment/CI configuration and are never stored here.
+
+[functions.mpesa-callback]
+verify_jwt = false
+
+[functions.mpesa-stk-push]
+verify_jwt = true
+
+[functions.mpesa-stk-status]
+verify_jwt = true
+
+[functions.mpesa-b2c-payout]
+verify_jwt = true
+
+[functions.distribute-earnings]
+verify_jwt = true
+
+[functions.payment-reconciliation]
+verify_jwt = true
