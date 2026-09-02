@@ -1,76 +1,44 @@
-import axios from "axios";
-import { MpesaConfig, PaymentResponse } from "./types";
+import { invokeEdge } from '@/lib/edge';
+import { MpesaConfig, PaymentResponse } from './types';
 
+/**
+ * Client facade for M-Pesa. The config is retained for API compatibility, but
+ * credentials are deliberately ignored here: all M-Pesa secrets belong in
+ * Supabase Edge Function secrets.
+ */
 export class MpesaService {
-  private config: MpesaConfig;
-
-  constructor(config: MpesaConfig) {
-    this.config = config;
-  }
-
-  private async getAccessToken(): Promise<string> {
-    const auth = Buffer.from(
-      `${this.config.consumerKey}:${this.config.consumerSecret}`
-    ).toString("base64");
-
-    const res = await axios.get(
-      "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
-      {
-        headers: {
-          Authorization: `Basic ${auth}`,
-        },
-      }
-    );
-
-    return res.data.access_token;
-  }
+  constructor(_config?: MpesaConfig) {}
 
   public async stkPush(phone: string, amount: number): Promise<PaymentResponse> {
     try {
-      const token = await this.getAccessToken();
-      const timestamp = new Date()
-        .toISOString()
-        .replace(/[-T:.Z]/g, "")
-        .slice(0, 14);
+      if (!phone?.trim()) throw new Error('Phone number is required');
+      if (!Number.isFinite(amount) || amount < 1) {
+        throw new Error('Amount must be at least KES 1');
+      }
 
-      const password = Buffer.from(
-        `${this.config.shortcode}${this.config.passkey}${timestamp}`
-      ).toString("base64");
-
-      const payload = {
-        BusinessShortCode: this.config.shortcode,
-        Password: password,
-        Timestamp: timestamp,
-        TransactionType: "CustomerPayBillOnline",
-        Amount: amount,
-        PartyA: phone,
-        PartyB: this.config.shortcode,
-        PhoneNumber: phone,
-        CallBackURL: this.config.callbackUrl,
-        AccountReference: "XClone",
-        TransactionDesc: "Payment",
-      };
-
-      const res = await axios.post(
-        "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
-        payload,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      const data = await invokeEdge<{
+        success?: boolean;
+        checkout_request_id?: string;
+        merchant_request_id?: string;
+        customer_message?: string;
+        response_description?: string;
+        error?: string;
+      }>('mpesa-stk-push', {
+        phone: phone.trim(),
+        amount: Math.ceil(amount),
+        purpose: 'wallet_topup',
+      });
 
       return {
-        success: true,
-        data: res.data,
+        success: data?.success === true,
+        data,
+        message: data?.error ?? data?.customer_message,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
         data: null,
-        message: error.message,
+        message: error instanceof Error ? error.message : 'M-Pesa request failed',
       };
     }
   }
