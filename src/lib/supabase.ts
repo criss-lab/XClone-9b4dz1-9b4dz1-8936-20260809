@@ -1,11 +1,11 @@
-import { createClient } from '@supabase/supabase-js';
+// Compatibility facade retained for legacy feature-module imports during the
+// Supabase -> Cloudflare cutover. The implementation is entirely Cloudflare
+// based; this module intentionally contains no Supabase SDK or network calls.
+export {
+  supabase,
+  mapSupabaseUser,
+  currentAccessToken,
+  SHARED_BACKEND,
+} from './cloudflare';
 
-const supabaseUrl     = import.meta.env.VITE_SUPABASE_URL     ?? 'https://placeholder.supabase.co';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? 'placeholder-anon-key';
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-  },
-});
+export type { User, CloudflareUser, Session } from './cloudflare';

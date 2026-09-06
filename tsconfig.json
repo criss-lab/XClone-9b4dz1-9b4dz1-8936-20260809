@@ -1,23 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "node",
-    "allowImportingTsExtensions": false,
-    "resolveJsonModule": true,
-    "isolatedModules": false,
-    "verbatimModuleSyntax": false,
-    "noEmit": true,
-    "jsx": "react-jsx",
-    "strict": false,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "target":"ES2020","useDefineForClassFields":true,"lib":["ES2020","DOM","DOM.Iterable"],"module":"ESNext","skipLibCheck":true,"moduleResolution":"node","allowImportingTsExtensions":false,"resolveJsonModule":true,"isolatedModules":false,"verbatimModuleSyntax":false,"noEmit":true,"jsx":"react-jsx","strict":false,"allowSyntheticDefaultImports":true,"esModuleInterop":true,"baseUrl":".","paths":{"@/*":["./src/*"]}
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["node_modules", "dist", "android", "ios", "supabase", "supabase/**/*", "components", "public", "**/*.deno.ts", "**/*.js"]
+  "include":["src/**/*.ts","src/**/*.tsx"],
+  "exclude":["node_modules","dist","android","ios","supabase","supabase/**/*","components","public","**/*.deno.ts","**/*.js"]
 }

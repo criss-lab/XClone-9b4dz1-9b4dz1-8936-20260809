@@ -48,6 +48,7 @@ try {
 const root = __dirname;
 const src  = path.join(root, 'src');
 const stub = path.join(src, 'lib', 'capacitor-stub.ts');
+const supabaseSdkCompat = path.join(src, 'lib', 'supabase-sdk-compat.ts');
 
 /* ─── Helper: resolve extensionless path to a real file ───────────────────── */
 const TS_EXTS = ['.tsx', '.ts', '.jsx', '.js'];
@@ -169,7 +170,7 @@ module.exports = defineConfig({
       '@capacitor/app':                           stub,
       '@capacitor/device':                        stub,
       '@capacitor/filesystem':                    stub,
-      '@capacitor/network':                       stub,
+      '@capacitor/network':                      stub,
       '@capacitor/push-notifications':            stub,
       '@capacitor/share':                         stub,
       '@capacitor-community/admob':               stub,
@@ -177,6 +178,9 @@ module.exports = defineConfig({
       '@capacitor-community/media':               stub,
       '@capgo/capacitor-updater':                 stub,
       '@vercel/analytics/react':                  stub,
+
+      // Legacy import compatibility without restoring the SDK dependency.
+      '@supabase/supabase-js':                    supabaseSdkCompat,
 
       // Explicit layout / hook aliases (belt-and-suspenders)
       ...layoutAliases,

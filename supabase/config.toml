@@ -1,0 +1,24 @@
+# Supabase Edge Functions configuration.
+# Production server-side credentials belong in Supabase project secrets.
+# The default for functions remains JWT-protected unless explicitly disabled below.
+
+[functions.mpesa-callback]
+verify_jwt = false
+
+[functions.sitemap-refresh]
+verify_jwt = false
+
+[functions.sitemap-users]
+verify_jwt = false
+
+[functions.community-sitemap]
+verify_jwt = false
+
+[functions.podcast-rss]
+verify_jwt = false
+
+[functions.og-meta]
+verify_jwt = false
+
+[functions.og-image]
+verify_jwt = false

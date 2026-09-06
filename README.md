@@ -189,7 +189,6 @@ Both sidebars are now properly integrated and visible on desktop (lg+) and xl sc
 - ✅ Progressive Web App (PWA) ready
 - ✅ Responsive on all devices
 - ✅ Shareable post links
-- ✅ Social media meta tags (Open Graph, Twitter Card)
 - 📋 **Planned**: React Native mobile apps (iOS/Android)
 - 📋 **Planned**: Desktop app (Electron)
 
@@ -249,6 +248,83 @@ Both sidebars are now properly integrated and visible on desktop (lg+) and xl sc
 - 📋 **Planned**: E2E tests (Cypress)
 - 📋 **Planned**: Beta testing program
 - 📋 **Planned**: Sentry error monitoring
+
+---
+
+# 🛰️ VPS-Free Edge Architecture
+
+The production architecture is intentionally **serverless**: no VPS, EC2 instance, DigitalOcean droplet, or always-on application server is required.
+
+```text
+React / PWA / Capacitor Android
+            │
+            ▼
+     Supabase client SDK
+            │
+            ▼
+     Supabase Edge Functions
+       │       │        │
+       │       │        └── External APIs (AI, media, payments)
+       │       └────────── Auth / authorization
+       └────────────────── Postgres / Storage / Realtime
+```
+
+### Language responsibilities
+
+- **TypeScript / JavaScript** — production Edge Functions and web application. Supabase Edge Functions currently run on the Deno-based Edge Runtime; they are not arbitrary Python/Java containers.
+- **Java** — native Android/Capacitor host code where Android APIs are required. It does not need a VPS because it runs on the user's Android device.
+- **Python** — repository tooling, migration validation, data-quality checks and CI utilities. It is deliberately not an always-on backend process.
+- **SQL** — transactional business rules, RLS, indexes, RPC/database functions and data integrity inside PostgreSQL.
+- **WASM/Rust (when required)** — suitable for CPU-heavy portable logic that must execute inside an Edge-compatible runtime.
+
+This avoids the incorrect assumption that Java or Python can be uploaded directly as a Supabase Edge Function. Supabase documents Edge Functions as TypeScript/Deno-first, with JavaScript entrypoints also supported. See the official urlSupabase Edge Functions documentationhttps://supabase.com/docs/guides/functions.
+
+### Secrets rule
+
+Never put M-Pesa, Pesapal, AI-provider, service-role or other privileged credentials in `VITE_*` client variables. The browser/mobile client calls an Edge Function; the Edge Function reads its secret from the Supabase secret store and talks to the provider.
+
+The payment facade now follows this pattern:
+
+```text
+UI
+ ↓
+usePayment / MpesaService
+ ↓
+lib/edge.ts
+ ↓
+supabase.functions.invoke(...)
+ ↓
+mpesa-stk-push / pesapal-create-order
+ ↓
+Provider API
+```
+
+M-Pesa callbacks are received by `mpesa-callback`, so an always-running callback server is not required.
+
+### Local development
+
+Use Supabase CLI for local Edge Function development. The same Edge Runtime model is used for local development and deployment.
+
+```bash
+supabase start
+supabase functions serve mpesa-stk-push
+python tools/python/validate_edge_architecture.py
+```
+
+### Deployment
+
+Deploy functions directly to Supabase:
+
+```bash
+supabase functions deploy mpesa-stk-push
+supabase functions deploy mpesa-callback
+supabase functions deploy mpesa-b2c-payout
+supabase functions deploy pesapal-create-order
+```
+
+Then configure provider credentials as Supabase project secrets rather than committing them to Git.
+
+---
 
 ## 🗺️ Implementation Roadmap
 
