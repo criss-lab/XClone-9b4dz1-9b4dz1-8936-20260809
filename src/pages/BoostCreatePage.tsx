@@ -120,7 +120,7 @@ export default function BoostCreatePage() {
       });
       if (error) throw error;
 
-      await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: totalBudget }).catch(() => {});
+      await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: totalBudget }).then(() => {}, () => {});
       setLaunched(true);
       toast.success('Boost campaign launched!');
       setTimeout(() => navigate(`/boost-analytics/${postId}`), 1800);

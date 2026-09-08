@@ -818,7 +818,6 @@ export default function ThreadDetailPage() {
                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-700 dark:text-amber-400'
                   : 'border-border text-muted-foreground hover:border-amber-500/30 hover:bg-amber-500/5 hover:text-amber-600'
               } disabled:opacity-50`}
-              title="AI TL;DR Summary"
             >
               {summarizing
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />

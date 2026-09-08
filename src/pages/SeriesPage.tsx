@@ -235,7 +235,7 @@ export default function SeriesPage() {
         read: false,
       }));
       for (let i = 0; i < notifications.length; i += 10) {
-        await supabase.from('platform_inbox').insert(notifications.slice(i, i + 10)).catch(() => {});
+        await supabase.from('platform_inbox').insert(notifications.slice(i, i + 10)).then(() => {}, () => {});
       }
       toast.success(`Challenge sent to ${follows.length} follower${follows.length !== 1 ? 's' : ''}! \ud83c\udfc6`);
     } catch { setChallengeSent(false); }
@@ -599,8 +599,7 @@ export default function SeriesPage() {
                           </button>
                           <button
                             onClick={e => clearSeriesProgress(s.id, e)}
-                            className="p-1.5 rounded-xl border border-border text-muted-foreground hover:text-destructive hover:border-destructive/30 transition-colors"
-                            title="Reset progress">
+                            className="p-1.5 rounded-xl border border-border text-muted-foreground hover:text-destructive hover:border-destructive/30 transition-colors">
                             <RotateCcw className="w-3.5 h-3.5" />
                           </button>
                         </div>
@@ -694,8 +693,7 @@ export default function SeriesPage() {
                       </button>
                       <button
                         onClick={e => clearSeriesProgress(s.id, e)}
-                        className="p-2 rounded-xl border border-border text-muted-foreground hover:text-destructive hover:border-destructive/30 transition-colors"
-                        title="Reset progress">
+                        className="p-2 rounded-xl border border-border text-muted-foreground hover:text-destructive hover:border-destructive/30 transition-colors">
                         <RotateCcw className="w-3.5 h-3.5" />
                       </button>
                     </div>

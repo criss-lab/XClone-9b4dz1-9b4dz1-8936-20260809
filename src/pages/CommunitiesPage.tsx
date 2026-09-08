@@ -165,7 +165,7 @@ export default function CommunitiesPage() {
 
   const fetchSuggestions = async () => {
     if (!user) return;
-    await supabase.rpc('generate_community_suggestions', { p_user_id: user.id }).catch(() => {});
+    await supabase.rpc('generate_community_suggestions', { p_user_id: user.id }).then(() => {}, () => {});
     const { data } = await supabase
       .from('community_suggestions')
       .select('community_id, reason, communities(*)')
@@ -333,7 +333,7 @@ export default function CommunitiesPage() {
 
   return (
     <div className="min-h-screen bg-background pb-20">
-      <TopBar title="Communities" />
+      <TopBar />
 
       {/* Hero */}
       <div className="bg-gradient-to-br from-primary/12 via-background to-purple-500/8 p-5 border-b border-border">

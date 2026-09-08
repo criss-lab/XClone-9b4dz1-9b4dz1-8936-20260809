@@ -1,0 +1,1 @@
+-- Remote migration-history marker. Canonical federation core DDL is tracked by the federation migration already present in this repository.

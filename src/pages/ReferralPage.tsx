@@ -301,7 +301,6 @@ export default function ReferralPage() {
               onClick={copyLink}
               disabled={!user}
               className="text-primary hover:text-primary/80 transition-colors flex-shrink-0 p-1"
-              title="Copy link"
             >
               {copied ? (
                 <CheckCircle2 className="w-5 h-5 text-green-500" />

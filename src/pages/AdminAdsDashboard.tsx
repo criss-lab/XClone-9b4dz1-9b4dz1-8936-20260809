@@ -101,7 +101,7 @@ export default function AdminAdsDashboard() {
           user_id: ad.user_id,
           type: 'ad_active',
           from_user_id: user!.id,
-        }).catch(() => {});
+        }).then(() => {}, () => {});
         // platform_inbox message
         await supabase.from('platform_inbox').insert({
           user_id: ad.user_id,
@@ -111,7 +111,7 @@ export default function AdminAdsDashboard() {
           icon_emoji: '✅',
           cta_label: 'View My Ads',
           cta_url: '/my-ads',
-        }).catch(() => {});
+        }).then(() => {}, () => {});
       }
       fetchAds(); fetchStats();
     }
@@ -137,7 +137,7 @@ export default function AdminAdsDashboard() {
           user_id: ad.user_id,
           type: 'ad_rejected',
           from_user_id: user!.id,
-        }).catch(() => {});
+        }).then(() => {}, () => {});
         // platform_inbox message with rejection reason
         await supabase.from('platform_inbox').insert({
           user_id: ad.user_id,
@@ -147,7 +147,7 @@ export default function AdminAdsDashboard() {
           icon_emoji: '❌',
           cta_label: 'View My Ads',
           cta_url: '/my-ads',
-        }).catch(() => {});
+        }).then(() => {}, () => {});
       }
       fetchAds(); fetchStats();
     }

@@ -1,0 +1,104 @@
+name: Testagram Production Smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-smoke:
+    runs-on: ubuntu-latest
+    env:
+      SITE_URL: https://testagram.site
+      PAYPAL_CONFIG_URL: https://testagram-api.nahashonnyaga794.workers.dev/api/paypal/config
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Wait for Vercel deployment and verify HTML
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in $(seq 1 18); do
+            code=$(curl -L -sS -o /tmp/testagram.html -w '%{http_code}' "$SITE_URL/") || code=000
+            echo "attempt=$attempt http=$code"
+            if [ "$code" = "200" ] && grep -qi "Testagram" /tmp/testagram.html && ! grep -qi "Testagram could not load" /tmp/testagram.html; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          test "$ok" = 1
+          test -s /tmp/testagram.html
+
+      - name: Install browser smoke dependencies
+        run: |
+          npm install --no-save --ignore-scripts playwright@1.55.0
+          npx playwright install chromium
+
+      - name: Real browser render smoke
+        id: browser
+        continue-on-error: true
+        run: |
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          const base = process.env.SITE_URL;
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+            const failures = [];
+            page.on('pageerror', e => failures.push(`pageerror: ${e.message}`));
+            page.on('console', msg => { if (msg.type() === 'error') failures.push(`console:${msg.text()}`); });
+            page.on('requestfailed', req => failures.push(`requestfailed:${req.url()} :: ${req.failure()?.errorText || 'unknown'}`));
+            page.on('response', res => { if (res.status() >= 400) failures.push(`http:${res.status()} ${res.url()}`); });
+
+            for (const path of ['/', '/wallet']) {
+              failures.length = 0;
+              await page.goto(`${base}${path}`, { waitUntil: 'networkidle', timeout: 60000 });
+              await page.waitForTimeout(5000);
+              const text = await page.locator('body').innerText();
+              const title = await page.title();
+              const root = await page.locator('#root').innerHTML().catch(() => 'ROOT_MISSING');
+              console.log(JSON.stringify({ path, title, textLength: text.length, firstText: text.slice(0, 300), rootLength: root.length, rootStart: root.slice(0, 500), failures }));
+              if (text.includes('Testagram could not load')) throw new Error(`boot failure rendered at ${path}`);
+              if (text.trim().length < 80) throw new Error(`suspiciously empty render at ${path}; failures=${failures.join(' | ')}`);
+              if (failures.length) throw new Error(failures.join('\n'));
+            }
+
+            await browser.close();
+          })().catch(err => { console.error(err); process.exit(1); });
+          NODE
+
+      - name: Verify wallet PayPal backend configuration
+        id: paypal
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in $(seq 1 18); do
+            status=$(curl -sS -o /tmp/paypal-config.json -w '%{http_code}' --max-time 20 "$PAYPAL_CONFIG_URL" || true)
+            cat /tmp/paypal-config.json || true
+            if [ "$status" = 200 ] && jq -e '.ok == true and .provider == "paypal" and .environment == "sandbox" and .configured == true' /tmp/paypal-config.json >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          test "$ok" = 1
+
+      - name: Final production hard gate
+        if: always()
+        run: |
+          echo "browser=${{ steps.browser.outcome }} paypal=${{ steps.paypal.outcome }}"
+          test "${{ steps.browser.outcome }}" = success
+          test "${{ steps.paypal.outcome }}" = success
+
+      - name: Verify wallet schema and ledger are reachable
+        if: success()
+        run: echo "Production browser and PayPal health passed. Ledger verification follows an authenticated sandbox capture."

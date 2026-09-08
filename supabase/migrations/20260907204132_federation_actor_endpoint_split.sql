@@ -1,0 +1,1 @@
+-- Remote migration-history marker. Public actor/inbox handling is now provided by the federation-aware Cloudflare edge.

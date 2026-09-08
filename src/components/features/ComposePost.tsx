@@ -269,7 +269,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     const videoElement = document.createElement('video');
     videoElement.src = videoUrl;
     videoElement.onloadedmetadata = () => {
-      const maxDuration = user?.creator_tier !== 'free' ? 3600 : 600;
+      const maxDuration = (user as any)?.creator_tier !== 'free' ? 3600 : 600;
       if (videoElement.duration > maxDuration) {
         sonnerToast.error(`Video duration cannot exceed ${Math.floor(maxDuration / 60)} minutes`);
         URL.revokeObjectURL(videoUrl); return;
@@ -457,7 +457,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
               icon_emoji: '🏆',
               cta_label: 'View Challenge',
               cta_url: `/challenge/${firstChallenge.id}`,
-            }).catch(() => {});
+            }).then(() => {}, () => {});
           }
         }
       }
@@ -737,31 +737,28 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
                 <Video className="w-5 h-5" />
                 <input type="file" accept="video/*" className="hidden" onChange={handleVideoChange} disabled={loading || images.length > 0 || !!gifUrl} />
               </label>
-              <button onClick={() => setShowGifDialog(true)} disabled={loading || images.length > 0 || !!video} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Add GIF">
+              <button onClick={() => setShowGifDialog(true)} disabled={loading || images.length > 0 || !!video} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <Smile className="w-5 h-5" />
               </button>
-              <button onClick={() => setShowPollDialog(true)} disabled={loading || !!pollData} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Add poll">
+              <button onClick={() => setShowPollDialog(true)} disabled={loading || !!pollData} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <BarChart3 className="w-5 h-5" />
               </button>
-              <button onClick={() => setShowScheduleDialog(true)} disabled={loading || !!scheduledDate} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Schedule post">
+              <button onClick={() => setShowScheduleDialog(true)} disabled={loading || !!scheduledDate} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <Calendar className="w-5 h-5" />
               </button>
-              <button onClick={() => setShowProductDialog(true)} disabled={loading} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Tag products">
+              <button onClick={() => setShowProductDialog(true)} disabled={loading} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <ShoppingBag className="w-5 h-5" />
               </button>
               <button onClick={() => setShowThreadMode(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showThreadMode ? 'bg-primary/20 text-primary' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="Thread composer">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showThreadMode ? 'bg-primary/20 text-primary' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Hash className="w-5 h-5" />
               </button>
               <button onClick={() => setShowCaptionGen(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showCaptionGen ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="AI Caption Generator">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showCaptionGen ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Sparkles className="w-5 h-5" />
               </button>
               <button onClick={() => setShowAiWriter(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showAiWriter ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="AI Post Writer">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showAiWriter ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Wand2 className="w-5 h-5" />
               </button>
               <button onClick={() => setPostToFediverse(v => !v)} disabled={loading}
@@ -770,8 +767,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
                 <Globe className="w-5 h-5" />
               </button>
               <button onClick={() => setShowEmbedDialog(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showEmbedDialog ? 'bg-blue-500/20 text-blue-600' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="Embed media (YouTube, Spotify, CodePen…)">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showEmbedDialog ? 'bg-blue-500/20 text-blue-600' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Link2 className="w-5 h-5" />
               </button>
             </div>

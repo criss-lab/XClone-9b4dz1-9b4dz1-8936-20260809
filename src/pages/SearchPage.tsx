@@ -1126,7 +1126,7 @@ Also suggest 3 related search terms as hashtags (e.g., #tech #startup). Keep it 
                       <a href={account.actor_url} target="_blank" rel="noopener noreferrer" className="p-2 hover:bg-muted rounded-full transition-colors" onClick={e => e.stopPropagation()}>
                         <ExternalLink className="w-4 h-4 text-muted-foreground" />
                       </a>
-                      <button onClick={() => handleFediverseFollow(account)} className="p-2 hover:bg-primary/10 rounded-full transition-colors" title="Follow">
+                      <button onClick={() => handleFediverseFollow(account)} className="p-2 hover:bg-primary/10 rounded-full transition-colors">
                         <UserPlus className="w-4 h-4 text-primary" />
                       </button>
                     </div>

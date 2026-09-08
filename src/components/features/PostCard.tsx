@@ -182,7 +182,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
         const newCount = likesCount + 1;
         setIsLiked(true);
         setLikesCount(newCount);
-        await supabase.from('likes').insert({ user_id: user.id, post_id: post.id }).catch(() => {});
+        await supabase.from('likes').insert({ user_id: user.id, post_id: post.id }).then(() => {}, () => {});
         await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
         if (post.user_id !== user.id) {
           await supabase.from('notifications').insert({ user_id: post.user_id, type: 'like', from_user_id: user.id, post_id: post.id });
@@ -258,7 +258,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
         await supabase.from('post_translations').upsert(
           { post_id: post.id, language_code: selectedLang, translated_content: translated.trim() },
           { onConflict: 'post_id,language_code' }
-        ).catch(() => {});
+        ).then(() => {}, () => {});
       }
     } catch (err) {
       console.warn('[translate]', err);
@@ -372,7 +372,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
         await supabase.from('user_wallets').update({ balance: Number(wallet.balance) - tipAmount }).eq('user_id', user.id);
         await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: post.user_id, amount: tipAmount, message: tipMessage.trim() || null, post_id: post.id });
         await supabase.from('notifications').insert({ user_id: post.user_id, type: 'payment_sent', from_user_id: user.id, post_id: post.id });
-        await supabase.from('creator_earnings').insert({ user_id: post.user_id, source: 'tips', amount: tipAmount, post_id: post.id, status: 'paid' }).catch(() => {});
+        await supabase.from('creator_earnings').insert({ user_id: post.user_id, source: 'tips', amount: tipAmount, post_id: post.id, status: 'paid' }).then(() => {}, () => {});
       } else {
         await supabase.from('notifications').insert({ user_id: post.user_id, type: 'payment_sent', from_user_id: user.id, post_id: post.id });
       }
@@ -456,7 +456,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     await supabase.from('post_reports').upsert(
       { post_id: post.id, reporter_id: user.id, category: reportCategory },
       { onConflict: 'post_id,reporter_id' }
-    ).catch(() => {});
+    ).then(() => {}, () => {});
     toast({ title: 'Report submitted', description: 'Thanks for helping keep the community safe.' });
     setShowReportDialog(false);
     setReportCategory('');
@@ -478,7 +478,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
 
   const handleAdComplete = () => {
     setShowVideoAd(false);
-    videoRef2.current?.play().catch(() => {});
+    videoRef2.current?.play().then(() => {}, () => {});
   };
 
   const mediaUrls = post.media_urls && post.media_urls.length > 0
@@ -536,7 +536,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
           sendActivityNotification({ recipientUserId: post.user_id, title: 'New Like', body: `${user.username} liked your post`, data: { route: `/post/${post.id}`, type: 'like' } });
         }
         // Update interest signal — fire-and-forget (esbuild guard: called outside render)
-        updateInterestSignal(user.id, post.id, 'like').catch(() => {});
+        updateInterestSignal(user.id, post.id, 'like').then(() => {}, () => {});
       } else {
         await supabase.from('likes').delete().eq('user_id', user.id).eq('post_id', post.id);
         await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
@@ -567,7 +567,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
         }
         toast({ title: 'Reposted successfully' });
         // Update interest signal — fire-and-forget
-        updateInterestSignal(user.id, post.id, 'repost').catch(() => {});
+        updateInterestSignal(user.id, post.id, 'repost').then(() => {}, () => {});
       } else {
         await supabase.from('reposts').delete().eq('user_id', user.id).eq('post_id', post.id);
         await supabase.from('posts').update({ reposts_count: newCount }).eq('id', post.id);
@@ -589,8 +589,8 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     const trackShare = () => {
       setShareCount(c => c + 1);
       supabase.from('post_analytics').select('id, shares').eq('post_id', post.id).maybeSingle().then(({ data }) => {
-        if (data?.id) supabase.from('post_analytics').update({ shares: (data.shares || 0) + 1 }).eq('id', data.id).catch(() => {});
-        else supabase.from('post_analytics').insert({ post_id: post.id, shares: 1 }).catch(() => {});
+        if (data?.id) supabase.from('post_analytics').update({ shares: (data.shares || 0) + 1 }).eq('id', data.id).then(() => {}, () => {});
+        else supabase.from('post_analytics').insert({ post_id: post.id, shares: 1 }).then(() => {}, () => {});
       });
     };
     if (navigator.share) {
@@ -663,7 +663,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 <BadgeCheck className="w-4 h-4 text-primary flex-shrink-0" fill="currentColor" />
               )}
               {isAuthorPremium && (
-                <Crown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="currentColor" title="Premium Member" />
+                <Crown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="currentColor" aria-label="icon" />
               )}
               <span className="text-muted-foreground text-sm truncate">@{post.user_profiles?.username}</span>
               <span className="text-muted-foreground text-sm flex-shrink-0">·</span>
@@ -676,7 +676,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 <button
                   className="text-muted-foreground hover:text-primary p-2 -mr-2"
                   onClick={(e) => { e.stopPropagation(); setShowDeleteMenu(!showDeleteMenu); }}
-                  title="Options"
                 >
                   <MoreHorizontal className="w-5 h-5" />
                 </button>
@@ -750,7 +749,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                   <button
                     onClick={e => { e.stopPropagation(); setShowLangPicker(p => !p); }}
                     className="text-xs text-muted-foreground hover:text-primary flex items-center gap-0.5 transition-colors"
-                    title="Pick language"
                   >
                     <span>{LANGUAGES.find(l => l.code === targetLang)?.flag ?? '🌐'}</span>
                     <span className="text-[10px]">{LANGUAGES.find(l => l.code === targetLang)?.label ?? 'EN'}</span>
@@ -1001,7 +999,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               <button
                 className="flex items-center space-x-2 text-muted-foreground hover:text-amber-500 transition-colors group"
                 onClick={(e) => { e.stopPropagation(); setShowTipDialog(true); }}
-                title="Send a tip"
               >
                 <div className="p-2 rounded-full group-hover:bg-amber-500/10 transition-colors">
                   <DollarSign className="w-5 h-5" />
@@ -1012,7 +1009,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               <button
                 className="flex items-center space-x-2 text-muted-foreground hover:text-red-500 transition-colors group"
                 onClick={(e) => { e.stopPropagation(); setShowReportDialog(true); }}
-                title="Report post"
               >
                 <div className="p-2 rounded-full group-hover:bg-red-500/10 transition-colors">
                   <Flag className="w-4 h-4" />
@@ -1025,7 +1021,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 <button
                   className="flex items-center space-x-2 text-muted-foreground hover:text-primary transition-colors group"
                   onClick={(e) => { e.stopPropagation(); setShowOneClickBoost(true); }}
-                  title="Boost Post"
                 >
                   <div className="p-2 rounded-full group-hover:bg-primary/10 transition-colors">
                     <TrendingUp className="w-5 h-5" />
@@ -1034,7 +1029,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 <button
                   className="flex items-center space-x-2 text-muted-foreground hover:text-amber-500 transition-colors group"
                   onClick={(e) => { e.stopPropagation(); setShowRewardedBoost(true); }}
-                  title="Free Boost (Watch Ad)"
                 >
                   <div className="p-2 rounded-full group-hover:bg-amber-500/10 transition-colors">
                     <Zap className="w-5 h-5" />

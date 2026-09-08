@@ -1,0 +1,33 @@
+name: Testagram Federation Actor Diagnostic
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create actor and inspect public representation
+        env:
+          SUPABASE_URL: https://zcjtvykwwplnzyyslnop.supabase.co
+          GATEWAY_URL: https://zcjtvykwwplnzyyslnop.supabase.co/functions/v1/gateway-relay
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_ID}-${RANDOM}"
+          EMAIL="fediverse-diag-${RUN}@example.invalid"
+          PASS="TgDiag-${RUN}-X9!"
+          USER_ID=""
+          trap 'test -z "$USER_ID" || curl -sS -o /dev/null -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID" -H "apikey: $SUPABASE_SECRET_KEY" || true' EXIT
+          curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/admin/users" -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" >/tmp/user.json
+          USER_ID="$(jq -r '.id' /tmp/user.json)"
+          TOKEN="$(curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p}')" | jq -r '.access_token')"
+          STATUS="$(curl -sS -o /tmp/follow.json -w '%{http_code}' --max-time 60 -X POST "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"path":"/follow","body":{"target":"@Mastodon@mastodon.social"}}')"
+          echo "Follow status: $STATUS"; cat /tmp/follow.json
+          curl -sS --fail-with-body "$SUPABASE_URL/rest/v1/federation_actors?user_id=eq.$USER_ID&select=username,actor_url,inbox_url,public_key_pem" -H "apikey: $SUPABASE_SECRET_KEY" >/tmp/actor-row.json
+          jq 'map({username,actor_url,inbox_url,public_key_length:(.public_key_pem|length)})' /tmp/actor-row.json
+          ACTOR_URL="$(jq -r '.[0].actor_url' /tmp/actor-row.json)"
+          curl -sS --fail-with-body -H 'Accept: application/activity+json' "$ACTOR_URL" >/tmp/public-actor.json
+          jq '{id,type,preferredUsername,inbox,publicKey:{id,owner,pem_length:(.publicKey.publicKeyPem|length)}}' /tmp/public-actor.json

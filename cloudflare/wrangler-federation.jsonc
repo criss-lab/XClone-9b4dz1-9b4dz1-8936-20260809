@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "testagram-api",
+  "main": "./worker/production-entrypoint.ts",
+  "compatibility_date": "2026-09-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "routes": [{ "pattern": "federation.testagram.site", "custom_domain": true }],
+  "vars": {
+    "APP_ORIGIN": "https://testagram.site",
+    "SUPABASE_URL": "https://zcjtvykwwplnzyyslnop.supabase.co",
+    "SUPABASE_PROJECT_REF": "zcjtvykwwplnzyyslnop",
+    "SUPABASE_JWKS_URL": "https://zcjtvykwwplnzyyslnop.supabase.co/auth/v1/.well-known/jwks.json"
+  },
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "testagram-media" }],
+  "secrets": { "required": ["SUPABASE_ANON_KEY", "SUPABASE_SECRET_KEY"] }
+}

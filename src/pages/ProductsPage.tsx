@@ -877,7 +877,7 @@ export function ProductsPage() {
   // ── Marketplace ───────────────────────────────────────────────────────────
   return (
     <div className="max-w-4xl mx-auto pb-20">
-      <TopBar title="Marketplace" />
+      <TopBar />
 
       <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">

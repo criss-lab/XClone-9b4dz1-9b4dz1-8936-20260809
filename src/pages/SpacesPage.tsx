@@ -142,7 +142,7 @@ export default function SpacesPage() {
     const clipUrl = `${window.location.origin}/space-recording/${clipRecId}?t=${clipStart}&end=${clipEnd}`;
     const shareTitle = `Clip: ${clipRecTitle.slice(0, 60)}`;
     if (navigator.share) {
-      await navigator.share({ title: shareTitle, url: clipUrl }).catch(() => {});
+      await navigator.share({ title: shareTitle, url: clipUrl }).then(() => {}, () => {});
     } else {
       navigator.clipboard.writeText(clipUrl).then(() => { setClipCopied(true); setTimeout(() => setClipCopied(false), 2500); });
     }
@@ -163,8 +163,8 @@ export default function SpacesPage() {
     setSendingEpTip(true);
     const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: tipEpAmount });
     if (deductErr) { toast.error('Insufficient wallet balance'); setSendingEpTip(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: tipEpHostId, p_amount: tipEpAmount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: tipEpHostId, amount: tipEpAmount }).catch(() => {});
+    await supabase.rpc('add_to_wallet', { p_user_id: tipEpHostId, p_amount: tipEpAmount }).then(() => {}, () => {});
+    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: tipEpHostId, amount: tipEpAmount }).then(() => {}, () => {});
     toast.success(`$${tipEpAmount} tip sent to @${tipEpHostName}!`);
     setTippedEpIds(prev => new Set([...prev, tipEpId!]));
     setTipEpId(null);
@@ -176,7 +176,7 @@ export default function SpacesPage() {
   // ── Playlist share ────────────────────────────────────────────────────────
   const sharePlaylist = useCallback((pl: Playlist) => {
     const url = `${window.location.origin}/spaces?playlist=${pl.id}`;
-    if (navigator.share) { navigator.share({ title: pl.name, url }).catch(() => {}); }
+    if (navigator.share) { navigator.share({ title: pl.name, url }).then(() => {}, () => {}); }
     else { navigator.clipboard.writeText(url).then(() => toast.success('Playlist link copied!')); }
   }, []);
 
@@ -318,7 +318,7 @@ export default function SpacesPage() {
   const handleShareSpace = useCallback((id: string, title: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `${window.location.origin}/spaces?space=${id}`;
-    if (navigator.share) { navigator.share({ title, url }).catch(() => {}); }
+    if (navigator.share) { navigator.share({ title, url }).then(() => {}, () => {}); }
     else { navigator.clipboard.writeText(url).then(() => { setCopiedId(id); setTimeout(() => setCopiedId(null), 2000); toast.success('Link copied!'); }); }
   }, []);
 
@@ -377,7 +377,7 @@ export default function SpacesPage() {
 
   return (
     <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <TopBar title="Spaces" />
+      <TopBar />
 
       {/* Floating live reactions */}
       <div className="pointer-events-none fixed inset-0 z-[100] overflow-hidden">
@@ -675,7 +675,7 @@ export default function SpacesPage() {
                           <Play className="w-4 h-4 text-primary ml-0.5" fill="currentColor" />
                         </button>
                         <button onClick={e => openClipModal(rec.id, rec.spaces?.title ?? rec.title, e)}
-                          className="w-10 h-10 rounded-full border border-border text-muted-foreground hover:border-primary/30 hover:text-primary flex items-center justify-center transition-all" title="Create a clip">
+                          className="w-10 h-10 rounded-full border border-border text-muted-foreground hover:border-primary/30 hover:text-primary flex items-center justify-center transition-all">
                           <Scissors className="w-4 h-4" />
                         </button>
                         <button onClick={e => toggleSaveRecording(rec.id, e)}
@@ -683,13 +683,12 @@ export default function SpacesPage() {
                           <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
                         </button>
                         <button onClick={e => { e.stopPropagation(); setPlaylistForRec(rec.id); setShowPlaylistModal(true); }}
-                          className="w-10 h-10 rounded-full border border-border text-muted-foreground hover:border-primary/30 hover:text-primary flex items-center justify-center transition-all" title="Add to playlist">
+                          className="w-10 h-10 rounded-full border border-border text-muted-foreground hover:border-primary/30 hover:text-primary flex items-center justify-center transition-all">
                           <ListMusic className="w-4 h-4" />
                         </button>
                         {user && hostId && user.id !== hostId && (
                           <button onClick={e => openEpTip(rec.id, hostId, hostUsername, e)}
-                            className={`w-10 h-10 rounded-full border flex items-center justify-center transition-all ${isTipped ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-600' : 'border-border text-muted-foreground hover:border-yellow-500/30 hover:text-yellow-600'}`}
-                            title="Tip host">
+                            className={`w-10 h-10 rounded-full border flex items-center justify-center transition-all ${isTipped ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-600' : 'border-border text-muted-foreground hover:border-yellow-500/30 hover:text-yellow-600'}`}>
                             <DollarSign className="w-4 h-4" />
                           </button>
                         )}
@@ -849,7 +848,7 @@ export default function SpacesPage() {
                         </div>
                         <div className="flex items-center gap-1">
                           <button onClick={() => sharePlaylist(pl)}
-                            className="p-2 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors" title="Share playlist">
+                            className="p-2 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors">
                             <Share2 className="w-3.5 h-3.5" />
                           </button>
                           <button onClick={() => deletePlaylist(pl.id)} className="p-2 rounded-full hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors">

@@ -616,8 +616,7 @@ export function RightSidebar() {
                   </button>
                   <button
                     onClick={e => unfollowHashtag(h.id, h.tag, e)}
-                    className="p-1 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all shrink-0"
-                    title="Unfollow">
+                    className="p-1 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all shrink-0">
                     <X className="w-3 h-3" />
                   </button>
                 </div>

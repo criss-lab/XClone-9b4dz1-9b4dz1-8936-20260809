@@ -1,0 +1,137 @@
+name: Testagram Android
+
+on:
+  push:
+    branches: [main, testagram-native-shell, native-shell-build-certification, native-shell-build-certification-v2]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Apply unified Fediverse interactions and ranking
+        run: python3 tools/apply_fediverse_unified.py
+      - name: Install web dependencies without mutating repository state
+        run: npm install --legacy-peer-deps --no-audit --no-fund --package-lock=false
+      - name: Typecheck unified Fediverse implementation
+        run: npm run typecheck
+      - name: Build canonical web application
+        run: npm run build
+      - name: Persist verified Fediverse implementation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          targets=(src/pages/HomePage.tsx src/components/features/FederatedPostCard.tsx tools/apply_fediverse_unified.py .github/workflows/testagram-android.yml)
+          if git diff --quiet -- "${targets[@]}"; then
+            echo 'Verified Fediverse implementation already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${targets[@]}"
+          if git diff --cached --quiet; then
+            echo 'No targeted changes to persist.'
+            exit 0
+          fi
+          git commit -m 'feat(fediverse): unify ranking and enable native interactions'
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main; then
+              if git push origin HEAD:main; then
+                exit 0
+              fi
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 2))
+          done
+          echo 'Unable to persist verified changes after retries.' >&2
+          exit 1
+      - name: Upload web build for native packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: testagram-web-dist
+          path: dist
+          if-no-files-found: error
+
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify canonical Testagram surface and repository parity
+        run: python3 tools/verify_testagram.py
+
+  android:
+    needs: [web, parity]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: testagram-web-dist
+          path: dist
+      - name: Package web build into native WebView assets
+        run: |
+          set -euo pipefail
+          rm -rf android/app/src/main/assets/www
+          mkdir -p android/app/src/main/assets/www
+          cp -R dist/. android/app/src/main/assets/www/
+          test -s android/app/src/main/assets/www/index.html
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Restore Gradle wrapper executable permission
+        run: chmod +x android/gradlew
+      - name: Verify native Android project has no Capacitor wiring
+        run: |
+          set -euo pipefail
+          ! grep -RniE 'capacitor|BridgeActivity|cordova' \
+            android/app/build.gradle \
+            android/settings.gradle \
+            android/build.gradle \
+            android/app/src/main/java \
+            android/app/src/main/AndroidManifest.xml
+      - name: Assemble native debug APK
+        working-directory: android
+        run: ./gradlew clean assembleDebug --stacktrace --no-daemon
+      - name: Verify APK artifact
+        run: |
+          set -euo pipefail
+          apk=$(find android/app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)
+          test -n "$apk"
+          test -s "$apk"
+          file "$apk"
+      - name: Generate CI signing certificate fingerprint
+        working-directory: android
+        run: |
+          ./gradlew signingReport --no-daemon | tee ../android-signing-report.txt
+          echo "\nSHA-256 fingerprints found:" >> ../android-signing-report.txt
+          grep -E 'SHA-256:' ../android-signing-report.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testagram-native-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testagram-android-signing-report
+          path: android-signing-report.txt
+          if-no-files-found: error

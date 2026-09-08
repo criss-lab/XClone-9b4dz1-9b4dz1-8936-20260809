@@ -1,5 +1,12 @@
 # T Social - World-Class Platform Features
 
+## Production Media Storage Contract
+
+- Text, social metadata, authentication data, and media metadata are stored in Supabase/PostgreSQL.
+- Binary media is stored in Cloudflare R2 through the Testagram API edge worker.
+- The application enforces a maximum media object size of 20 MiB at the client, API, and database layers.
+- Media metadata records the R2 object key and authenticated owner; media access remains protected by Supabase RLS.
+
 ## ✅ Recently Implemented
 
 ### Multi-Image Posts
@@ -75,14 +82,14 @@ Both sidebars are now properly integrated and visible on desktop (lg+) and xl sc
 ### Performance
 - ✅ Code splitting with React Router
 - ✅ Lazy loading for feeds
-- ✅ Infinite scroll with cursor-based pagination
+- ✅ Infinite scroll for feeds
 - ✅ Optimistic UI updates
 - ✅ Image/video optimization
 
 ## 🎨 User Interface & Experience
 
 ### Rich Media
-- ✅ Multiple image uploads (up to 4 per post)
+- ✅ Multiple image uploads (up to 4 images)
 - ✅ Video uploads with TikTok-style vertical player
 - ✅ GIF integration (Giphy/Tenor URLs)
 - ✅ Audio Spaces with live streaming
@@ -256,7 +263,7 @@ Both sidebars are now properly integrated and visible on desktop (lg+) and xl sc
 - ✅ Fix all authentication flows
 - ✅ Optimize database queries
 - ✅ Polish UI/UX
-- ✅ Multi-image uploads
+- ✅ Multi-image posts
 - ✅ Enhanced sidebars
 - ✅ Media upload improvements
 

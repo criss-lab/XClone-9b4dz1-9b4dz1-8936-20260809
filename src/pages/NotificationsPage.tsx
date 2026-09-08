@@ -340,7 +340,7 @@ export default function NotificationsPage() {
 
   return (
     <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <TopBar title="Notifications" />
+      <TopBar />
       <NotificationsAdBanner />
 
       {/* Tabs */}

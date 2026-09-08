@@ -259,7 +259,7 @@ export default function FediversePage() {
     })).filter((r: any) => r.object_url);
     if (!rows.length) return;
     await supabase.from('remote_posts').upsert(rows, { onConflict: 'object_url', ignoreDuplicates: false })
-      .then(() => setCachedAt(new Date())).catch(() => {});
+      .then(() => setCachedAt(new Date())).then(() => {}, () => {});
   };
 
   const fetchFederatedFeed = async () => {
@@ -281,7 +281,7 @@ export default function FediversePage() {
       const fresh = Array.isArray(res) ? res : res?.posts ?? res?.data ?? [];
       if (fresh.length > 0) {
         setRemotePosts(fresh);
-        cacheFederatedPosts(fresh).catch(() => {});
+        cacheFederatedPosts(fresh).then(() => {}, () => {});
         setCachedAt(new Date());
       }
     } catch {

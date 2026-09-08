@@ -1,0 +1,1 @@
+-- Remote migration-history marker. Actor URL routing is superseded by the public federation edge endpoint.

@@ -261,7 +261,7 @@ export default function ThreadsPage() {
 
   return (
     <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <TopBar title="Threads" />
+      <TopBar />
       <ThreadsAdBanner />
 
       {/* Sticky header: tabs + search + sort */}
@@ -350,7 +350,7 @@ export default function ThreadsPage() {
             <Plus className="w-4 h-4 mr-2" />
             Create Thread
           </Button>
-          <Button variant="outline" onClick={() => navigate('/create-thread?template=poll')} className="rounded-full px-4" title="Create poll thread">
+          <Button variant="outline" onClick={() => navigate('/create-thread?template=poll')} className="rounded-full px-4">
             <BarChart3 className="w-4 h-4" />
           </Button>
         </div>

@@ -20,7 +20,7 @@ interface Poll {
 }
 
 interface PollCardProps {
-  poll: Poll;
+  poll?: Poll;
   postId: string;
 }
 
@@ -29,30 +29,31 @@ export function PollCard({ poll, postId }: PollCardProps) {
   const navigate = useNavigate();
   const [voted, setVoted] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
-  const [pollData, setPollData] = useState(poll);
+  const activePoll: Poll = poll ?? { id: postId, question: '', expires_at: new Date(0).toISOString(), total_votes: 0, options: [] };
+  const [pollData, setPollData] = useState(activePoll);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
-  useEffect(() => { if (user) checkIfVoted(); }, [poll.id, user?.id]);
+  useEffect(() => { if (user && poll) checkIfVoted(); }, [poll?.id, user?.id]);
 
   const checkIfVoted = async () => {
-    if (!user) return;
+    if (!user || !poll) return;
     const { data } = await supabase
       .from('poll_votes').select('option_id')
-      .eq('poll_id', poll.id).eq('user_id', user.id).maybeSingle();
+      .eq('poll_id', activePoll.id).eq('user_id', user.id).maybeSingle();
     if (data) { setVoted(true); setSelectedOption(data.option_id); }
   };
 
   const handleVote = async (optionId: string) => {
-    if (!user) { navigate('/auth'); return; }
+    if (!user || !poll) { navigate('/auth'); return; }
     if (voted) { toast.error('You already voted'); return; }
-    if (new Date() > new Date(poll.expires_at)) { toast.error('Poll has ended'); return; }
+    if (new Date() > new Date(activePoll.expires_at)) { toast.error('Poll has ended'); return; }
     setLoading(true);
-    const { error } = await supabase.from('poll_votes').insert({ poll_id: poll.id, option_id: optionId, user_id: user.id });
+    const { error } = await supabase.from('poll_votes').insert({ poll_id: activePoll.id, option_id: optionId, user_id: user.id });
     if (error) { toast.error(error.message); setLoading(false); return; }
     await supabase.rpc('increment', { table_name: 'poll_options', row_id: optionId, column_name: 'votes' });
-    await supabase.rpc('increment', { table_name: 'polls', row_id: poll.id, column_name: 'total_votes' });
-    const { data: updated } = await supabase.from('polls').select('*, options:poll_options(*)').eq('id', poll.id).single();
+    await supabase.rpc('increment', { table_name: 'polls', row_id: activePoll.id, column_name: 'total_votes' });
+    const { data: updated } = await supabase.from('polls').select('*, options:poll_options(*)').eq('id', activePoll.id).single();
     if (updated) setPollData(updated as Poll);
     setVoted(true);
     setSelectedOption(optionId);
@@ -61,8 +62,8 @@ export function PollCard({ poll, postId }: PollCardProps) {
   };
 
   const pct = (votes: number) => pollData.total_votes === 0 ? 0 : Math.round((votes / pollData.total_votes) * 100);
-  const isExpired = new Date() > new Date(poll.expires_at);
-  const timeLeft = Math.max(0, new Date(poll.expires_at).getTime() - Date.now());
+  const isExpired = new Date() > new Date(activePoll.expires_at);
+  const timeLeft = Math.max(0, new Date(activePoll.expires_at).getTime() - Date.now());
   const hoursLeft = Math.floor(timeLeft / 3_600_000);
   const daysLeft = Math.floor(hoursLeft / 24);
   const minsLeft = Math.floor((timeLeft % 3_600_000) / 60_000);
@@ -71,6 +72,8 @@ export function PollCard({ poll, postId }: PollCardProps) {
   const leader = showResults && pollData.options.length > 0
     ? pollData.options.reduce((a, b) => (a.votes >= b.votes ? a : b))
     : null;
+
+  if (!poll) return null;
 
   return (
     <div className="mt-3 rounded-2xl border border-border bg-card overflow-hidden" onClick={e => e.stopPropagation()}>

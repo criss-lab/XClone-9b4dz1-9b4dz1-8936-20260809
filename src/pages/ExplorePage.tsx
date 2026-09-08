@@ -771,14 +771,14 @@ export default function ExplorePage() {
       await supabase.from('story_views').upsert(
         { story_id: story.id, viewer_id: user.id },
         { onConflict: 'story_id,viewer_id' }
-      ).catch(() => {});
-      await supabase.from('stories').update({ views_count: (story.views_count || 0) + 1 }).eq('id', story.id).catch(() => {});
+      ).then(() => {}, () => {});
+      await supabase.from('stories').update({ views_count: (story.views_count || 0) + 1 }).eq('id', story.id).then(() => {}, () => {});
     }
   };
 
   const fetchData = async () => {
     setLoading(true);
-    await supabase.rpc('refresh_trending_topics').catch(() => {});
+    await supabase.rpc('refresh_trending_topics').then(() => {}, () => {});
     const [trendingRes, hashtagRes, whoRes] = await Promise.all([
       supabase.from('trending_topics').select('*').order('posts_count', { ascending: false }).limit(50),
       supabase.from('trending_hashtags').select('hashtag_id, trend_score, daily_posts, hashtags(id, tag, usage_count)').order('trend_score', { ascending: false }).limit(20),
@@ -809,7 +809,7 @@ export default function ExplorePage() {
     } else {
       await supabase.from('follows').insert({ follower_id: user.id, following_id: profileId });
       setFollowingIdArr(prev => [...prev, profileId]);
-      await supabase.from('notifications').insert({ user_id: profileId, type: 'follow', from_user_id: user.id }).catch(() => {});
+      await supabase.from('notifications').insert({ user_id: profileId, type: 'follow', from_user_id: user.id }).then(() => {}, () => {});
       toast.success(`Following @${username}!`);
     }
   };

@@ -1,0 +1,154 @@
+name: Testagram Supabase Social E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/supabase-social-e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-social-e2e:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: https://zcjtvykwwplnzyyslnop.supabase.co
+      SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_PUBLISHABLE_KEY"
+          test -n "$SUPABASE_SECRET_KEY"
+
+      - name: Run authenticated profiles, communities and spaces E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$SUPABASE_URL"
+          RUN="${GITHUB_RUN_ID}-${RANDOM}"
+          EMAIL_A="testagram-e2e-a-${RUN}@example.invalid"
+          EMAIL_B="testagram-e2e-b-${RUN}@example.invalid"
+          PASS="TgE2E-${RUN}-X9!"
+          USER_A=""
+          USER_B=""
+          TOKEN_A=""
+          TOKEN_B=""
+          COMMUNITY_ID=""
+          SPACE_ID=""
+
+          cleanup() {
+            if [ -n "$USER_A" ]; then
+              curl -sS -o /dev/null -X DELETE "$BASE/auth/v1/admin/users/$USER_A" -H "apikey: $SUPABASE_SECRET_KEY" || true
+            fi
+            if [ -n "$USER_B" ]; then
+              curl -sS -o /dev/null -X DELETE "$BASE/auth/v1/admin/users/$USER_B" -H "apikey: $SUPABASE_SECRET_KEY" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          json_post() {
+            curl -sS --fail-with-body -X POST "$1" -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' -d "$2"
+          }
+
+          echo 'Creating isolated authenticated users...'
+          USER_A="$(json_post "$BASE/auth/v1/admin/users" "$(jq -nc --arg e "$EMAIL_A" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" | jq -r '.id')"
+          USER_B="$(json_post "$BASE/auth/v1/admin/users" "$(jq -nc --arg e "$EMAIL_B" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" | jq -r '.id')"
+          test -n "$USER_A"
+          test -n "$USER_B"
+          test "$USER_A" != "$USER_B"
+
+          login() {
+            curl -sS --fail-with-body -X POST "$BASE/auth/v1/token?grant_type=password" \
+              -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' \
+              -d "$(jq -nc --arg e "$1" --arg p "$PASS" '{email:$e,password:$p}')"
+          }
+          TOKEN_A="$(login "$EMAIL_A" | jq -r '.access_token')"
+          TOKEN_B="$(login "$EMAIL_B" | jq -r '.access_token')"
+          test -n "$TOKEN_A"
+          test -n "$TOKEN_B"
+
+          auth_header() { printf 'Authorization: Bearer %s' "$1"; }
+
+          echo '1. Profile auto-provisioning + owner update...'
+          PROFILE_STATUS="$(curl -sS -o /tmp/profile-a.json -w '%{http_code}' "$BASE/rest/v1/profiles?id=eq.$USER_A&select=id,username,display_name" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_A")")"
+          test "$PROFILE_STATUS" = 200
+          jq -e --arg id "$USER_A" 'length == 1 and .[0].id == $id' /tmp/profile-a.json
+
+          UPDATE_STATUS="$(curl -sS -o /tmp/profile-update.json -w '%{http_code}' -X PATCH "$BASE/rest/v1/profiles?id=eq.$USER_A" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_A")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d '{"display_name":"Testagram E2E User A"}')"
+          test "$UPDATE_STATUS" = 200
+          jq -e '.[0].display_name == "Testagram E2E User A"' /tmp/profile-update.json
+
+          echo '2. User B cannot update User A profile...'
+          FORBIDDEN_STATUS="$(curl -sS -o /tmp/profile-forbidden.json -w '%{http_code}' -X PATCH "$BASE/rest/v1/profiles?id=eq.$USER_A" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d '{"display_name":"HACKED"}')"
+          test "$FORBIDDEN_STATUS" = 200
+          jq -e 'length == 0' /tmp/profile-forbidden.json
+
+          echo '3. User A creates a private community...'
+          COMMUNITY_STATUS="$(curl -sS -o /tmp/community.json -w '%{http_code}' -X POST "$BASE/rest/v1/communities" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_A")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d "$(jq -nc --arg uid "$USER_A" --arg n "e2e-${RUN}" '{name:$n,display_name:"E2E Community",description:"isolated test community",created_by:$uid,is_private:true,rules:[{id:1,rule:"be respectful"}]}')")"
+          test "$COMMUNITY_STATUS" = 201
+          COMMUNITY_ID="$(jq -r '.[0].id' /tmp/community.json)"
+          test -n "$COMMUNITY_ID"
+
+          echo '4. Owner membership is created and User B cannot edit the community...'
+          curl -sS --fail-with-body -X POST "$BASE/rest/v1/community_members" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_A")" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg c "$COMMUNITY_ID" --arg u "$USER_A" '{community_id:$c,user_id:$u,role:"owner",status:"active"}')" >/tmp/member-a.json
+
+          COMMUNITY_FORBIDDEN="$(curl -sS -o /tmp/community-forbidden.json -w '%{http_code}' -X PATCH "$BASE/rest/v1/communities?id=eq.$COMMUNITY_ID" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d '{"display_name":"HACKED COMMUNITY"}')"
+          test "$COMMUNITY_FORBIDDEN" = 200
+          jq -e 'length == 0' /tmp/community-forbidden.json
+
+          echo '5. User B joins and can see the private community...'
+          curl -sS --fail-with-body -X POST "$BASE/rest/v1/community_members" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg c "$COMMUNITY_ID" --arg u "$USER_B" '{community_id:$c,user_id:$u,role:"member",status:"active"}')" >/tmp/member-b.json
+          curl -sS --fail-with-body "$BASE/rest/v1/communities?id=eq.$COMMUNITY_ID&select=id,name,is_private" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" >/tmp/community-b.json
+          jq -e --arg id "$COMMUNITY_ID" 'length == 1 and .[0].id == $id and .[0].is_private == true' /tmp/community-b.json
+
+          echo '6. User A starts an Audio Space...'
+          SPACE_STATUS="$(curl -sS -o /tmp/space.json -w '%{http_code}' -X POST "$BASE/rest/v1/spaces" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_A")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d "$(jq -nc --arg uid "$USER_A" '{host_id:$uid,title:"E2E Audio Space",description:"isolated audio space",is_live:true,listener_count:0,has_video:false,category:"technology"}')")"
+          test "$SPACE_STATUS" = 201
+          SPACE_ID="$(jq -r '.[0].id' /tmp/space.json)"
+          test -n "$SPACE_ID"
+
+          echo '7. User B joins the Space; listener count is database-derived...'
+          curl -sS --fail-with-body -X POST "$BASE/rest/v1/space_participants" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg s "$SPACE_ID" --arg u "$USER_B" '{space_id:$s,user_id:$u,role:"listener"}')" >/tmp/participant-b.json
+          curl -sS --fail-with-body "$BASE/rest/v1/spaces?id=eq.$SPACE_ID&select=id,host_id,listener_count" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" >/tmp/space-b.json
+          jq -e --arg id "$SPACE_ID" --arg host "$USER_A" 'length == 1 and .[0].id == $id and .[0].host_id == $host and .[0].listener_count == 1' /tmp/space-b.json
+
+          echo '8. User B cannot mutate the host-owned Space...'
+          SPACE_FORBIDDEN="$(curl -sS -o /tmp/space-forbidden.json -w '%{http_code}' -X PATCH "$BASE/rest/v1/spaces?id=eq.$SPACE_ID" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d '{"title":"HACKED SPACE"}')"
+          test "$SPACE_FORBIDDEN" = 200
+          jq -e 'length == 0' /tmp/space-forbidden.json
+
+          echo '9. User A can manage the Space...'
+          SPACE_UPDATE="$(curl -sS -o /tmp/space-update.json -w '%{http_code}' -X PATCH "$BASE/rest/v1/spaces?id=eq.$SPACE_ID" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_A")" -H 'Content-Type: application/json' \
+            -H 'Prefer: return=representation' -d '{"title":"E2E Audio Space Updated"}')"
+          test "$SPACE_UPDATE" = 200
+          jq -e '. | length == 1 and .[0].title == "E2E Audio Space Updated"' /tmp/space-update.json
+
+          echo 'PASS: profiles + communities + audio spaces authenticated E2E security contract.'

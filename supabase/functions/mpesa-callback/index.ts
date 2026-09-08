@@ -1,154 +1,58 @@
-// M-Pesa Callback Handler
-// Receives payment confirmations from Safaricom servers
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const supabaseAdmin = createClient(
-  Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-);
-
+const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
 const USD_TO_KES = 130;
+const accepted = () => new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
   try {
     const body = await req.json();
-    console.log('[mpesa-callback] Received:', JSON.stringify(body));
-
-    // ── STK Push callback ─────────────────────────────────────
-    const stkCallback = body?.Body?.stkCallback;
-    if (stkCallback) {
-      const checkoutId  = stkCallback.CheckoutRequestID;
-      const resultCode  = stkCallback.ResultCode;
-      const resultDesc  = stkCallback.ResultDesc;
-
-      console.log(`[mpesa-callback] STK: ${checkoutId} code=${resultCode} desc=${resultDesc}`);
-
-      // Extract receipt number from metadata
-      let receiptNumber: string | null = null;
-      let mpesaAmount: number | null   = null;
-      const items: any[] = stkCallback.CallbackMetadata?.Item ?? [];
-      items.forEach((item: any) => {
-        if (item.Name === 'MpesaReceiptNumber') receiptNumber = item.Value;
-        if (item.Name === 'Amount') mpesaAmount = item.Value;
-      });
-
+    const stk = body?.Body?.stkCallback;
+    if (stk) {
+      const checkoutId = String(stk.CheckoutRequestID || '');
+      const resultCode = Number(stk.ResultCode);
+      const resultDesc = String(stk.ResultDesc || '');
+      let receipt: string | null = null;
+      let amountKes: number | null = null;
+      for (const item of (stk.CallbackMetadata?.Item ?? [])) {
+        if (item.Name === 'MpesaReceiptNumber') receipt = item.Value == null ? null : String(item.Value);
+        if (item.Name === 'Amount') amountKes = Number(item.Value);
+      }
       const status = resultCode === 0 ? 'completed' : 'failed';
-
-      const { data: txn } = await supabaseAdmin
-        .from('mpesa_transactions')
-        .update({ status, result_code: String(resultCode), result_desc: resultDesc, mpesa_receipt_number: receiptNumber })
-        .eq('checkout_request_id', checkoutId)
-        .select('user_id, purpose, metadata')
-        .single();
-
-      // On success: credit wallet and send notification
-      if (status === 'completed' && txn?.user_id && mpesaAmount) {
-        const usdAmount = mpesaAmount / USD_TO_KES;
-
-        await supabaseAdmin.rpc('add_to_wallet', { p_user_id: txn.user_id, p_amount: usdAmount });
-
-        // Record wallet transaction
-        const { data: walletRow } = await supabaseAdmin
-          .from('user_wallets')
-          .select('id')
-          .eq('user_id', txn.user_id)
-          .single();
-
-        await supabaseAdmin.from('wallet_transactions').insert({
-          wallet_id: walletRow?.id ?? null,
-          user_id: txn.user_id,
-          type: 'deposit',
-          amount: usdAmount,
-          payment_method: 'mpesa',
-          status: 'completed',
-          reference: receiptNumber,
-          description: `M-Pesa top-up — KES ${mpesaAmount.toLocaleString()} (Ref: ${receiptNumber})`,
-        });
-
-        // Wallet notification
-        await supabaseAdmin.from('platform_inbox').insert({
-          user_id: txn.user_id,
-          subject: 'Deposit Confirmed ✅',
-          body: `Your M-Pesa deposit of KES ${mpesaAmount.toLocaleString()} ($${usdAmount.toFixed(2)}) has been confirmed and credited to your wallet. Receipt: ${receiptNumber}.`,
-          type: 'system',
-          icon_emoji: '✅',
-        });
-
-        console.log(`[mpesa-callback] Credited $${usdAmount.toFixed(2)} to user ${txn.user_id}`);
+      const { data: tx, error } = await supabaseAdmin.from('mpesa_transactions').update({ status, result_code: String(resultCode), result_desc: resultDesc, mpesa_receipt_number: receipt }).eq('checkout_request_id', checkoutId).select('user_id, purpose, metadata').maybeSingle();
+      if (error) console.error('[mpesa-callback] STK ledger update:', error.message);
+      if (status === 'completed' && tx?.user_id && Number.isFinite(amountKes) && amountKes! > 0) {
+        const usd = Math.round((amountKes! / USD_TO_KES) * 100) / 100;
+        const reference = receipt || checkoutId;
+        const { error: creditError } = await supabaseAdmin.rpc('credit_wallet_deposit', { p_user_id: tx.user_id, p_amount: usd, p_currency: 'USD', p_provider: 'mpesa', p_provider_reference: reference, p_provider_status: 'COMPLETED', p_payment_method: 'mpesa', p_description: `M-Pesa top-up — KES ${amountKes!.toLocaleString()} (Ref: ${reference})`, p_metadata: tx.metadata ?? {} });
+        if (creditError) console.error('[mpesa-callback] wallet credit:', creditError.message);
       }
-
-      return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return accepted();
     }
 
-    // ── B2C callback ──────────────────────────────────────────
-    const b2cResult = body?.Result;
-    if (b2cResult) {
-      const conversationId = b2cResult.ConversationID;
-      const resultCode     = b2cResult.ResultCode;
-      const resultDesc     = b2cResult.ResultDesc;
-      const status         = resultCode === 0 ? 'completed' : 'failed';
-
-      console.log(`[mpesa-callback] B2C: ${conversationId} code=${resultCode} desc=${resultDesc}`);
-
-      const { data: txn } = await supabaseAdmin
-        .from('mpesa_transactions')
-        .update({ status, result_code: String(resultCode), result_desc: resultDesc })
-        .eq('checkout_request_id', conversationId)
-        .select('user_id, amount')
-        .single();
-
-      if (status === 'failed' && txn?.user_id && txn?.amount) {
-        // Refund wallet
-        const usdAmount = txn.amount / USD_TO_KES;
-        await supabaseAdmin.rpc('add_to_wallet', { p_user_id: txn.user_id, p_amount: usdAmount });
-
-        await supabaseAdmin.from('platform_inbox').insert({
-          user_id: txn.user_id,
-          subject: 'Withdrawal Failed ❌',
-          body: `Your withdrawal of KES ${txn.amount.toLocaleString()} could not be processed (${resultDesc}). Your balance has been restored.`,
-          type: 'system',
-          icon_emoji: '❌',
-        });
-      } else if (status === 'completed' && txn?.user_id) {
-        await supabaseAdmin.from('platform_inbox').insert({
-          user_id: txn.user_id,
-          subject: 'Withdrawal Complete ✅',
-          body: `Your M-Pesa withdrawal of KES ${txn.amount?.toLocaleString()} has been sent successfully.`,
-          type: 'system',
-          icon_emoji: '✅',
-        });
+    const b2c = body?.Result;
+    if (b2c) {
+      const conversationId = String(b2c.ConversationID || b2c.OriginatorConversationID || '');
+      const resultCode = Number(b2c.ResultCode);
+      const resultDesc = String(b2c.ResultDesc || '');
+      const status = resultCode === 0 ? 'completed' : 'failed';
+      const { data: tx, error } = await supabaseAdmin.from('mpesa_transactions').update({ status, result_code: String(resultCode), result_desc: resultDesc }).eq('checkout_request_id', conversationId).select('user_id').maybeSingle();
+      if (error) console.error('[mpesa-callback] B2C ledger update:', error.message);
+      if (tx?.user_id) {
+        const { data: pending, error: lookupError } = await supabaseAdmin.from('wallet_transactions').select('id,status').eq('user_id', tx.user_id).eq('type', 'withdrawal').eq('provider', 'mpesa').eq('provider_reference', conversationId).limit(1).maybeSingle();
+        if (lookupError) console.error('[mpesa-callback] wallet lookup:', lookupError.message);
+        if (pending?.id) {
+          if (status === 'completed') await supabaseAdmin.rpc('complete_wallet_withdrawal', { p_transaction_id: pending.id, p_provider_reference: conversationId, p_provider_status: 'COMPLETED' });
+          else await supabaseAdmin.rpc('fail_wallet_withdrawal', { p_transaction_id: pending.id, p_provider_reference: conversationId, p_provider_status: 'FAILED', p_reason: `M-Pesa withdrawal failed: ${resultDesc}` });
+        }
       }
-
-      // Update wallet_transactions status
-      await supabaseAdmin.from('wallet_transactions')
-        .update({ status: status === 'completed' ? 'completed' : 'failed' })
-        .eq('user_id', txn?.user_id ?? '')
-        .eq('type', 'withdrawal')
-        .eq('status', 'pending');
-
-      return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return accepted();
     }
-
-    // Unknown payload
-    console.warn('[mpesa-callback] Unknown payload structure');
-    return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Internal error';
-    console.error('[mpesa-callback] Error:', message);
-    // Always return 200 to Safaricom so they don't retry
-    return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
-      status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return accepted();
+  } catch (err) {
+    console.error('[mpesa-callback] Error:', err instanceof Error ? err.message : String(err));
+    return accepted();
   }
 });

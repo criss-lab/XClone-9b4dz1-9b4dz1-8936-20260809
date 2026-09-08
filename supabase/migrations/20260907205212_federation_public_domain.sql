@@ -1,0 +1,1 @@
+-- Remote migration-history marker. The production public federation-domain migration is tracked by the timestamped migration in this repository.

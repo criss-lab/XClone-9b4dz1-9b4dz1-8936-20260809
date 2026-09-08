@@ -1,0 +1,258 @@
+name: Testagram Cloudflare Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/**'
+      - 'supabase/migrations/**'
+      - '.github/workflows/cloudflare-backend.yml'
+      - '.env'
+      - '.env.example'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cloudflare/**'
+      - 'supabase/migrations/**'
+      - '.github/workflows/cloudflare-backend.yml'
+      - '.env'
+      - '.env.example'
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '4.126.0'
+  MEDIA_BUCKET: 'testagram-media'
+  SUPABASE_PROJECT_REF: 'zcjtvykwwplnzyyslnop'
+  SUPABASE_URL: 'https://zcjtvykwwplnzyyslnop.supabase.co'
+  SUPABASE_JWKS_URL: 'https://zcjtvykwwplnzyyslnop.supabase.co/auth/v1/.well-known/jwks.json'
+  WORKER_HEALTH_URL: 'https://testagram-api.nahashonnyaga794.workers.dev/api/health'
+  PRODUCTION_HEALTH_URL: 'https://api.testagram.site/api/health'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Validate required deployment secrets
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_PUBLISHABLE_KEY" || { echo 'Missing GitHub Actions secret: SUPABASE_PUBLISHABLE_KEY'; exit 1; }
+          test -n "$SUPABASE_SECRET_KEY" || { echo 'Missing GitHub Actions secret: SUPABASE_SECRET_KEY'; exit 1; }
+      - name: Validate Cloudflare Worker configuration
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file"' EXIT
+          printf 'SUPABASE_ANON_KEY=%s\nSUPABASE_SECRET_KEY=%s\n' "$SUPABASE_PUBLISHABLE_KEY" "$SUPABASE_SECRET_KEY" > "$secrets_file"
+          npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --config cloudflare/wrangler.jsonc --dry-run --secrets-file "$secrets_file"
+      - name: Verify Supabase secret against target Data API
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/supabase-rest.json -w '%{http_code}' --max-time 15 -H "apikey: ${SUPABASE_SECRET_KEY}" -H 'Accept: application/json' "${SUPABASE_URL}/rest/v1/")"
+          echo "Supabase Data API with secret key: HTTP ${status}"
+          cat /tmp/supabase-rest.json || true
+          test "$status" = "200"
+      - name: Verify backend migrations are tracked
+        run: |
+          test -f supabase/migrations/20260906_backend_core.sql
+          test -f supabase/migrations/20260906104613_harden_production_api_security.sql
+          test -f supabase/migrations/20260906150000_media_assets_20mb_limit.sql
+          test -f supabase/migrations/20260906160000_harden_media_visibility_and_function_security.sql
+      - name: Verify Supabase project endpoint
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${SUPABASE_URL}/rest/v1/")"
+          case "$status" in 200|401|403) echo "Supabase endpoint reachable for project ${SUPABASE_PROJECT_REF} (HTTP ${status})" ;; *) echo "Supabase endpoint check failed: HTTP ${status}"; exit 1 ;; esac
+      - name: Verify Supabase JWKS endpoint
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/jwks.json -w '%{http_code}' --max-time 15 "$SUPABASE_JWKS_URL")"
+          test "$status" = "200"
+          grep -Fq '"keys"' /tmp/jwks.json
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Ensure Cloudflare R2 media bucket exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          if ! npx --yes wrangler@${{ env.WRANGLER_VERSION }} r2 bucket list | grep -Fq "${MEDIA_BUCKET}"; then
+            npx --yes wrangler@${{ env.WRANGLER_VERSION }} r2 bucket create "${MEDIA_BUCKET}"
+          fi
+      - name: Prepare production Worker entrypoint
+        run: |
+          set -euo pipefail
+          cat > cloudflare/worker/production-entrypoint.ts <<'EOF'
+          import worker from './index';
+          interface Env {
+            SUPABASE_URL: string;
+            SUPABASE_PROJECT_REF: string;
+            SUPABASE_ANON_KEY: string;
+            SUPABASE_SECRET_KEY: string;
+            SUPABASE_JWKS_URL: string;
+            APP_ORIGIN: string;
+            MEDIA: R2Bucket;
+          }
+          async function health(env: Env): Promise<Response> {
+            let databaseStatus = 0;
+            let databaseReachable = false;
+            let databaseError: string | undefined;
+            try {
+              const upstream = await fetch(`${env.SUPABASE_URL}/rest/v1/`, { headers: { apikey: env.SUPABASE_SECRET_KEY, Accept: 'application/json', 'User-Agent': 'Testagram-Cloudflare-Worker/1.0' } });
+              databaseStatus = upstream.status;
+              databaseReachable = upstream.ok;
+              if (!upstream.ok) databaseError = (await upstream.text()).slice(0, 300);
+            } catch (error) {
+              databaseError = error instanceof Error ? error.message : 'Supabase request failed';
+            }
+            let jwksReachable = false;
+            try {
+              const jwks = await fetch(env.SUPABASE_JWKS_URL, { headers: { Accept: 'application/json', 'User-Agent': 'Testagram-Cloudflare-Worker/1.0' } });
+              jwksReachable = jwks.ok;
+            } catch (error) {
+              if (!databaseError) databaseError = error instanceof Error ? error.message : 'JWKS request failed';
+            }
+            const r2Binding = Boolean(env.MEDIA);
+            const ok = databaseReachable && jwksReachable && r2Binding;
+            return new Response(JSON.stringify({ ok, service: 'testagram-api', database: 'supabase', supabaseProjectRef: env.SUPABASE_PROJECT_REF, databaseReachable, databaseStatus, ...(databaseError ? { databaseError } : {}), jwksReachable, media: 'cloudflare-r2', r2Binding, maxMediaBytes: 20 * 1024 * 1024, edge: 'cloudflare' }), {
+              status: ok ? 200 : 503,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': env.APP_ORIGIN, 'Access-Control-Allow-Methods': 'GET,OPTIONS', 'Access-Control-Allow-Headers': 'authorization, apikey, content-type', Vary: 'Origin' }
+            });
+          }
+          export default {
+            async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+              const url = new URL(request.url);
+              if (url.pathname === '/api/health') {
+                if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': env.APP_ORIGIN, 'Access-Control-Allow-Methods': 'GET,OPTIONS', 'Access-Control-Allow-Headers': 'authorization, apikey, content-type', 'Access-Control-Max-Age': '86400', Vary: 'Origin' } });
+                return health(env);
+              }
+              return worker.fetch(request, env, ctx);
+            }
+          };
+          EOF
+          cp cloudflare/wrangler.jsonc cloudflare/.wrangler-production.jsonc
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('cloudflare/.wrangler-production.jsonc')
+          text = p.read_text().replace('"main": "./worker/index.ts"', '"main": "./worker/production-entrypoint.ts"')
+          p.write_text(text)
+          PY
+      - name: Deploy Testagram API to Cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$SUPABASE_PUBLISHABLE_KEY"
+          test -n "$SUPABASE_SECRET_KEY"
+          test -s cloudflare/worker/production-entrypoint.ts
+          test -s cloudflare/.wrangler-production.jsonc
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file" cloudflare/worker/production-entrypoint.ts cloudflare/.wrangler-production.jsonc' EXIT
+          printf 'SUPABASE_ANON_KEY=%s\nSUPABASE_SECRET_KEY=%s\n' "$SUPABASE_PUBLISHABLE_KEY" "$SUPABASE_SECRET_KEY" > "$secrets_file"
+          npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --config cloudflare/.wrangler-production.jsonc --secrets-file "$secrets_file"
+      - name: Smoke test direct Cloudflare Worker and Supabase bridge
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/worker-health.json -w '%{http_code}' --max-time 20 "$WORKER_HEALTH_URL" || true)"
+          echo "Worker health HTTP status: ${status}"
+          cat /tmp/worker-health.json
+          test "$status" = "200"
+          grep -Fq '"ok":true' /tmp/worker-health.json
+          grep -Fq '"databaseReachable":true' /tmp/worker-health.json
+          grep -Fq '"jwksReachable":true' /tmp/worker-health.json
+          grep -Fq '"media":"cloudflare-r2"' /tmp/worker-health.json
+          grep -Fq "${SUPABASE_PROJECT_REF}" /tmp/worker-health.json
+      - name: Verify production custom-domain API
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/production-health.json -w '%{http_code}' --max-time 20 "$PRODUCTION_HEALTH_URL" || true)"
+          echo "Production API health HTTP status: ${status}"
+          cat /tmp/production-health.json
+          test "$status" = "200"
+          grep -Fq '"ok":true' /tmp/production-health.json
+          grep -Fq '"databaseReachable":true' /tmp/production-health.json
+          grep -Fq '"jwksReachable":true' /tmp/production-health.json
+          grep -Fq '"r2Binding":true' /tmp/production-health.json
+          grep -Fq "${SUPABASE_PROJECT_REF}" /tmp/production-health.json
+      - name: Verify production CORS preflight
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -D /tmp/production-options.headers -o /dev/null -w '%{http_code}' --max-time 15 -X OPTIONS "$PRODUCTION_HEALTH_URL" -H 'Origin: https://testagram.site' -H 'Access-Control-Request-Method: GET')"
+          echo "Production CORS preflight HTTP status: ${status}"
+          test "$status" = "204"
+          grep -i '^access-control-allow-origin:' /tmp/production-options.headers
+      - name: End-to-end authenticated R2 media test
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          API_BASE="${PRODUCTION_HEALTH_URL%/api/health}"
+          test_email="testagram-ci-${GITHUB_RUN_ID}@example.invalid"
+          test_password="TgCI-${GITHUB_RUN_ID}-${RANDOM}-X9!"
+          user_id=""
+          access_token=""
+          asset_id=""
+          cleanup() {
+            if [ -n "$asset_id" ] && [ -n "$access_token" ]; then
+              curl -sS -o /dev/null --max-time 15 -X DELETE "${API_BASE}/api/media/${asset_id}" -H "Authorization: Bearer ${access_token}" || true
+            fi
+            if [ -n "$user_id" ]; then
+              curl -sS -o /dev/null --max-time 15 -X DELETE -H "apikey: ${SUPABASE_SECRET_KEY}" "${SUPABASE_URL}/auth/v1/admin/users/${user_id}" || true
+            fi
+          }
+          trap cleanup EXIT
+          printf '\x89PNG\r\n\x1a\n' > /tmp/testagram-ci.png
+          create_status="$(curl -sS -o /tmp/create-user.json -w '%{http_code}' --max-time 20 -X POST "${SUPABASE_URL}/auth/v1/admin/users" -H "apikey: ${SUPABASE_SECRET_KEY}" -H 'Content-Type: application/json' --data "$(jq -nc --arg email "$test_email" --arg password "$test_password" '{email:$email,password:$password,email_confirm:true}')")"
+          echo "Temporary Auth user creation HTTP status: ${create_status}"
+          test "$create_status" = "200"
+          user_id="$(jq -r '.id // .user.id // empty' /tmp/create-user.json)"
+          test -n "$user_id"
+          login_status="$(curl -sS -o /tmp/login.json -w '%{http_code}' --max-time 20 -X POST "${SUPABASE_URL}/auth/v1/token?grant_type=password" -H "apikey: ${SUPABASE_PUBLISHABLE_KEY}" -H 'Content-Type: application/json' --data "$(jq -nc --arg email "$test_email" --arg password "$test_password" '{email:$email,password:$password}')")"
+          echo "Temporary Auth login HTTP status: ${login_status}"
+          test "$login_status" = "200"
+          access_token="$(jq -r '.access_token // empty' /tmp/login.json)"
+          test -n "$access_token"
+          upload_status="$(curl -sS -o /tmp/upload.json -w '%{http_code}' --max-time 30 -X POST "${API_BASE}/api/media" -H "Authorization: Bearer ${access_token}" -H 'Content-Type: image/png' -H 'X-Media-Type: image' -H 'X-File-Name: ci-smoke.png' --data-binary @/tmp/testagram-ci.png)"
+          echo "R2 media upload HTTP status: ${upload_status}"
+          test "$upload_status" = "201"
+          asset_id="$(jq -r '.id // empty' /tmp/upload.json)"
+          test -n "$asset_id"
+          get_status="$(curl -sS -o /tmp/get-media.bin -w '%{http_code}' --max-time 20 -X GET "${API_BASE}/api/media/${asset_id}" -H "Authorization: Bearer ${access_token}")"
+          echo "R2 media retrieval HTTP status: ${get_status}"
+          test "$get_status" = "200"
+          test -s /tmp/get-media.bin
+          delete_status="$(curl -sS -o /tmp/delete-media.json -w '%{http_code}' --max-time 20 -X DELETE "${API_BASE}/api/media/${asset_id}" -H "Authorization: Bearer ${access_token}")"
+          echo "R2 media deletion HTTP status: ${delete_status}"
+          test "$delete_status" = "200"
+          asset_id=""

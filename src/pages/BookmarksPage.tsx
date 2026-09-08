@@ -209,7 +209,6 @@ export function BookmarksPage() {
                 <button
                   onClick={() => setShowAddPicker(showAddPicker === post.id ? null : post.id)}
                   className="absolute top-3 right-14 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-background/80 backdrop-blur rounded-full border border-border text-xs text-muted-foreground hover:text-primary hover:border-primary/30"
-                  title="Add to collection"
                 >
                   <FolderPlus className="w-3.5 h-3.5" />
                 </button>
@@ -338,7 +337,6 @@ export function BookmarksPage() {
                     <button
                       onClick={() => handleRemoveFromCollection(post.id)}
                       className="absolute top-3 right-14 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-background/80 backdrop-blur rounded-full border border-destructive/30 text-destructive hover:bg-destructive/10"
-                      title="Remove from collection"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

@@ -15,9 +15,9 @@ export type Post = {
 function normalizeLocal(row: any): Post {
   return {
     id: `local:${row.id}`,
-    content: row.content,
+    content: row.body ?? row.content ?? '',
     created_at: row.created_at,
-    author: row.author,
+    author: row.author ?? row.profiles ?? null,
     origin: 'local',
     ...row,
   };
@@ -36,31 +36,30 @@ function normalizeFederated(item: any): Post {
 }
 
 export async function getMergedHomeTimeline({ limit = 20, before }: { limit?: number; before?: string } = {}) {
-  // Fetch local posts from Supabase (adapt schema as needed)
-  let localRes: any = { data: [] };
+  let localRes: any = { data: [], error: null };
   try {
-    // Example: table `posts` with columns id, content, author, created_at
-    // If supabase is not configured, the proxy will throw when used — catch and continue.
-    localRes = await supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(limit);
+    const query = supabase
+      .from('posts')
+      .select('*,author:profiles!posts_author_id_fkey(*)')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (before) query.lt('created_at', before);
+    localRes = await query;
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.warn('[feed] failed to fetch local posts', err);
-    localRes = { data: [] };
   }
 
   let fedRes: any = { posts: [] };
   try {
     fedRes = await federation.getHomeTimeline({ limit, before });
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.warn('[feed] failed to fetch federated timeline', err);
-    fedRes = { posts: [] };
   }
 
   const localPosts = (localRes?.data ?? []).map(normalizeLocal);
   const fedPosts = (fedRes?.posts ?? []).map(normalizeFederated);
 
-  // Merge and dedupe by federation_id or fallback to id
   const map = new Map<string, Post>();
   [...localPosts, ...fedPosts].forEach((p) => {
     const key = p.federation_id ?? p.id;
@@ -70,5 +69,5 @@ export async function getMergedHomeTimeline({ limit = 20, before }: { limit?: nu
   });
 
   const merged = Array.from(map.values()).sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-  return { posts: merged, next_cursor: undefined };
+  return { posts: merged, next_cursor: merged.at(-1)?.created_at };
 }

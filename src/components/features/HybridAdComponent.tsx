@@ -10,96 +10,34 @@ interface HybridAdProps {
   position?: BannerAdPosition;
 }
 
-/**
- * Hybrid Ad Component
- * 
- * Automatically detects platform and shows:
- * - AdMob ads on mobile (Android/iOS via Capacitor)
- * - AdSense ads on web
- * 
- * Pulls ad unit IDs from database based on location
- */
 export function HybridAdComponent({ location, className = '', position }: HybridAdProps) {
   const [adConfig, setAdConfig] = useState<{ adId: string; type: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const isMobile = Capacitor.isNativePlatform();
 
-  useEffect(() => {
-    fetchAdConfig();
-  }, [location]);
+  useEffect(() => { fetchAdConfig(); }, [location]);
 
   const fetchAdConfig = async () => {
     try {
-      const network = 'adsense';
-      
       const { data, error } = await supabase
-        .from('ad_placements')
-        .select('*')
-        .eq('network', network)
-        .eq('location', location)
-        .eq('is_active', true)
-        .single();
-
-      if (error || !data) {
-        console.error('Ad config error:', error);
-        setLoading(false);
-        return;
-      }
-
-      setAdConfig({
-        adId: data.code,
-        type: data.placement_type
-      });
-
-      // Track impression
-      trackImpression(data.id);
-      
-      setLoading(false);
+        .from('ad_placements').select('*').eq('network', 'adsense').eq('location', location).eq('is_active', true).single();
+      if (error || !data) { setLoading(false); return; }
+      setAdConfig({ adId: data.code, type: data.placement_type });
+      await trackImpression(data.id);
     } catch (error) {
       console.error('Error fetching ad config:', error);
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const trackImpression = async (adPlacementId: string) => {
     try {
-      await supabase.rpc('track_ad_view', {
-        ad_id_param: adPlacementId,
-        user_id_param: null
-      });
-    } catch (error) {
-      console.error('Error tracking impression:', error);
-    }
+      await supabase.rpc('track_ad_view', { ad_id_param: adPlacementId, user_id_param: null });
+    } catch (error) { console.error('Error tracking impression:', error); }
   };
 
-  if (loading || !adConfig) {
-    return null;
-  }
-
-  // Render AdMob for mobile
+  if (loading || !adConfig) return null;
   if (isMobile) {
-    return (
-      <div className={className}>
-        <AdMobAd
-          adId={adConfig.adId}
-          type={adConfig.type as 'banner' | 'interstitial' | 'rewarded'}
-          position={position}
-          onAdLoaded={() => console.log('AdMob ad loaded')}
-          onAdFailed={(error) => console.error('AdMob error:', error)}
-        />
-      </div>
-    );
+    return <div className={className}><AdMobAd adId={adConfig.adId} type={adConfig.type as 'banner' | 'interstitial' | 'rewarded'} position={position} onAdLoaded={() => console.log('AdMob ad loaded')} onAdFailed={(error) => console.error('AdMob error:', error)} /></div>;
   }
-
-  // Render AdSense for web
-  return (
-    <div className={className}>
-      <AdSenseAd
-        adSlot={adConfig.adId}
-        adFormat="auto"
-        fullWidthResponsive={true}
-        onAdLoad={() => console.log('AdSense ad loaded')}
-      />
-    </div>
-  );
+  return <div className={className}><AdSenseAd adSlot={adConfig.adId} adFormat="auto" fullWidthResponsive={true} onAdLoad={() => console.log('AdSense ad loaded')} /></div>;
 }

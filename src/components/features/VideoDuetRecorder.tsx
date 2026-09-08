@@ -54,7 +54,7 @@ export function VideoDuetRecorder({ originalVideoUrl, duetMeta, onDuetReady, onC
       streamRef.current = stream;
       if (reactVideoRef.current) {
         reactVideoRef.current.srcObject = stream;
-        reactVideoRef.current.play().catch(() => {});
+        reactVideoRef.current.play().then(() => {}, () => {});
       }
     } catch {
       setErrorMsg('Camera/mic access denied. Please allow camera access to record a duet.');
@@ -116,7 +116,7 @@ export function VideoDuetRecorder({ originalVideoUrl, duetMeta, onDuetReady, onC
     if (origVideoRef.current) {
       origVideoRef.current.currentTime = 0;
       origVideoRef.current.muted = true;
-      origVideoRef.current.play().catch(() => {});
+      origVideoRef.current.play().then(() => {}, () => {});
     }
 
     let e = 0;

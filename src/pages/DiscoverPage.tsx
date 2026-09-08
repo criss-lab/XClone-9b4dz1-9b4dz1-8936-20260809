@@ -188,7 +188,6 @@ export default function DiscoverPage() {
           <button
             onClick={() => { setLoading(true); tab === 'suggested' ? loadSuggested() : loadPopular(); loadFollowing(); }}
             className="p-2 rounded-full hover:bg-muted transition-colors"
-            title="Refresh"
           >
             <RefreshCw className="w-4 h-4 text-muted-foreground" />
           </button>

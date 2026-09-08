@@ -25,6 +25,7 @@ import { UserAdCard } from '@/components/features/UserAdCard';
 import { FeedAdCard } from '@/components/features/FeedAdCard';
 import { StoriesStrip } from '@/components/features/StoriesStrip';
 import * as federation from '@/api/federation';
+import { FederatedPostCard } from '@/components/features/FederatedPostCard';
 
 const PAGE_SIZE = 20;
 const RECO_INJECT_INTERVAL = 8; // inject a recommendation card every N items
@@ -330,7 +331,7 @@ export default function HomePage() {
     if (!user) return;
     try {
       // 1️⃣ Trigger server-side recommendation generation (Twitter-style interest graph)
-      supabase.rpc('generate_content_recommendations', { p_user_id: user.id }).catch(() => {});
+      supabase.rpc('generate_content_recommendations', { p_user_id: user.id }).then(() => {}, () => {});
 
       // 2️⃣ Read freshly-generated recommendations
       const { data: recs } = await supabase
@@ -357,7 +358,7 @@ export default function HomePage() {
             })
             .filter((p: any) => p?.id);
           setRecommendedPosts(enriched);
-          supabase.from('content_recommendations').update({ shown: true }).in('recommended_post_id', postIds).eq('user_id', user.id).catch(() => {});
+          supabase.from('content_recommendations').update({ shown: true }).in('recommended_post_id', postIds).eq('user_id', user.id).then(() => {}, () => {});
           return;
         }
       }
@@ -538,7 +539,7 @@ export default function HomePage() {
         created_at: p.created_at ?? p.published ?? new Date().toISOString(),
         actor: p.actor ?? p.account ?? {},
       }));
-      cacheFederatedPosts(normalized).catch(() => {});
+      cacheFederatedPosts(normalized).then(() => {}, () => {});
       return normalized;
     } catch (err) {
       console.warn('[feed] Gateway unreachable, using remote_posts cache:', err);
@@ -734,6 +735,49 @@ export default function HomePage() {
     }
   };
 
+  // Unified For You feed: XClone-native and Fediverse posts share one ranking pool.
+  const fetchUnifiedForYouFeed = async (): Promise<FeedItem[]> => {
+    const [localResult, fedResult] = await Promise.allSettled([
+      fetchFeed(0),
+      fetchFederatedPosts(),
+    ]);
+
+    const localItems: FeedItem[] = localResult.status === 'fulfilled' ? localResult.value : [];
+    const fedPosts = fedResult.status === 'fulfilled' ? fedResult.value : [];
+    const fedItems: FeedItem[] = fedPosts.map((post: any) => ({
+      type: 'fedpost' as const,
+      data: { ...post, _unified_origin: 'fediverse' },
+    }));
+
+    const score = (item: FeedItem): number => {
+      const p: any = item.data ?? {};
+      const created = new Date(p.created_at ?? p.published ?? p.published_at ?? 0).getTime();
+      const ageHours = Number.isFinite(created) ? Math.max(0, (Date.now() - created) / 3_600_000) : 999;
+      const freshness = Math.exp(-ageHours / 18) * 40;
+
+      if (item.type === 'fedpost') {
+        const remoteRank = Number(p.platform_rank_score ?? 0);
+        const likes = Number(p.favourites_count ?? p.likes_count ?? 0);
+        const boosts = Number(p.reblogs_count ?? p.boosts_count ?? 0);
+        const replies = Number(p.replies_count ?? 0);
+        return freshness + Math.log1p(likes) * 4 + Math.log1p(boosts) * 5 + Math.log1p(replies) * 3 + remoteRank * 1.35 + 2;
+      }
+
+      return freshness +
+        Math.log1p(Number(p.likes_count ?? 0)) * 5 +
+        Math.log1p(Number(p.reposts_count ?? 0)) * 7 +
+        Math.log1p(Number(p.replies_count ?? 0)) * 4 +
+        Math.log1p(Number(p.views_count ?? 0)) * 1.5 +
+        (p.is_video ? 6 : (p.image_url || p.media_urls?.length) ? 3 : 0) +
+        (p.user_profiles?.verified ? 3 : 0);
+    };
+
+    return [...localItems, ...fedItems]
+      .filter((item) => item.type === 'post' || item.type === 'fedpost')
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, PAGE_SIZE);
+  };
+
   const fetchInitialFeed = async (skipCache = false) => {
     // ── Serve from prefetch cache when available (tab switch) ──────────────
     if (!skipCache && activeTab !== 'federated') {
@@ -807,7 +851,9 @@ export default function HomePage() {
       const lastPost = filtered.filter((i: any) => i.type === 'post').slice(-1)[0];
       if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
     } else {
-      const items = await fetchFeed(0);
+      const items = activeTab === 'foryou'
+        ? await fetchUnifiedForYouFeed()
+        : await fetchFeed(0);
       setFeedItems(items);
       const lastPost = items.filter((i: any) => i.type === 'post').slice(-1)[0];
       if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
@@ -959,7 +1005,7 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-background pb-16 lg:pb-0">
-      <TopBar title="Home" />
+      <TopBar />
 
       {/* Bluesky-style Tabs */}
       <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border">
@@ -996,7 +1042,6 @@ export default function HomePage() {
                   ? 'bg-primary/10 border-primary/30 text-primary'
                   : 'border-border text-muted-foreground hover:text-primary hover:border-primary/30'
               }`}
-              title="Tune your feed"
             >
               <SlidersHorizontal className={`w-3.5 h-3.5 ${sliderRefreshing ? 'animate-spin' : ''}`} />
               {sliderRefreshing ? <span className="hidden sm:inline">Applying…</span> : <span className="hidden sm:inline">Tune</span>}
@@ -1463,130 +1508,6 @@ function ProductSpotlightRail({ products, onNavigate }: { products: any[]; onNav
             </div>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Federated Post Card ───────────────────────────────────────────────────────
-function FederatedPostCard({ post }: { post: any }) {
-  const actor = post.actor ?? post.account ?? {};
-  const username =
-    actor.preferredUsername ?? actor.username ?? actor.acct ?? 'unknown';
-  const domain = actor.url ? extractHostname(actor.url) : (actor.domain ?? '');
-  const avatarUrl = actor.icon?.url ?? actor.avatar ?? actor.avatar_url;
-  const displayName = actor.name ?? actor.display_name ?? username;
-  const createdAt = post.created_at ?? post.published ?? '';
-
-  const [translation, setTranslation] = useState<string | null>(null);
-  const [translating, setTranslating] = useState(false);
-  const [showTranslation, setShowTranslation] = useState(false);
-
-  const handleTranslate = async () => {
-    if (translation) { setShowTranslation(prev => !prev); return; }
-    const rawText = (post.content ?? post.text ?? '').replace(/<[^>]*>/g, '').trim();
-    if (!rawText) return;
-    setTranslating(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('ai-chat', {
-        body: {
-          messages: [{ role: 'user', content: `Translate the following text to English. Return only the translation, nothing else:\n\n${rawText}` }],
-          model: 'gemini-2.0-flash',
-        },
-      });
-      if (error) throw error;
-      const result = data?.choices?.[0]?.message?.content ?? data?.content ?? data?.text ?? data?.response ?? '';
-      setTranslation(result.trim());
-      setShowTranslation(true);
-    } catch (err) {
-      setTranslation('Translation failed. Please try again.');
-      setShowTranslation(true);
-    } finally {
-      setTranslating(false);
-    }
-  };
-
-  return (
-    <div className="border-b border-border p-4 hover:bg-muted/5 transition-colors">
-      <div className="flex gap-3">
-        <div className="w-10 h-10 rounded-full bg-muted overflow-hidden flex-shrink-0">
-          {avatarUrl ? (
-            <img src={avatarUrl} alt={username} className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center font-bold text-sm">
-              {username[0]?.toUpperCase()}
-            </div>
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="font-semibold text-sm">{displayName}</span>
-            <span className="flex items-center gap-1 text-xs text-purple-500">
-              <Globe className="w-3 h-3" />
-              {domain}
-            </span>
-            {createdAt && (
-              <span className="text-muted-foreground text-xs">
-                · {formatDistanceToNow(new Date(createdAt), { addSuffix: true })}
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mb-1.5">
-            @{username}@{domain}
-          </p>
-          <div
-            className="text-sm leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: post.content ?? post.text ?? '' }}
-          />
-
-          {showTranslation && translation && (
-            <div className="mt-2 p-3 bg-blue-500/5 border border-blue-500/15 rounded-xl">
-              <p className="text-xs font-semibold text-blue-500 mb-1 flex items-center gap-1">
-                <Languages className="w-3 h-3" /> Translated to English
-              </p>
-              <p className="text-sm leading-relaxed text-foreground">{translation}</p>
-            </div>
-          )}
-
-          {Array.isArray(post.media_attachments) && post.media_attachments.length > 0 && (
-            <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl overflow-hidden">
-              {post.media_attachments.slice(0, 4).map((m: any, i: number) =>
-                m.type === 'image' ? (
-                  <img key={i} src={m.url ?? m.preview_url} alt={m.description ?? ''} className="w-full h-32 object-cover" loading="lazy" />
-                ) : null
-              )}
-            </div>
-          )}
-
-          <div className="flex items-center gap-4 mt-2.5 text-muted-foreground text-xs">
-            <span className="flex items-center gap-1">
-              <MessageCircle className="w-3.5 h-3.5" />
-              {formatNumber(post.replies_count ?? 0)}
-            </span>
-            <span className="flex items-center gap-1">
-              <Repeat2 className="w-3.5 h-3.5" />
-              {formatNumber(post.reblogs_count ?? post.boosts_count ?? 0)}
-            </span>
-            <span className="flex items-center gap-1">
-              <Heart className="w-3.5 h-3.5" />
-              {formatNumber(post.favourites_count ?? post.likes_count ?? 0)}
-            </span>
-            <button
-              onClick={handleTranslate}
-              disabled={translating}
-              className="ml-auto flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 transition-colors disabled:opacity-50"
-            >
-              {translating ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : showTranslation ? (
-                <ChevronUp className="w-3.5 h-3.5" />
-              ) : (
-                <Languages className="w-3.5 h-3.5" />
-              )}
-              {translating ? 'Translating…' : showTranslation ? 'Hide' : 'Translate'}
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

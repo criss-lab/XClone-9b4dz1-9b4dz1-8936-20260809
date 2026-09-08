@@ -1,0 +1,144 @@
+name: Testagram Canonical Cloudflare Worker
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Testagram Cloudflare Backend
+      - Testagram Cloudflare Federation Hardening
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/worker/production-entrypoint.ts'
+      - 'cloudflare/worker/paypal.ts'
+      - 'cloudflare/worker/public-actor-entrypoint.ts'
+      - 'cloudflare/worker/federation-entrypoint.ts'
+      - 'cloudflare/worker/index.ts'
+      - 'cloudflare/wrangler.jsonc'
+      - 'cloudflare/wrangler-federation.jsonc'
+      - '.github/workflows/canonical-cloudflare-worker.yml'
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '4.126.0'
+  WORKER_DIRECT_URL: 'https://testagram-api.nahashonnyaga794.workers.dev'
+  WORKER_HEALTH_URL: 'https://federation.testagram.site/api/health'
+  PRODUCTION_HEALTH_URL: 'https://api.testagram.site/api/health'
+  PAYPAL_CONFIG_URL: 'https://testagram-api.nahashonnyaga794.workers.dev/api/paypal/config'
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Validate canonical worker source
+        run: |
+          set -euo pipefail
+          test -s cloudflare/worker/production-entrypoint.ts
+          test -s cloudflare/worker/paypal.ts
+          test -s cloudflare/worker/public-actor-entrypoint.ts
+          test -s cloudflare/worker/federation-entrypoint.ts
+          test -s cloudflare/worker/index.ts
+          grep -Fq '"main": "./worker/production-entrypoint.ts"' cloudflare/wrangler.jsonc
+          grep -Fq '"main": "./worker/production-entrypoint.ts"' cloudflare/wrangler-federation.jsonc
+          grep -Fq 'federation.testagram.site' cloudflare/wrangler.jsonc
+          grep -Fq 'https://federation.testagram.site' cloudflare/worker/public-actor-entrypoint.ts
+      - name: Resolve deployment credentials without printing them
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAYPAL_CLIENT_ID_PRIMARY: ${{ secrets.PAYPAL_CLIENT_ID }}
+          PAYPAL_CLIENT_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_ID }}
+          PAYPAL_CLIENT_SECRET_PRIMARY: ${{ secrets.PAYPAL_CLIENT_SECRET }}
+          PAYPAL_CLIENT_SECRET_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_SECRET }}
+          PAYPAL_WEBHOOK_ID_PRIMARY: ${{ secrets.PAYPAL_WEBHOOK_ID }}
+          PAYPAL_WEBHOOK_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_WEBHOOK_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          PAYPAL_CLIENT_ID="${PAYPAL_CLIENT_ID_PRIMARY:-${PAYPAL_CLIENT_ID_SANDBOX:-}}"
+          PAYPAL_CLIENT_SECRET="${PAYPAL_CLIENT_SECRET_PRIMARY:-${PAYPAL_CLIENT_SECRET_SANDBOX:-}}"
+          PAYPAL_WEBHOOK_ID="${PAYPAL_WEBHOOK_ID_PRIMARY:-${PAYPAL_WEBHOOK_ID_SANDBOX:-}}"
+          test -n "$PAYPAL_CLIENT_ID" || { echo 'No PayPal client-id secret is available under the supported GitHub secret names.'; exit 1; }
+          test -n "$PAYPAL_CLIENT_SECRET" || { echo 'No PayPal client-secret secret is available under the supported GitHub secret names.'; exit 1; }
+          test -n "$PAYPAL_WEBHOOK_ID" || { echo 'No PayPal webhook-id secret is available under the supported GitHub secret names.'; exit 1; }
+      - name: Deploy canonical Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler.jsonc
+      - name: Synchronize PayPal Worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAYPAL_CLIENT_ID_PRIMARY: ${{ secrets.PAYPAL_CLIENT_ID }}
+          PAYPAL_CLIENT_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_ID }}
+          PAYPAL_CLIENT_SECRET_PRIMARY: ${{ secrets.PAYPAL_CLIENT_SECRET }}
+          PAYPAL_CLIENT_SECRET_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_SECRET }}
+          PAYPAL_WEBHOOK_ID_PRIMARY: ${{ secrets.PAYPAL_WEBHOOK_ID }}
+          PAYPAL_WEBHOOK_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_WEBHOOK_ID }}
+        run: |
+          set -euo pipefail
+          PAYPAL_CLIENT_ID="${PAYPAL_CLIENT_ID_PRIMARY:-${PAYPAL_CLIENT_ID_SANDBOX:-}}"
+          PAYPAL_CLIENT_SECRET="${PAYPAL_CLIENT_SECRET_PRIMARY:-${PAYPAL_CLIENT_SECRET_SANDBOX:-}}"
+          PAYPAL_WEBHOOK_ID="${PAYPAL_WEBHOOK_ID_PRIMARY:-${PAYPAL_WEBHOOK_ID_SANDBOX:-}}"
+          printf '%s' "$PAYPAL_CLIENT_ID" | npx --yes wrangler@${WRANGLER_VERSION} secret put PAYPAL_CLIENT_ID --config cloudflare/wrangler.jsonc
+          printf '%s' "$PAYPAL_CLIENT_SECRET" | npx --yes wrangler@${WRANGLER_VERSION} secret put PAYPAL_CLIENT_SECRET --config cloudflare/wrangler.jsonc
+          printf '%s' "$PAYPAL_WEBHOOK_ID" | npx --yes wrangler@${WRANGLER_VERSION} secret put PAYPAL_WEBHOOK_ID --config cloudflare/wrangler.jsonc
+      - name: Verify canonical Worker directly
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/direct-health.json -w '%{http_code}' --max-time 20 "$WORKER_DIRECT_URL/api/health" || true)"
+            if [ "$status" = 200 ] && jq -e '.ok == true and .databaseReachable == true and .jwksReachable == true and .r2Binding == true' /tmp/direct-health.json >/dev/null 2>&1; then ok=1; break; fi
+            sleep 5
+          done
+          cat /tmp/direct-health.json
+          test "$ok" = 1
+      - name: Verify PayPal configuration endpoint
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/paypal-config.json -w '%{http_code}' --max-time 20 "$PAYPAL_CONFIG_URL" || true)"
+          cat /tmp/paypal-config.json
+          test "$status" = 200
+          jq -e '.ok == true and .provider == "paypal" and .environment == "sandbox" and .configured == true' /tmp/paypal-config.json >/dev/null
+      - name: Verify federation custom domain identity
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/federation-health.json -w '%{http_code}' --max-time 20 "$WORKER_HEALTH_URL" || true)"
+          cat /tmp/federation-health.json
+          if [ "$status" = 200 ] && jq -e '.ok == true and .federation == true and .databaseReachable == true and .jwksReachable == true and .r2Binding == true' /tmp/federation-health.json >/dev/null 2>&1; then
+            echo 'Federation custom domain health is directly reachable.'
+            webfinger_status="$(curl -sS -o /tmp/webfinger.json -w '%{http_code}' --max-time 20 'https://federation.testagram.site/.well-known/webfinger?resource=acct:health@federation.testagram.site' || true)"
+            cat /tmp/webfinger.json
+            test "$webfinger_status" = 404
+            grep -q 'actor not found' /tmp/webfinger.json
+          elif grep -qiE 'Just a moment|challenge|cf-chl|Enable JavaScript and cookies' /tmp/federation-health.json; then
+            echo 'Federation custom domain is browser-challenge protected; direct Worker verification above is authoritative for this CI runner.'
+          else
+            echo "Federation custom domain returned HTTP $status; direct Worker verification above is authoritative."
+          fi
+      - name: Verify production custom domain (diagnostic)
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/production-health.json -w '%{http_code}' --max-time 20 "$PRODUCTION_HEALTH_URL" || true)"
+          cat /tmp/production-health.json
+          if [ "$status" = 200 ] && jq -e '.ok == true' /tmp/production-health.json >/dev/null 2>&1; then
+            echo 'Production API custom domain is directly reachable.'
+          elif grep -qiE 'Just a moment|challenge|cf-chl|Enable JavaScript and cookies' /tmp/production-health.json; then
+            echo 'Production API custom domain is browser-challenge protected; direct Worker verification remains the deployment gate.'
+          else
+            echo "Production API custom domain returned HTTP $status; direct Worker verification remains the deployment gate."
+          fi

@@ -1,8 +1,13 @@
+// Shared application contracts. Keep authentication fields optional where they
+// are populated asynchronously from the profile/session pipeline.
 export interface AuthUser {
   id: string;
   email: string;
   username: string;
   avatar?: string;
+  creator_tier?: string;
+  is_creator?: boolean;
+  verified?: boolean;
 }
 
 export interface UserProfile {
@@ -38,9 +43,8 @@ export interface Post {
   edited_at?: string;
   edit_history?: any[];
   user_profiles: UserProfile;
-  // boost metadata (joined from boosted_posts)
   is_boosted?: boolean;
-  boost_type?: string; // 'rewarded_ad' | 'paid'
+  boost_type?: string;
 }
 
 export interface TrendingTopic {

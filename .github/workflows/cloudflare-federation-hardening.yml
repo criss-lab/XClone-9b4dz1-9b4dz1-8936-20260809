@@ -1,0 +1,69 @@
+name: Testagram Cloudflare Federation Hardening
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/worker/federation-entrypoint.ts'
+      - 'cloudflare/worker/public-actor-entrypoint.ts'
+      - 'cloudflare/wrangler-federation.jsonc'
+      - '.github/workflows/cloudflare-federation-hardening.yml'
+      - 'supabase/migrations/*federation*'
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '4.126.0'
+  SUPABASE_PROJECT_REF: 'zcjtvykwwplnzyyslnop'
+  SUPABASE_URL: 'https://zcjtvykwwplnzyyslnop.supabase.co'
+  FEDERATION_ORIGIN: 'https://testagram-api.nahashonnyaga794.workers.dev'
+
+jobs:
+  deploy-and-harden:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Normalize federation origin for workers.dev
+        run: |
+          set -euo pipefail
+          sed -i 's/federation\.testagram\.site/testagram-api.nahashonnyaga794.workers.dev/g' cloudflare/worker/federation-entrypoint.ts
+      - name: Deploy globally reachable federation Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$SUPABASE_PUBLISHABLE_KEY"
+          test -n "$SUPABASE_SECRET_KEY"
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file"' EXIT
+          printf 'SUPABASE_ANON_KEY=%s\nSUPABASE_SECRET_KEY=%s\n' "$SUPABASE_PUBLISHABLE_KEY" "$SUPABASE_SECRET_KEY" > "$secrets_file"
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler-federation.jsonc --secrets-file "$secrets_file"
+      - name: Verify worldwide federation discovery endpoints
+        run: |
+          set -euo pipefail
+          base='https://testagram-api.nahashonnyaga794.workers.dev'
+          for attempt in $(seq 1 12); do
+            if curl -sS --fail-with-body --max-time 20 -H 'Accept: application/json' "$base/.well-known/nodeinfo" >/tmp/nodeinfo-link.json && jq -e '.links | length > 0' /tmp/nodeinfo-link.json >/dev/null; then break; fi
+            test "$attempt" -eq 12 && exit 1
+            sleep 5
+          done
+          for attempt in $(seq 1 12); do
+            if curl -sS --fail-with-body --max-time 20 "$base/nodeinfo/2.1" >/tmp/nodeinfo.json && jq -e '.protocols | index("activitypub")' /tmp/nodeinfo.json >/dev/null; then break; fi
+            test "$attempt" -eq 12 && exit 1
+            sleep 5
+          done
+          status="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$base/api/health")"
+          cat /tmp/health.json
+          test "$status" = 200
+          jq -e '.ok == true and .federation == true and .federationDomain == "testagram-api.nahashonnyaga794.workers.dev"' /tmp/health.json

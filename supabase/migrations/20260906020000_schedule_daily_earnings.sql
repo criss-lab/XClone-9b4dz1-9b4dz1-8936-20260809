@@ -1,0 +1,21 @@
+-- Scheduling reference migration. Actual pg_cron jobs remain disabled until
+-- pg_cron/pg_net are explicitly enabled and production function URLs/secrets
+-- are configured.
+--
+-- The previous un-timestamped schedule_daily_earnings.sql was never a valid
+-- Supabase migration and was therefore skipped by `supabase db push`.
+--
+-- Daily earnings job example:
+-- select cron.schedule(
+--   'distribute-earnings-daily',
+--   '0 0 * * *',
+--   $$ select net.http_post(
+--     url := 'YOUR_SUPABASE_URL/functions/v1/distribute-earnings',
+--     headers := '{"Content-Type":"application/json","Authorization":"Bearer YOUR_SERVICE_ROLE_KEY"}'::jsonb,
+--     body := '{}'::jsonb,
+--     timeout_milliseconds := 30000
+--   ) as request_id; $$
+-- );
+--
+-- Budget alerts and trending-hashtag alerts should be enabled only after their
+-- Edge Functions and production secrets are deployed.

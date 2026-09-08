@@ -231,8 +231,7 @@ function StorefrontCard({
           )}
           {isOwner && (
             <button onClick={e => { e.stopPropagation(); onBoost(); }}
-              className="flex items-center justify-center gap-1 px-2 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 text-xs font-bold rounded-lg transition-colors"
-              title="Promote to feed">
+              className="flex items-center justify-center gap-1 px-2 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 text-xs font-bold rounded-lg transition-colors">
               <Megaphone className="w-3.5 h-3.5" />
             </button>
           )}
@@ -415,8 +414,7 @@ export default function SellerStorefrontPage() {
               onClick={handleShare}
               className={`flex items-center gap-1.5 px-3 py-2 border rounded-full text-xs font-semibold transition-colors ${
                 shareCopied ? 'border-green-500/30 text-green-600 bg-green-500/5' : 'border-border hover:bg-muted'
-              }`}
-              title="Share storefront">
+              }`}>
               {shareCopied ? <Copy className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
               {shareCopied ? 'Copied!' : 'Share'}
             </button>

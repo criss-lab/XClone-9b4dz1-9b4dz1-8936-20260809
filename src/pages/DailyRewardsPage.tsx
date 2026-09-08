@@ -140,7 +140,7 @@ export default function DailyRewardsPage() {
         user_id: user.id,
         type: 'streak_milestone',
         from_user_id: user.id,
-      }).catch(() => {});
+      }).then(() => {}, () => {});
       // Auto-create a 24-hour story to celebrate the milestone
       supabase.from('stories').insert({
         user_id: user.id,
@@ -149,7 +149,7 @@ export default function DailyRewardsPage() {
         caption: newStreak === 7
           ? '🏆 I just hit a 7-day MAX streak on Testagram! 🔥 Keep going! #DailyStreak #Milestone'
           : `🔥 Day ${newStreak} streak milestone unlocked on Testagram! Come join me! #DailyStreak`,
-      }).catch(() => {});
+      }).then(() => {}, () => {});
       toast.success(`+${creditsEarned} credits! ${milestoneMsg}`, { duration: 4500 });
     } else {
       toast.success(`+${creditsEarned} credits earned! Day ${newStreak} streak!`);

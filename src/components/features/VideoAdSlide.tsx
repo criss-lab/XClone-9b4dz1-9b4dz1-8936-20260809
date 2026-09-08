@@ -94,7 +94,7 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
         clicked: false,
         skipped: false,
         completed: false,
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
     // Start skip countdown
     setSkipCountdown(5);
@@ -117,7 +117,7 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
     const v = videoRef.current;
     if (!v || !ad.video_url) return;
     if (isActive) {
-      v.play().catch(() => {});
+      v.play().then(() => {}, () => {});
     } else {
       v.pause();
     }
@@ -138,7 +138,7 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
         completed: true,
         skipped: false,
         watch_seconds: watchSeconds,
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
   }, [ad.id, user?.id]);
 
@@ -156,13 +156,13 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
         skipped: true,
         completed: false,
         watch_seconds: watchSeconds,
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
     setDismissed(true);
   }, [canSkip, ad.id, user?.id]);
 
   const handleClick = () => {
-    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
     if (ad.target_url) window.open(ad.target_url, '_blank', 'noopener,noreferrer');
   };
 
@@ -172,7 +172,7 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
     setLiked(next);
     if (next) {
       setLikeCount(c => c + 1);
-      supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+      supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
     } else {
       setLikeCount(c => Math.max(0, c - 1));
     }
@@ -180,9 +180,9 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
 
   const handleShare = (e: React.MouseEvent) => {
     e.stopPropagation();
-    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
     if (ad.target_url) {
-      navigator.clipboard.writeText(ad.target_url).then(() => toast.success('Ad link copied!')).catch(() => {});
+      navigator.clipboard.writeText(ad.target_url).then(() => toast.success('Ad link copied!')).then(() => {}, () => {});
     }
   };
 
@@ -359,7 +359,7 @@ export function VideoAdSlide({ ad, isActive }: VideoAdSlideProps) {
             <span>{formatNumber(likeCount)}</span>
           </button>
           <button
-            onClick={e => { e.stopPropagation(); supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {}); }}
+            onClick={e => { e.stopPropagation(); supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {}); }}
             className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold text-white/80 hover:text-white transition-colors"
           >
             <MessageCircle className="w-4 h-4" />
