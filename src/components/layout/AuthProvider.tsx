@@ -1,48 +1,29 @@
 import { useEffect } from 'react';
+import type { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { authService, mapSupabaseUser } from '@/lib/auth';
 import { useAuthStore } from '@/stores/authStore';
-import { mapSupabaseUser } from '@/lib/auth';
 import { Capacitor, PushNotifications } from '@/lib/capacitor-stub';
 
-/** Trigger RSA key generation via the activitypub-keygen edge function */
 async function triggerKeygenForUser(userId: string) {
   try {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
     if (!token) return;
-
-    const { data: existing } = await supabase
-      .from('activitypub_keys')
-      .select('id')
-      .eq('user_id', userId)
-      .maybeSingle();
+    const { data: existing } = await supabase.from('activitypub_keys').select('id').eq('user_id', userId).maybeSingle();
     if (existing) return;
-
     const backendUrl = import.meta.env.VITE_SUPABASE_URL;
     if (!backendUrl) return;
     await fetch(`${backendUrl}/functions/v1/activitypub-keygen`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ user_id: userId }),
     });
-    console.log('[ActivityPub] RSA keys generated for', userId);
   } catch (err) {
     console.warn('[ActivityPub] Keygen failed (non-fatal):', err);
   }
 }
 
-/**
- * Send an in-app notification and optionally a push notification.
- *
- * Only inserts columns that actually exist in the notifications table:
- *   user_id, type, from_user_id, post_id, read, created_at
- *
- * Push delivery is attempted via the send-push-notification edge function
- * (non-fatal — the in-app notification is always attempted first).
- */
 export async function sendActivityNotification({
   recipientUserId,
   title,
@@ -55,42 +36,24 @@ export async function sendActivityNotification({
   data?: any;
 }) {
   try {
-    // ── In-app notification (only valid schema columns) ─────────────────────
-    const notificationType = data?.type && ['like','repost','follow','reply','mention','verified'].includes(data.type)
+    const notificationType = data?.type && ['like', 'repost', 'follow', 'reply', 'mention', 'verified'].includes(data.type)
       ? data.type
-      : 'follow'; // safe default
-
-    const { error: dbError } = await supabase.from('notifications').insert({
+      : 'follow';
+    await supabase.from('notifications').insert({
       user_id: recipientUserId,
       type: notificationType,
       from_user_id: data?.fromUserId ?? null,
       post_id: data?.postId ?? null,
     });
-
-    if (dbError) {
-      console.warn('[Notification] DB insert failed:', dbError.message);
-    }
-
-    // ── Push notification (non-blocking, via edge function) ─────────────────
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
-    if (token) {
-      const backendUrl = import.meta.env.VITE_SUPABASE_URL;
-      if (backendUrl) {
-        fetch(`${backendUrl}/functions/v1/send-push-notification`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            user_id: recipientUserId,
-            title,
-            body,
-            data,
-          }),
-        }).catch(() => {}); // fire-and-forget, non-fatal
-      }
+    const backendUrl = import.meta.env.VITE_SUPABASE_URL;
+    if (token && backendUrl) {
+      fetch(`${backendUrl}/functions/v1/send-push-notification`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user_id: recipientUserId, title, body, data }),
+      }).then(() => {}, () => {});
     }
   } catch (error) {
     console.warn('[Notification] Failed to send activity notification:', error);
@@ -99,47 +62,30 @@ export async function sendActivityNotification({
 
 async function registerPushNotifications(userId: string) {
   if (!Capacitor.isNativePlatform()) return;
-
   try {
     const permResult = await PushNotifications.requestPermissions();
-    if (permResult.receive !== 'granted') {
-      console.log('[Push] Permission denied');
-      return;
-    }
-
+    if (permResult.receive !== 'granted') return;
     await PushNotifications.register();
-
     PushNotifications.addListener('registration', async (token) => {
-      console.log('[Push] FCM token:', token.value);
-      await supabase.from('fcm_tokens').upsert(
-        {
-          user_id: userId,
-          token: token.value,
-          platform: Capacitor.getPlatform(),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id,token' }
-      );
+      await supabase.from('fcm_tokens').upsert({ user_id: userId, token: token.value, platform: Capacitor.getPlatform(), updated_at: new Date().toISOString() }, { onConflict: 'user_id,token' });
     });
-
-    PushNotifications.addListener('registrationError', (error) => {
-      console.error('[Push] Registration error:', error);
-    });
-
-    PushNotifications.addListener('pushNotificationReceived', (notification) => {
-      console.log('[Push] Received:', notification);
-    });
-
+    PushNotifications.addListener('registrationError', (error) => console.error('[Push] Registration error:', error));
+    PushNotifications.addListener('pushNotificationReceived', (notification) => console.log('[Push] Received:', notification));
     PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
-      console.log('[Push] Action performed:', action);
       const routeData = action.notification.data;
-      if (routeData?.route) {
-        window.location.href = routeData.route;
-      }
+      if (routeData?.route) window.location.href = routeData.route;
     });
   } catch (err) {
     console.error('[Push] Setup error:', err);
   }
+}
+
+async function hydrateAuthenticatedUser(user: User) {
+  const profile = await authService.ensureProfile(user);
+  const mapped = mapSupabaseUser(user);
+  if (profile?.username) mapped.username = profile.username;
+  if (profile?.avatar_url) mapped.avatar = profile.avatar_url;
+  return mapped;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -148,32 +94,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (mounted && session?.user) {
-        const mappedUser = mapSupabaseUser(session.user);
-        login(mappedUser);
-        registerPushNotifications(session.user.id);
-        triggerKeygenForUser(session.user.id);
-      }
-      if (mounted) setLoading(false);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!mounted) return;
-
-      if (event === 'SIGNED_IN' && session?.user) {
-        const mappedUser = mapSupabaseUser(session.user);
+    const hydrate = async (user: User) => {
+      try {
+        const mappedUser = await hydrateAuthenticatedUser(user);
+        if (!mounted) return;
         login(mappedUser);
         setLoading(false);
-        registerPushNotifications(session.user.id);
-        triggerKeygenForUser(session.user.id);
+        void registerPushNotifications(user.id);
+        void triggerKeygenForUser(user.id);
+      } catch (error) {
+        console.error('[Auth] Profile hydration failed:', error);
+        if (mounted) {
+          login(mapSupabaseUser(user));
+          setLoading(false);
+        }
+      }
+    };
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) void hydrate(session.user);
+      else if (mounted) setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && session?.user) {
+        void hydrate(session.user);
       } else if (event === 'SIGNED_OUT') {
         logout();
         setLoading(false);
-      } else if (event === 'TOKEN_REFRESHED' && session?.user) {
-        login(mapSupabaseUser(session.user));
       }
     });
 

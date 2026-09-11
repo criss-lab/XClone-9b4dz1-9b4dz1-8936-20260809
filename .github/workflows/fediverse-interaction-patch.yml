@@ -1,0 +1,72 @@
+name: Fediverse interaction hardening
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replace legacy interaction transport
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/pages/FediversePage.tsx')
+          s=p.read_text()
+          def replace_between(text, start, end, replacement):
+              a=text.index(start)
+              b=text.index(end, a)
+              return text[:a]+replacement+text[b:]
+          like='''  const handleFedLike = async (post: any) => {
+              if (!user) { navigate('/auth'); return; }
+              const key = post.object_url ?? post.uri ?? post.url ?? post.id;
+              if (!key) return;
+              const enabled = !postStates[key]?.liked;
+              setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: enabled } }));
+              try { enabled ? await federation.favorite(key) : await federation.unfavorite(key); }
+              catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !enabled } })); toast.error(err?.message ?? 'Like failed'); }
+            };
+
+'''
+          boost='''  const handleFedBoost = async (post: any) => {
+              if (!user) { navigate('/auth'); return; }
+              const key = post.object_url ?? post.uri ?? post.url ?? post.id;
+              if (!key) return;
+              const enabled = !postStates[key]?.boosted;
+              setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: enabled } }));
+              try { enabled ? await federation.boost(key) : await federation.unboost(key); }
+              catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !enabled } })); toast.error(err?.message ?? 'Repost failed'); }
+            };
+
+'''
+          reply='''  const handleFedReply = async (post: any) => {
+              if (!user) { navigate('/auth'); return; }
+              const key = post.object_url ?? post.uri ?? post.url ?? post.id;
+              if (!key) return;
+              const text = postStates[key]?.replyText?.trim();
+              if (!text) return;
+              setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: true } }));
+              try {
+                await federation.reply({ postId: key, content: text });
+                toast.success('Reply sent to the Fediverse!');
+                setPostStates(prev => ({ ...prev, [key]: { ...prev[key], replyText: '', replyOpen: false, sending: false } }));
+              } catch (err: any) {
+                toast.error(`Reply failed: ${err.message ?? ''}`);
+                setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: false } }));
+              }
+            };
+
+'''
+          s=replace_between(s,'  const handleFedLike = async (post: any) => {','  const handleFedBoost',like)
+          s=replace_between(s,'  const handleFedBoost = async (post: any) => {','  const handleFedReply',boost)
+          s=replace_between(s,'  const handleFedReply = async (post: any) => {','  const handleFollow',reply)
+          p.write_text(s)
+          PY
+          if git diff --quiet -- src/pages/FediversePage.tsx; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/pages/FediversePage.tsx
+          git commit -m 'fix(fediverse): use signed canonical like repost and reply flows'
+          git push

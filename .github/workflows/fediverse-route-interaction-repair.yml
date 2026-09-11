@@ -1,0 +1,57 @@
+name: Repair Fediverse profile routing and interactions
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply deterministic Fediverse wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/App.tsx')
+          s = p.read_text()
+          if "@/pages/FediverseProfilePage" not in s:
+              s = s.replace("const FediversePostPage = lazy(() => import('@/pages/FediversePostPage'));", "const FediversePostPage = lazy(() => import('@/pages/FediversePostPage'));\nconst FediverseProfilePage = lazy(() => import('@/pages/FediverseProfilePage'));")
+          if 'path="/fediverse/profile"' not in s:
+              s = s.replace('<Route path="/fediverse/post" element={<FediversePostPage />} />', '<Route path="/fediverse/post" element={<FediversePostPage />} /><Route path="/fediverse/profile" element={<FediverseProfilePage />} />')
+          p.write_text(s)
+
+          p = Path('src/components/features/FederatedPostCard.tsx')
+          s = p.read_text()
+          if 'const profileHref = actorTarget' not in s:
+              s = s.replace("const actorTarget = actor.url ?? actor.id ?? (handle !== 'unknown' ? handle : '');", "const actorTarget = actor.url ?? actor.id ?? (handle !== 'unknown' ? handle : '');\n  const profileHref = actorTarget ? `/fediverse/profile?actor=${encodeURIComponent(actorTarget)}` : '';")
+          s = s.replace('<button onClick={() => navigate(`/fediverse?acct=${encodeURIComponent(handle)}`)} className="w-10 h-10 rounded-full bg-muted overflow-hidden flex-shrink-0" aria-label={`Open ${handle}`}>', '<a href={profileHref || \'#\'} onClick={e => { if (!profileHref) e.preventDefault(); }} className="w-10 h-10 rounded-full bg-muted overflow-hidden flex-shrink-0" aria-label={`Open ${handle}`}>')
+          s = s.replace('</button>\n      <div className="flex-1 min-w-0">', '</a>\n      <div className="flex-1 min-w-0">', 1)
+          s = s.replace('<span className="font-semibold text-sm truncate">{displayName}</span>', '<a href={profileHref || \'#\'} onClick={e => { if (!profileHref) e.preventDefault(); }} className="font-semibold text-sm truncate hover:underline">{displayName}</a>')
+          s = s.replace('<span className="text-xs text-muted-foreground truncate">@{handle}</span>', '<a href={profileHref || \'#\'} onClick={e => { if (!profileHref) e.preventDefault(); }} className="text-xs text-muted-foreground truncate hover:underline">@{handle}</a>')
+          p.write_text(s)
+
+          # Finalize the dedicated Fediverse page's three legacy handlers.
+          p = Path('src/pages/FediversePage.tsx')
+          s = p.read_text()
+          def replace_block(text, start, end, replacement):
+              a = text.find(start)
+              if a < 0: return text
+              b = text.find(end, a)
+              if b < 0: raise RuntimeError(f'missing {end}')
+              return text[:a] + replacement + text[b:]
+          like = """  const handleFedLike = async (post: any) => {\n    if (!user) { navigate('/auth'); return; }\n    const key = post.object_url ?? post.uri ?? post.url ?? post.id;\n    if (!key) return;\n    const enabled = !postStates[key]?.liked;\n    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: enabled } }));\n    try { enabled ? await federation.favorite(key) : await federation.unfavorite(key); }\n    catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !enabled } })); toast.error(err?.message ?? 'Like failed'); }\n  };\n\n"""
+          boost = """  const handleFedBoost = async (post: any) => {\n    if (!user) { navigate('/auth'); return; }\n    const key = post.object_url ?? post.uri ?? post.url ?? post.id;\n    if (!key) return;\n    const enabled = !postStates[key]?.boosted;\n    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: enabled } }));\n    try { enabled ? await federation.boost(key) : await federation.unboost(key); }\n    catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !enabled } })); toast.error(err?.message ?? 'Repost failed'); }\n  };\n\n"""
+          reply = """  const handleFedReply = async (post: any) => {\n    if (!user) { navigate('/auth'); return; }\n    const key = post.object_url ?? post.uri ?? post.url ?? post.id;\n    if (!key) return;\n    const text = postStates[key]?.replyText?.trim();\n    if (!text) return;\n    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: true } }));\n    try {\n      await federation.reply({ postId: key, content: text });\n      toast.success('Reply sent to the Fediverse!');\n      setPostStates(prev => ({ ...prev, [key]: { ...prev[key], replyText: '', replyOpen: false, sending: false } }));\n    } catch (err: any) {\n      toast.error(`Reply failed: ${err.message ?? ''}`);\n      setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: false } }));\n    }\n  };\n\n"""
+          s = replace_block(s, '  const handleFedLike = async (post: any) => {', '  const handleFedBoost =', like)
+          s = replace_block(s, '  const handleFedBoost = async (post: any) => {', '  const handleFedReply', boost)
+          s = replace_block(s, '  const handleFedReply = async (post: any) => {', '  const handleFollow', reply)
+          p.write_text(s)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/App.tsx src/components/features/FederatedPostCard.tsx src/pages/FediversePage.tsx
+          git commit -m 'fix(fediverse): make profiles and feed actions fully functional' || true
+          git push || true

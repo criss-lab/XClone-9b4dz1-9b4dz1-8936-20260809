@@ -1,0 +1,11 @@
+begin;
+revoke execute on function public.ensure_monetization_account(uuid) from anon;
+revoke execute on function public.record_creator_earning(uuid,text,bigint,text,text,text,text,text,text,jsonb,integer) from anon, authenticated;
+revoke execute on function public.release_monetization_pending(integer) from anon, authenticated;
+revoke execute on function public.request_monetization_payout(bigint,text,jsonb,text) from anon;
+revoke execute on function public.credit_wallet_paypal(uuid,text,text,numeric,text,jsonb) from anon, authenticated;
+grant execute on function public.ensure_monetization_account(uuid) to authenticated;
+grant execute on function public.record_creator_earning(uuid,text,bigint,text,text,text,text,text,text,jsonb,integer) to service_role;
+grant execute on function public.release_monetization_pending(integer) to service_role;
+grant execute on function public.request_monetization_payout(bigint,text,jsonb,text) to authenticated;
+commit;

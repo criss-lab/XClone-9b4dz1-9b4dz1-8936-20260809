@@ -1,0 +1,69 @@
+name: PayPal Wallet E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/worker/paypal.ts'
+      - 'cloudflare/worker/production-entrypoint.ts'
+      - 'cloudflare/wrangler.jsonc'
+      - 'supabase/migrations/**'
+      - '.github/workflows/paypal-wallet-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '4.126.0'
+  SUPABASE_URL: 'https://aepbqfrmheihfsauzcby.supabase.co'
+  WORKER_URL: 'https://testagram-api.nahashonnyaga794.workers.dev'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Validate PayPal source wiring
+        run: |
+          set -euo pipefail
+          test -s cloudflare/worker/paypal.ts
+          test -s cloudflare/worker/production-entrypoint.ts
+          grep -Fq 'handlePayPal' cloudflare/worker/production-entrypoint.ts
+          grep -Fq 'finalize_paypal_topup' cloudflare/worker/paypal.ts
+          grep -Fq "${SUPABASE_URL#https://}" cloudflare/wrangler.jsonc
+          grep -Fq '"SUPABASE_PROJECT_REF": "aepbqfrmheihfsauzcby"' cloudflare/wrangler.jsonc
+      - name: Build Worker without secret material
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/paypal-worker-build
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler.jsonc --dry-run --outdir /tmp/paypal-worker-build
+          bundle="$(find /tmp/paypal-worker-build -type f -name '*.js' -print -quit)"
+          test -n "$bundle"
+          test -s "$bundle"
+          grep -Fq '/api/paypal' "$bundle"
+          grep -Fq 'finalize_paypal_topup' "$bundle"
+
+  verify:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for canonical Worker deployment and PayPal secrets
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in $(seq 1 24); do
+            status=$(curl -sS -o /tmp/paypal-config.json -w '%{http_code}' --max-time 20 "$WORKER_URL/api/paypal/config" || true)
+            cat /tmp/paypal-config.json || true
+            if [ "$status" = 200 ] && jq -e '.ok == true and .provider == "paypal" and .environment == "sandbox" and .configured == true' /tmp/paypal-config.json >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          test "$ok" = 1
+
+# Secret synchronization remains intentionally delegated to the canonical Cloudflare workflow.

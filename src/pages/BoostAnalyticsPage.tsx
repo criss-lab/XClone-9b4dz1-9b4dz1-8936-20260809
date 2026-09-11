@@ -545,7 +545,6 @@ export default function BoostAnalyticsPage() {
                             <button
                               onClick={e => { e.stopPropagation(); setTopUpBoostId(b.id); setTopUpAmount('5'); }}
                               className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400 text-xs font-bold hover:bg-green-500/20 transition-all"
-                              title="Add budget to campaign"
                             >
                               <Plus className="w-3 h-3" /> Budget
                             </button>
@@ -601,7 +600,6 @@ export default function BoostAnalyticsPage() {
                           <button
                             onClick={() => navigate(`/boost-analytics/${b.post_id}`)}
                             className="shrink-0 p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
-                            title="View details"
                           >
                             <ArrowUpRight className="w-4 h-4" />
                           </button>

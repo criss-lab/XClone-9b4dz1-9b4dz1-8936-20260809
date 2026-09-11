@@ -1,0 +1,48 @@
+name: Testagram Fediverse Gate A Final 2
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fediverse-gate-a-final2.yml'
+permissions:
+  contents: read
+jobs:
+  gate-a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prove signed Follow and accepted relationship
+        env:
+          SUPABASE_URL: https://zcjtvykwwplnzyyslnop.supabase.co
+          GATEWAY_URL: https://zcjtvykwwplnzyyslnop.supabase.co/functions/v1/gateway-relay
+          FEDERATION_ORIGIN: https://testagram-api.nahashonnyaga794.workers.dev
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_ID}-${RANDOM}"; EMAIL="fediverse-gate-${RUN}@example.invalid"; PASS="TgGate-${RUN}-X9!"; USER_ID=""
+          trap 'test -z "$USER_ID" || curl -sS -o /dev/null -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID" -H "apikey: $SUPABASE_SECRET_KEY" || true' EXIT
+          curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/admin/users" -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" >/tmp/user.json
+          USER_ID="$(jq -r '.id' /tmp/user.json)"
+          TOKEN="$(curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p}')" | jq -r '.access_token')"
+          STATUS="$(curl -sS -o /tmp/follow.json -w '%{http_code}' --max-time 60 -X POST "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"path":"/follow","body":{"target":"@Mastodon@mastodon.social"}}')"
+          echo "Follow HTTP status: $STATUS"; cat /tmp/follow.json
+          test "$STATUS" = 200
+          LOCAL_ACTOR="$(jq -r '.activity.actor' /tmp/follow.json)"; ACTIVITY_ID="$(jq -r '.activityId' /tmp/follow.json)"; REMOTE_ACTOR="$(jq -r '.activity.object' /tmp/follow.json)"
+          case "$LOCAL_ACTOR" in "$FEDERATION_ORIGIN/users/"*) ;; *) exit 1;; esac
+          curl -sS --fail-with-body -H 'Accept: application/activity+json' "$LOCAL_ACTOR" >/tmp/actor.json
+          jq -e --arg actor "$LOCAL_ACTOR" --arg key "${LOCAL_ACTOR}#main-key" '.id == $actor and .publicKey.id == $key and .publicKey.owner == .id and (.publicKey.publicKeyPem|length > 100) and .inbox == ($actor + "/inbox")' /tmp/actor.json
+          curl -sS --fail-with-body "$SUPABASE_URL/rest/v1/federation_outbox?activity_id=eq.$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$ACTIVITY_ID")&select=activity_type,status,attempts,http_status" -H "apikey: $SUPABASE_SECRET_KEY" >/tmp/outbox.json
+          jq -e 'length == 1 and .[0].activity_type == "Follow" and .[0].attempts == 1 and (. [0].status == "delivered" or .[0].status == "pending")' /tmp/outbox.json
+          ACCEPT_FOUND=0
+          for i in $(seq 1 30); do
+            curl -sS --fail-with-body "$SUPABASE_URL/rest/v1/federation_inbox?activity_type=eq.Accept&order=received_at.desc&limit=50&select=activity_id,activity_type,actor_url,payload,received_at,processing_status" -H "apikey: $SUPABASE_SECRET_KEY" >/tmp/accepts.json
+            if jq -e --arg fid "$ACTIVITY_ID" --arg remote "$REMOTE_ACTOR" 'any(.[]; .activity_type == "Accept" and .actor_url == $remote and ((.payload.object.id? // .payload.object?) == $fid) and (.payload.actor? == $remote))' /tmp/accepts.json >/dev/null; then ACCEPT_FOUND=1; break; fi
+            sleep 5
+          done
+          test "$ACCEPT_FOUND" = 1
+          REMOTE_ESC="$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$REMOTE_ACTOR")"
+          curl -sS --fail-with-body "$SUPABASE_URL/rest/v1/federation_relationships?user_id=eq.$USER_ID&remote_actor_url=$REMOTE_ESC&select=relationship,activity_id,updated_at,last_error" -H "apikey: $SUPABASE_SECRET_KEY" >/tmp/relationship.json
+          cat /tmp/relationship.json
+          jq -e 'length == 1 and .[0].relationship == "accepted" and .[0].activity_id == $fid' --arg fid "$ACTIVITY_ID" /tmp/relationship.json
+          echo 'PASS: auth -> public actor -> signed Follow -> Mastodon -> outbox -> Accept -> accepted relationship'

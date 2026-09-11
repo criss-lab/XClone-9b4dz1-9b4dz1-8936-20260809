@@ -1,0 +1,44 @@
+name: X-style engagement hardening
+on:
+  push:
+    branches: [main]
+jobs:
+  harden:
+    if: ${{ !contains(github.event.head_commit.message, '[engagement-hardening]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - name: Apply frontend safeguards
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/components/features/ComposePost.tsx')
+          s=p.read_text()
+          marker='const MAX_MEDIA_BYTES = 20 * 1024 * 1024;'
+          if marker not in s:
+              anchor='export function ComposePost({ onSuccess, communityId }: ComposePostProps) {'
+              s=s.replace(anchor, anchor+'\n  '+marker)
+          if 'Each media file must be smaller than 20 MB' not in s:
+              s=s.replace('const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {', "const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {\n    const incoming = Array.from(e.target.files ?? []);\n    const oversized = incoming.find(file => file.size >= MAX_MEDIA_BYTES);\n    if (oversized) { toast({ title: 'Media too large', description: 'Each media file must be smaller than 20 MB', variant: 'destructive' }); e.target.value = ''; return; }")
+              s=s.replace('const handleVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {', "const handleVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {\n    const file = e.target.files?.[0];\n    if (file && file.size >= MAX_MEDIA_BYTES) { toast({ title: 'Video too large', description: 'Each media file must be smaller than 20 MB', variant: 'destructive' }); e.target.value = ''; return; }")
+          if 'quoted_post_id: quotedPostId || null' not in s:
+              s=s.replace("const postPayload: any = { user_id: user!.id, content: content.trim() || '',", "const postPayload: any = { user_id: user!.id, quoted_post_id: quotedPostId || null, content: content.trim() || '',")
+          p.write_text(s)
+          PY
+      - name: Validate
+        run: |
+          npm run typecheck || npx tsc --noEmit
+          npm run build
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/components/features/ComposePost.tsx
+          git diff --cached --quiet || git commit -m "feat: enforce under-20MB composer media [engagement-hardening]"
+          git push

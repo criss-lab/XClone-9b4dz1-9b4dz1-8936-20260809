@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { buildFollowingFeed } from '@/services/recommendations';
+import { getUnifiedFeed } from '@/services/feed';
 import { useNavigate } from 'react-router-dom';
 import { ComposePost } from '@/components/features/ComposePost';
 import { PostCard } from '@/components/features/PostCard';
@@ -25,6 +26,7 @@ import { UserAdCard } from '@/components/features/UserAdCard';
 import { FeedAdCard } from '@/components/features/FeedAdCard';
 import { StoriesStrip } from '@/components/features/StoriesStrip';
 import * as federation from '@/api/federation';
+import { FederatedPostCard } from '@/components/features/FederatedPostCard';
 
 const PAGE_SIZE = 20;
 const RECO_INJECT_INTERVAL = 8; // inject a recommendation card every N items
@@ -149,7 +151,7 @@ export default function HomePage() {
         // We replicate the core query here to avoid mutating activeTab state
         let query = supabase
           .from('posts')
-          .select('*, user_profiles(*)')
+          .select('*, user_profiles:profiles!posts_author_id_fkey(*)')
           .is('community_id', null)
           .range(0, PAGE_SIZE - 1);
         if (tabId === 'following' && user) {
@@ -157,7 +159,7 @@ export default function HomePage() {
             .from('follows').select('following_id').eq('follower_id', user.id);
           const ids = (followingData ?? []).map((f: any) => f.following_id);
           if (ids.length === 0) return;
-          query = supabase.from('posts').select('*, user_profiles(*)')
+          query = supabase.from('posts').select('*, user_profiles:profiles!posts_author_id_fkey(*)')
             .is('community_id', null).in('user_id', ids)
             .order('created_at', { ascending: false }).range(0, PAGE_SIZE - 1);
         } else if (tabId === 'popular') {
@@ -207,7 +209,7 @@ export default function HomePage() {
     const since24h = new Date(Date.now() - 24 * 3600000).toISOString();
     const { data } = await supabase
       .from('posts')
-      .select('id, content, image_url, video_url, is_video, views_count, likes_count, user_profiles(id, username, avatar_url, verified)')
+      .select('id, content, image_url, video_url, is_video, views_count, likes_count, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified)')
       .is('community_id', null)
       .gte('created_at', since24h)
       .order('views_count', { ascending: false })
@@ -330,7 +332,7 @@ export default function HomePage() {
     if (!user) return;
     try {
       // 1️⃣ Trigger server-side recommendation generation (Twitter-style interest graph)
-      supabase.rpc('generate_content_recommendations', { p_user_id: user.id }).catch(() => {});
+      supabase.rpc('generate_content_recommendations', { p_user_id: user.id }).then(() => {}, () => {});
 
       // 2️⃣ Read freshly-generated recommendations
       const { data: recs } = await supabase
@@ -345,7 +347,7 @@ export default function HomePage() {
         const postIds = recs.map((r: any) => r.recommended_post_id);
         const { data: posts } = await supabase
           .from('posts')
-          .select('*, user_profiles(*)')
+          .select('*, user_profiles:profiles!posts_author_id_fkey(*)')
           .in('id', postIds)
           .is('community_id', null);
         if (posts && posts.length > 0) {
@@ -357,7 +359,7 @@ export default function HomePage() {
             })
             .filter((p: any) => p?.id);
           setRecommendedPosts(enriched);
-          supabase.from('content_recommendations').update({ shown: true }).in('recommended_post_id', postIds).eq('user_id', user.id).catch(() => {});
+          supabase.from('content_recommendations').update({ shown: true }).in('recommended_post_id', postIds).eq('user_id', user.id).then(() => {}, () => {});
           return;
         }
       }
@@ -380,7 +382,7 @@ export default function HomePage() {
           const pids = [...new Set((phs ?? []).map((ph: any) => ph.post_id))] as string[];
           if (pids.length > 0) {
             const { data: intPosts } = await supabase
-              .from('posts').select('*, user_profiles(*)')
+              .from('posts').select('*, user_profiles:profiles!posts_author_id_fkey(*)')
               .in('id', pids.slice(0, 10))
               .is('community_id', null)
               .neq('user_id', user.id);
@@ -403,7 +405,7 @@ export default function HomePage() {
       const followIds = (followingData ?? []).map((f: any) => f.following_id);
       if (followIds.length > 0) {
         const { data: followPosts } = await supabase
-          .from('posts').select('*, user_profiles(*)')
+          .from('posts').select('*, user_profiles:profiles!posts_author_id_fkey(*)')
           .in('user_id', followIds)
           .is('community_id', null)
           .order('likes_count', { ascending: false })
@@ -427,7 +429,7 @@ export default function HomePage() {
       if (followIds.length === 0) return;
       const { data: products } = await supabase
         .from('products')
-        .select('*, user_profiles(id, username, avatar_url, verified)')
+        .select('*, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified)')
         .in('user_id', followIds)
         .eq('is_active', true)
         .order('created_at', { ascending: false })
@@ -538,7 +540,7 @@ export default function HomePage() {
         created_at: p.created_at ?? p.published ?? new Date().toISOString(),
         actor: p.actor ?? p.account ?? {},
       }));
-      cacheFederatedPosts(normalized).catch(() => {});
+      cacheFederatedPosts(normalized).then(() => {}, () => {});
       return normalized;
     } catch (err) {
       console.warn('[feed] Gateway unreachable, using remote_posts cache:', err);
@@ -566,13 +568,13 @@ export default function HomePage() {
     try {
       let postsQuery = supabase
         .from('posts')
-        .select('*, user_profiles(*)')
+        .select('*, user_profiles:profiles!posts_author_id_fkey(*)')
         .is('community_id', null)
         .range(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE - 1);
 
       let threadsQuery = supabase
         .from('threads')
-        .select('*, user_profiles(*)')
+        .select('*, user_profiles(id, username, avatar_url, verified)')
         .eq('is_published', true)
         .order('created_at', { ascending: false })
         .range(pageNum * 5, (pageNum + 1) * 5 - 1);
@@ -605,7 +607,7 @@ export default function HomePage() {
         const pagedIds = allIds.slice(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE);
         if (!pagedIds.length) return [];
         postsQuery = supabase
-          .from('posts').select('*, user_profiles(*)').is('community_id', null)
+          .from('posts').select('*, user_profiles:profiles!posts_author_id_fkey(*)').is('community_id', null)
           .in('id', pagedIds).order('likes_count', { ascending: false });
       } else {
         postsQuery = postsQuery.order('created_at', { ascending: false });
@@ -734,9 +736,27 @@ export default function HomePage() {
     }
   };
 
+  // Canonical unified feed adapter: edge owns membership, ranking and native/Fediverse mixing.
+  const fetchUnifiedFeedItems = async (mode: 'home' | 'following'): Promise<FeedItem[]> => {
+    try {
+      const result = await getUnifiedFeed({ mode, limit: PAGE_SIZE, before: feedCursor ?? undefined });
+      return result.posts.map((post: any) => ({
+        type: post.origin === 'federated'
+          ? 'fedpost' as const
+          : post.content_type === 'thread' || post.source === 'thread'
+            ? 'thread' as const
+            : 'post' as const,
+        data: post.origin === 'federated' ? post : { ...post, user_profiles: post.user_profiles ?? post.author },
+      }));
+    } catch (err) {
+      console.error(`[feed] unified ${mode} failed:`, err);
+      return [];
+    }
+  };
+
   const fetchInitialFeed = async (skipCache = false) => {
     // ── Serve from prefetch cache when available (tab switch) ──────────────
-    if (!skipCache && activeTab !== 'federated') {
+    if (!skipCache && activeTab !== 'federated' && activeTab !== 'foryou' && activeTab !== 'following') {
       const cached = getCachedFeed(activeTab);
       if (cached && cached.length > 0) {
         setFeedItems(cached);
@@ -770,50 +790,25 @@ export default function HomePage() {
       const fedPosts = await fetchFederatedPosts();
       setFeedItems(fedPosts.map(p => ({ type: 'fedpost' as const, data: p })));
     } else if (activeTab === 'following' && user) {
-      // ── Twitter-style Following Feed: 80% following + 20% 2nd-degree viral ──
-      const { data: followingData } = await supabase
-        .from('follows')
-        .select('following_id')
-        .eq('follower_id', user.id);
-      const followIds = (followingData ?? []).map((f: any) => f.following_id);
-
-      const [scoredResult, gatewayResult] = await Promise.allSettled([
-        buildFollowingFeed(user.id, followIds, 0, PAGE_SIZE),
-        fetchFederatedPosts(),
-      ]);
-
-      const localScored = scoredResult.status === 'fulfilled' ? scoredResult.value : [];
-      const local: FeedItem[] = localScored.map((s: any) => (
-        s.source === 'viral'
-          ? { type: 'recommended' as const, data: { ...s.post, _reason: s.reason } }
-          : { type: 'post' as const, data: s.post }
-      ));
-
-      const gateway =
-        gatewayResult.status === 'fulfilled'
-          ? gatewayResult.value.map((p: any) => ({ type: 'fedpost' as const, data: p }))
-          : [];
-      const merged: FeedItem[] = [...local];
-      gateway.slice(0, 4).forEach((item: FeedItem, i: number) => {
-        const insertAt = Math.min(merged.length, (i + 1) * 5);
-        merged.splice(insertAt, 0, item);
-      });
-      const filtered = merged.filter((item: any) => {
-        const uid = item.data?.user_id ?? item.data?.user_profiles?.id;
+      const items = await fetchUnifiedFeedItems('following');
+      const filtered = items.filter((item: any) => {
+        const uid = item.data?.user_id ?? item.data?.user_profiles?.id ?? item.data?.author?.id;
         return !uid || !blockedUserIds.includes(uid);
       });
       setFeedItems(filtered);
-      // Set cursor from last local post
-      const lastPost = filtered.filter((i: any) => i.type === 'post').slice(-1)[0];
-      if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
+      const lastPost = filtered.filter((i: any) => i.type === 'post' || i.type === 'fedpost').slice(-1)[0];
+      if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? (lastPost.data as any).published_at ?? null);
+      setFeedHasMore(filtered.length >= PAGE_SIZE);
     } else {
-      const items = await fetchFeed(0);
+      const items = activeTab === 'foryou'
+        ? await fetchUnifiedFeedItems('home')
+        : await fetchFeed(0);
       setFeedItems(items);
-      const lastPost = items.filter((i: any) => i.type === 'post').slice(-1)[0];
-      if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
-      setFeedHasMore(items.filter((i: any) => i.type === 'post').length >= PAGE_SIZE);
+      const lastContent = items.filter((i: any) => i.type === 'post' || i.type === 'thread').slice(-1)[0];
+      if (lastContent) setFeedCursor((lastContent.data as any).created_at ?? (lastContent.data as any).published_at ?? null);
+      setFeedHasMore(items.filter((i: any) => i.type === 'post' || i.type === 'thread').length >= PAGE_SIZE);
       // Populate prefetch cache for instant tab-switch on next visit
-      if (items.length > 0) setCachedFeed(activeTab, items);
+      if (items.length > 0 && activeTab !== 'foryou' && activeTab !== 'following') setCachedFeed(activeTab, items);
     }
     setLoading(false);
   };
@@ -839,7 +834,7 @@ export default function HomePage() {
       if (postIds.length === 0) { setHashtagFeedItems([]); setHashtagFeedLoading(false); return; }
       const { data: posts } = await supabase
         .from('posts')
-        .select('*, user_profiles(*)')
+        .select('*, user_profiles:profiles!posts_author_id_fkey(*)')
         .in('id', postIds.slice(0, 50))
         .is('community_id', null)
         .order('created_at', { ascending: false });
@@ -936,18 +931,17 @@ export default function HomePage() {
     if (activeTab === 'federated' || !feedHasMore) return false;
     const nextPage = page + 1;
     const newItems = await fetchFeed(nextPage);
-    const newPosts = newItems.filter((i: any) => i.type === 'post');
-    if (newPosts.length > 0) {
+    const newContent = newItems.filter((i: any) => i.type === 'post' || i.type === 'thread');
+    if (newContent.length > 0) {
       setFeedItems(prev => {
-        // Deduplicate by post id
-        const existingIds = new Set(prev.filter((i: any) => i.type === 'post').map((i: any) => (i.data as any).id));
-        const deduped = newItems.filter((i: any) => i.type !== 'post' || !existingIds.has((i.data as any).id));
+        const existingIds = new Set(prev.filter((i: any) => i.type === 'post' || i.type === 'thread').map((i: any) => `${i.type}:${(i.data as any).id}`));
+        const deduped = newItems.filter((i: any) => (i.type !== 'post' && i.type !== 'thread') || !existingIds.has(`${i.type}:${(i.data as any).id}`));
         return [...prev, ...deduped];
       });
       setPage(nextPage);
-      const lastPost = newPosts.slice(-1)[0];
-      if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
-      const hasMore = newPosts.length >= PAGE_SIZE;
+      const lastContent = newContent.slice(-1)[0];
+      if (lastContent) setFeedCursor((lastContent.data as any).created_at ?? (lastContent.data as any).published_at ?? null);
+      const hasMore = newContent.length >= PAGE_SIZE;
       setFeedHasMore(hasMore);
       return hasMore;
     }
@@ -959,7 +953,7 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-background pb-16 lg:pb-0">
-      <TopBar title="Home" />
+      <TopBar />
 
       {/* Bluesky-style Tabs */}
       <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border">
@@ -996,7 +990,6 @@ export default function HomePage() {
                   ? 'bg-primary/10 border-primary/30 text-primary'
                   : 'border-border text-muted-foreground hover:text-primary hover:border-primary/30'
               }`}
-              title="Tune your feed"
             >
               <SlidersHorizontal className={`w-3.5 h-3.5 ${sliderRefreshing ? 'animate-spin' : ''}`} />
               {sliderRefreshing ? <span className="hidden sm:inline">Applying…</span> : <span className="hidden sm:inline">Tune</span>}
@@ -1463,130 +1456,6 @@ function ProductSpotlightRail({ products, onNavigate }: { products: any[]; onNav
             </div>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Federated Post Card ───────────────────────────────────────────────────────
-function FederatedPostCard({ post }: { post: any }) {
-  const actor = post.actor ?? post.account ?? {};
-  const username =
-    actor.preferredUsername ?? actor.username ?? actor.acct ?? 'unknown';
-  const domain = actor.url ? extractHostname(actor.url) : (actor.domain ?? '');
-  const avatarUrl = actor.icon?.url ?? actor.avatar ?? actor.avatar_url;
-  const displayName = actor.name ?? actor.display_name ?? username;
-  const createdAt = post.created_at ?? post.published ?? '';
-
-  const [translation, setTranslation] = useState<string | null>(null);
-  const [translating, setTranslating] = useState(false);
-  const [showTranslation, setShowTranslation] = useState(false);
-
-  const handleTranslate = async () => {
-    if (translation) { setShowTranslation(prev => !prev); return; }
-    const rawText = (post.content ?? post.text ?? '').replace(/<[^>]*>/g, '').trim();
-    if (!rawText) return;
-    setTranslating(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('ai-chat', {
-        body: {
-          messages: [{ role: 'user', content: `Translate the following text to English. Return only the translation, nothing else:\n\n${rawText}` }],
-          model: 'gemini-2.0-flash',
-        },
-      });
-      if (error) throw error;
-      const result = data?.choices?.[0]?.message?.content ?? data?.content ?? data?.text ?? data?.response ?? '';
-      setTranslation(result.trim());
-      setShowTranslation(true);
-    } catch (err) {
-      setTranslation('Translation failed. Please try again.');
-      setShowTranslation(true);
-    } finally {
-      setTranslating(false);
-    }
-  };
-
-  return (
-    <div className="border-b border-border p-4 hover:bg-muted/5 transition-colors">
-      <div className="flex gap-3">
-        <div className="w-10 h-10 rounded-full bg-muted overflow-hidden flex-shrink-0">
-          {avatarUrl ? (
-            <img src={avatarUrl} alt={username} className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center font-bold text-sm">
-              {username[0]?.toUpperCase()}
-            </div>
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="font-semibold text-sm">{displayName}</span>
-            <span className="flex items-center gap-1 text-xs text-purple-500">
-              <Globe className="w-3 h-3" />
-              {domain}
-            </span>
-            {createdAt && (
-              <span className="text-muted-foreground text-xs">
-                · {formatDistanceToNow(new Date(createdAt), { addSuffix: true })}
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mb-1.5">
-            @{username}@{domain}
-          </p>
-          <div
-            className="text-sm leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: post.content ?? post.text ?? '' }}
-          />
-
-          {showTranslation && translation && (
-            <div className="mt-2 p-3 bg-blue-500/5 border border-blue-500/15 rounded-xl">
-              <p className="text-xs font-semibold text-blue-500 mb-1 flex items-center gap-1">
-                <Languages className="w-3 h-3" /> Translated to English
-              </p>
-              <p className="text-sm leading-relaxed text-foreground">{translation}</p>
-            </div>
-          )}
-
-          {Array.isArray(post.media_attachments) && post.media_attachments.length > 0 && (
-            <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl overflow-hidden">
-              {post.media_attachments.slice(0, 4).map((m: any, i: number) =>
-                m.type === 'image' ? (
-                  <img key={i} src={m.url ?? m.preview_url} alt={m.description ?? ''} className="w-full h-32 object-cover" loading="lazy" />
-                ) : null
-              )}
-            </div>
-          )}
-
-          <div className="flex items-center gap-4 mt-2.5 text-muted-foreground text-xs">
-            <span className="flex items-center gap-1">
-              <MessageCircle className="w-3.5 h-3.5" />
-              {formatNumber(post.replies_count ?? 0)}
-            </span>
-            <span className="flex items-center gap-1">
-              <Repeat2 className="w-3.5 h-3.5" />
-              {formatNumber(post.reblogs_count ?? post.boosts_count ?? 0)}
-            </span>
-            <span className="flex items-center gap-1">
-              <Heart className="w-3.5 h-3.5" />
-              {formatNumber(post.favourites_count ?? post.likes_count ?? 0)}
-            </span>
-            <button
-              onClick={handleTranslate}
-              disabled={translating}
-              className="ml-auto flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 transition-colors disabled:opacity-50"
-            >
-              {translating ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : showTranslation ? (
-                <ChevronUp className="w-3.5 h-3.5" />
-              ) : (
-                <Languages className="w-3.5 h-3.5" />
-              )}
-              {translating ? 'Translating…' : showTranslation ? 'Hide' : 'Translate'}
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

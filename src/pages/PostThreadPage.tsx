@@ -71,7 +71,7 @@ export default function PostThreadPage() {
       : 'View this post on Testagram',
     image: post ? buildOgImageUrl({ post: post.id }) : undefined,
     url: postId ? `/post/${postId}` : undefined,
-    type: post?.is_video ? 'video.other' : 'article',
+    type: 'article',
     keywords: post ? `${post.user_profiles?.username ?? ''}, testagram, post, social media` : undefined,
     structuredData: post ? {
       '@context': 'https://schema.org',
@@ -108,7 +108,6 @@ export default function PostThreadPage() {
         if (knownReplyCount.current !== null && count > knownReplyCount.current) {
           setNewReplyCount(count - knownReplyCount.current);
         }
-        // Initialize base after first load completes
         if (knownReplyCount.current === null) knownReplyCount.current = count;
       }
     };
@@ -155,16 +154,18 @@ export default function PostThreadPage() {
     if (!postId) return;
     setLoading(true);
     try {
+      // posts has both author_id -> profiles.id and user_id -> profiles.id.
+      // `user_profiles (*)` is ambiguous in PostgREST. Bind the relationship
+      // explicitly to the canonical author foreign key.
       const { data: postData, error: postError } = await supabase
         .from('posts')
-        .select('*, user_profiles (*)')
+        .select('*, user_profiles:profiles!posts_author_id_fkey(*)')
         .eq('id', postId)
+        .eq('visibility', 'public')
+        .is('deleted_at', null)
         .single();
       if (postError) throw postError;
-      setPost(postData);
-
-      // OG tags are now managed by useSEO hook via buildOgImageUrl({ post: id })
-
+      setPost(postData as Post);
 
       // Increment view count
       supabase
@@ -206,9 +207,7 @@ export default function PostThreadPage() {
       }).select().single();
       if (insertError) throw insertError;
 
-      // Attach poll to this reply's post if user added one
       if (replyPollData && newReply) {
-        // Create a mini post record for the poll linked to the reply content
         const { data: pollPost } = await supabase.from('posts').insert({
           user_id: user.id,
           content: replyContent.trim(),
@@ -226,7 +225,6 @@ export default function PostThreadPage() {
               replyPollData.options.map(opt => ({ poll_id: poll.id, option_text: opt }))
             );
           }
-          // Store pollPostId in a ref so we can display it
           setReplyPollPostIds(prev => ({ ...prev, [newReply.id]: pollPost.id }));
         }
         setReplyPollData(null);
@@ -264,7 +262,6 @@ export default function PostThreadPage() {
     }
   };
 
-  // Build URL lazily — avoids window.location at render scope (esbuild non-determinism)
   const getPostUrl = () => `${window.location.origin}/post/${postId}`;
 
   const copyLink = () => {
@@ -293,7 +290,6 @@ export default function PostThreadPage() {
     window.open(`https://wa.me/?text=${encodeURIComponent(text + url)}`, '_blank');
   };
 
-  // Sync knownReplyCount once replies load
   useEffect(() => {
     if (replies.length > 0 && knownReplyCount.current === null) {
       knownReplyCount.current = replies.length;
@@ -332,7 +328,6 @@ export default function PostThreadPage() {
       <TopBar title="Post" showBack />
       <PostThreadAdBanner />
 
-      {/* ── Floating "View N new replies" pill ── */}
       {newReplyCount > 0 && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 animate-bounce">
           <button
@@ -345,13 +340,10 @@ export default function PostThreadPage() {
         </div>
       )}
 
-      {/* Main post */}
       <PostCard post={post} onUpdate={fetchPostAndReplies} />
 
-      {/* Share Panel */}
       <div className="border-b border-border p-4 bg-muted/5">
         <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Share this post</p>
-        {/* Thumbnail preview when image exists */}
         {postThumb && (
           <div className="mb-3 rounded-xl overflow-hidden border border-border flex items-center gap-3 p-2 bg-card">
             <img src={postThumb} alt="Post thumbnail" className="w-16 h-16 object-cover rounded-lg flex-shrink-0" />
@@ -363,202 +355,42 @@ export default function PostThreadPage() {
           </div>
         )}
         <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={copyLink}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-muted hover:bg-muted/80 text-sm font-medium transition-colors"
-          >
-            <Link2 className="w-4 h-4" />
-            {copySuccess ? 'Copied!' : 'Copy Link'}
-          </button>
-          <button
-            onClick={shareToX}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-black text-white hover:bg-neutral-800 text-sm font-medium transition-colors"
-          >
-            <Twitter className="w-4 h-4" />
-            X (Twitter)
-          </button>
-          <button
-            onClick={shareToFacebook}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-[#1877F2] text-white hover:bg-[#1864d2] text-sm font-medium transition-colors"
-          >
-            <Facebook className="w-4 h-4" />
-            Facebook
-          </button>
-          <button
-            onClick={shareToWhatsApp}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-[#25D366] text-white hover:bg-[#1da851] text-sm font-medium transition-colors"
-          >
-            <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
-            WhatsApp
-          </button>
+          <button onClick={copyLink} className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-muted hover:bg-muted/80 text-sm font-medium transition-colors"><Link2 className="w-4 h-4" />{copySuccess ? 'Copied!' : 'Copy Link'}</button>
+          <button onClick={shareToX} className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-black text-white hover:bg-neutral-800 text-sm font-medium transition-colors"><Twitter className="w-4 h-4" />X (Twitter)</button>
+          <button onClick={shareToFacebook} className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-[#1877F2] text-white hover:bg-[#1864d2] text-sm font-medium transition-colors"><Facebook className="w-4 h-4" />Facebook</button>
+          <button onClick={shareToWhatsApp} className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-[#25D366] text-white hover:bg-[#1da851] text-sm font-medium transition-colors"><svg className="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.198-.298.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>WhatsApp</button>
         </div>
       </div>
 
-      {/* Reply composer */}
       {user && (
         <div className="border-b border-border p-4 bg-muted/5">
           <div className="flex space-x-3">
             <div className="w-10 h-10 rounded-full bg-muted flex-shrink-0 overflow-hidden">
-              {user.avatar ? (
-                <img src={user.avatar} alt={user.username} className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-sm font-bold">
-                  {user.username[0]?.toUpperCase()}
-                </div>
-              )}
+              {user.avatar ? <img src={user.avatar} alt={user.username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-sm font-bold">{user.username[0]?.toUpperCase()}</div>}
             </div>
             <div className="flex-1">
-              <Textarea
-                placeholder={`Reply to @${post.user_profiles?.username}...`}
-                value={replyContent}
-                onChange={(e) => setReplyContent(e.target.value)}
-                className="min-h-[80px] border-0 resize-none focus-visible:ring-0 p-0 text-base bg-transparent"
-                maxLength={280}
-              />
-              {/* Poll preview when attached */}
-              {replyPollData && (
-                <div className="mt-2 p-3 border border-border rounded-xl bg-muted/30 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <BarChart3 className="w-4 h-4 text-primary shrink-0" />
-                    <span className="text-sm font-medium truncate">{replyPollData.question}</span>
-                    <span className="text-xs text-muted-foreground shrink-0">{replyPollData.options.length} options</span>
-                  </div>
-                  <button onClick={() => setReplyPollData(null)} className="p-1 text-muted-foreground hover:text-foreground shrink-0"><X className="w-3.5 h-3.5" /></button>
-                </div>
-              )}
+              <Textarea placeholder={`Reply to @${post.user_profiles?.username}...`} value={replyContent} onChange={(e) => setReplyContent(e.target.value)} className="min-h-[80px] border-0 resize-none focus-visible:ring-0 p-0 text-base bg-transparent" maxLength={280} />
+              {replyPollData && <div className="mt-2 p-3 border border-border rounded-xl bg-muted/30 flex items-center justify-between gap-2"><div className="flex items-center gap-2 min-w-0"><BarChart3 className="w-4 h-4 text-primary shrink-0" /><span className="text-sm font-medium truncate">{replyPollData.question}</span><span className="text-xs text-muted-foreground shrink-0">{replyPollData.options.length} options</span></div><button onClick={() => setReplyPollData(null)} className="p-1 text-muted-foreground hover:text-foreground shrink-0"><X className="w-3.5 h-3.5" /></button></div>}
               <div className="flex items-center justify-between mt-3 pt-2 border-t border-border">
-                <div className="flex items-center gap-1">
-                  {replyContent.length > 0 && (
-                    <span className={`text-sm ${replyContent.length > 260 ? 'text-destructive' : 'text-muted-foreground'}`}>
-                      {replyContent.length}/280
-                    </span>
-                  )}
-                  {/* Poll attach button */}
-                  <button
-                    onClick={() => setShowPollDialog(true)}
-                    disabled={!!replyPollData}
-                    className={`ml-2 p-2 rounded-full transition-colors disabled:opacity-40 ${
-                      replyPollData ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-muted-foreground hover:text-primary'
-                    }`}
-                    title="Attach poll to reply"
-                  >
-                    <BarChart3 className="w-4 h-4" />
-                  </button>
-                </div>
-                <Button
-                  onClick={handleReply}
-                  disabled={submitting || !replyContent.trim() || replyContent.length > 280}
-                  className="rounded-full px-6 font-semibold"
-                >
-                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (
-                    <>
-                      <Send className="w-4 h-4 mr-1.5" />
-                      Reply
-                    </>
-                  )}
-                </Button>
+                <div className="flex items-center gap-1">{replyContent.length > 0 && <span className={`text-sm ${replyContent.length > 260 ? 'text-destructive' : 'text-muted-foreground'}`}>{replyContent.length}/280</span>}<button onClick={() => setShowPollDialog(true)} disabled={!!replyPollData} className={`ml-2 p-2 rounded-full transition-colors disabled:opacity-40 ${replyPollData ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-muted-foreground hover:text-primary'}`}><BarChart3 className="w-4 h-4" /></button></div>
+                <Button onClick={handleReply} disabled={submitting || !replyContent.trim() || replyContent.length > 280} className="rounded-full px-6 font-semibold">{submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Send className="w-4 h-4 mr-1.5" />Reply</>}</Button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Replies list */}
       <div>
-        {replies.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">
-            <p className="font-medium">No replies yet</p>
-            <p className="text-sm mt-1">Be the first to reply!</p>
-          </div>
-        ) : (
-          <>
-            <div className="px-4 py-2 border-b border-border flex items-center gap-2">
-              <span className="text-sm font-semibold text-muted-foreground">
-                {replies.length} {replies.length === 1 ? 'reply' : 'replies'}
-              </span>
-              {liveReplyCount !== null && liveReplyCount > replies.length && (
-                <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold animate-pulse">
-                  +{liveReplyCount - replies.length} new
-                </span>
-              )}
-            </div>
-            {replies.map((reply, idx) => (
-              <div key={reply.id}>
-                <div className="border-b border-border p-4 hover:bg-muted/5 transition-colors">
-                  <div className="flex space-x-3">
-                    <div
-                      className="w-10 h-10 rounded-full bg-muted flex-shrink-0 overflow-hidden cursor-pointer"
-                      onClick={() => navigate(`/profile/${reply.user_profiles.username}`)}
-                    >
-                      {reply.user_profiles.avatar_url ? (
-                        <img src={reply.user_profiles.avatar_url} alt={reply.user_profiles.username} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-sm font-semibold">
-                          {reply.user_profiles.username[0]?.toUpperCase()}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span
-                          className="font-bold cursor-pointer hover:underline"
-                          onClick={() => navigate(`/profile/${reply.user_profiles.username}`)}
-                        >
-                          {reply.user_profiles.username}
-                        </span>
-                        {reply.user_profiles.verified && (
-                          <BadgeCheck className="w-4 h-4 text-primary" fill="currentColor" />
-                        )}
-                        <span className="text-muted-foreground text-sm">
-                          · {formatDistanceToNow(new Date(reply.created_at), { addSuffix: true })}
-                        </span>
-                      </div>
-                      <p className="text-foreground mt-1 whitespace-pre-wrap break-words">{reply.content}</p>
-                      {/* Embeds in reply content */}
-                      <EmbedRenderer content={reply.content} />
-                      <PostContentEmbeds content={reply.content} />
-                      {/* Inline Poll — if this reply has an attached poll */}
-                      {replyPollPostIds[reply.id] && (
-                        <div className="mt-2">
-                          <PollCard postId={replyPollPostIds[reply.id]} />
-                        </div>
-                      )}
-                      {/* Reply Like button */}
-                      <button
-                        onClick={() => handleReplyLike(reply.id)}
-                        className={`mt-2 flex items-center gap-1.5 text-xs font-semibold transition-colors ${
-                          replyLikes[reply.id]?.liked ? 'text-pink-600' : 'text-muted-foreground hover:text-pink-600'
-                        }`}
-                      >
-                        <Heart className={`w-3.5 h-3.5 ${replyLikes[reply.id]?.liked ? 'fill-current' : ''}`} />
-                        {replyLikes[reply.id]?.count > 0 && <span>{replyLikes[reply.id].count}</span>}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                {/* Wise Brain ad every 8 replies */}
-                {idx > 0 && (idx + 1) % 8 === 0 && (
-                  <div className="px-4 py-3 bg-muted/20 border-b border-border">
-                    <p className="text-[9px] text-muted-foreground/40 uppercase tracking-widest text-center mb-1">🧠 Sponsored</p>
-                    <DynamicAd location="feed_inline" className="rounded-xl overflow-hidden" />
-                  </div>
-                )}
-              </div>
-            ))}
-          </>
-        )}
+        {replies.length === 0 ? <div className="text-center py-12 text-muted-foreground"><p className="font-medium">No replies yet</p><p className="text-sm mt-1">Be the first to reply!</p></div> : <>
+          <div className="px-4 py-2 border-b border-border flex items-center gap-2"><span className="text-sm font-semibold text-muted-foreground">{replies.length} {replies.length === 1 ? 'reply' : 'replies'}</span>{liveReplyCount !== null && liveReplyCount > replies.length && <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold animate-pulse">+{liveReplyCount - replies.length} new</span>}</div>
+          {replies.map((reply, idx) => <div key={reply.id}>
+            <div className="border-b border-border p-4 hover:bg-muted/5 transition-colors"><div className="flex space-x-3"><div className="w-10 h-10 rounded-full bg-muted flex-shrink-0 overflow-hidden cursor-pointer" onClick={() => navigate(`/profile/${reply.user_profiles.username}`)}>{reply.user_profiles.avatar_url ? <img src={reply.user_profiles.avatar_url} alt={reply.user_profiles.username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-sm font-semibold">{reply.user_profiles.username[0]?.toUpperCase()}</div>}</div><div className="flex-1"><div className="flex items-center gap-1.5 flex-wrap"><span className="font-bold cursor-pointer hover:underline" onClick={() => navigate(`/profile/${reply.user_profiles.username}`)}>{reply.user_profiles.username}</span>{reply.user_profiles.verified && <BadgeCheck className="w-4 h-4 text-primary" fill="currentColor" />}<span className="text-muted-foreground text-sm">· {formatDistanceToNow(new Date(reply.created_at), { addSuffix: true })}</span></div><p className="text-foreground mt-1 whitespace-pre-wrap break-words">{reply.content}</p><EmbedRenderer content={reply.content} /><PostContentEmbeds content={reply.content} />{replyPollPostIds[reply.id] && <div className="mt-2"><PollCard postId={replyPollPostIds[reply.id]} /></div>}<button onClick={() => handleReplyLike(reply.id)} className={`mt-2 flex items-center gap-1.5 text-xs font-semibold transition-colors ${replyLikes[reply.id]?.liked ? 'text-pink-600' : 'text-muted-foreground hover:text-pink-600'}`}><Heart className={`w-3.5 h-3.5 ${replyLikes[reply.id]?.liked ? 'fill-current' : ''}`} />{replyLikes[reply.id]?.count > 0 && <span>{replyLikes[reply.id].count}</span>}</button></div></div></div>
+            {idx > 0 && (idx + 1) % 8 === 0 && <div className="px-4 py-3 bg-muted/20 border-b border-border"><p className="text-[9px] text-muted-foreground/40 uppercase tracking-widest text-center mb-1">🧠 Sponsored</p><DynamicAd location="feed_inline" className="rounded-xl overflow-hidden" /></div>}
+          </div>)}
+        </>}
       </div>
 
-      {/* Poll creation dialog for replies */}
-      {showPollDialog && (
-        <CreatePollDialog
-          onClose={() => setShowPollDialog(false)}
-          onPollCreated={(data) => {
-            setReplyPollData(data);
-            setShowPollDialog(false);
-          }}
-        />
-      )}
+      {showPollDialog && <CreatePollDialog onClose={() => setShowPollDialog(false)} onPollCreated={(data) => { setReplyPollData(data); setShowPollDialog(false); }} />}
     </div>
   );
 }

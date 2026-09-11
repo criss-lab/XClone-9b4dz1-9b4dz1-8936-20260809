@@ -183,7 +183,7 @@ export default function LeaderboardPage() {
           const result = sorted.filter(([id]) => profileMap[id]).map(([id, val]) => ({ ...profileMap[id], value: val }));
           setSeasonData(result);
           setSeasonSnapshots(prev => ({ ...prev, [season.key]: result }));
-          await supabase.from('leaderboard_seasons').upsert({ season_type: season.type, season_key: season.key, start_date: season.start.toISOString(), end_date: season.end.toISOString(), snapshots: result }, { onConflict: 'season_type,season_key' }).catch(() => {});
+          await supabase.from('leaderboard_seasons').upsert({ season_type: season.type, season_key: season.key, start_date: season.start.toISOString(), end_date: season.end.toISOString(), snapshots: result }, { onConflict: 'season_type,season_key' }).then(() => {}, () => {});
         } else { setSeasonData([]); }
       }
     } catch (e) { console.error('fetchSeasonData error:', e); setSeasonData([]); }
@@ -256,7 +256,7 @@ export default function LeaderboardPage() {
     const rankLabel = rank === 1 ? '🥇' : rank === 2 ? '🥈' : '🥉';
     const metricText = tab === 'followers' ? `${formatNumber(entry.value)} followers` : tab === 'earners' ? `$${entry.value.toFixed(2)} earned` : `Day ${entry.value} streak`;
     const text = `${rankLabel} I'm ranked #${rank} on Tsocial's Leaderboard with ${metricText}! 🚀`;
-    if (navigator.share) navigator.share({ title: 'Tsocial Leaderboard', text }).catch(() => {});
+    if (navigator.share) navigator.share({ title: 'Tsocial Leaderboard', text }).then(() => {}, () => {});
     else { navigator.clipboard.writeText(text); toast.success('Copied!'); }
     setTimeout(() => setCopiedId(null), 2000);
   };
@@ -327,7 +327,7 @@ export default function LeaderboardPage() {
           onClick={async () => {
             const url = `${window.location.origin}/leaderboard`;
             const text = `🏆 Check out the Tsocial Leaderboard! → ${url}`;
-            if (navigator.share) navigator.share({ title: 'Tsocial Leaderboard', text, url }).catch(() => {});
+            if (navigator.share) navigator.share({ title: 'Tsocial Leaderboard', text, url }).then(() => {}, () => {});
             else { await navigator.clipboard.writeText(text); toast.success('Copied!'); }
             setLeaderboardShared(true);
             setTimeout(() => setLeaderboardShared(false), 2000);

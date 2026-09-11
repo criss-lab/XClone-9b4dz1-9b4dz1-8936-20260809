@@ -60,7 +60,7 @@ function OrderDetailSheet({ order, isSeller, onClose, navigate, onStatusUpdate }
   const [updating, setUpdating] = useState(false);
 
   const handleCopyId = () => {
-    navigator.clipboard.writeText(order.id).then(() => toast.success('Order ID copied')).catch(() => {});
+    navigator.clipboard.writeText(order.id).then(() => toast.success('Order ID copied')).then(() => {}, () => {});
   };
 
   const handleDM = async () => {
@@ -94,7 +94,7 @@ function OrderDetailSheet({ order, isSeller, onClose, navigate, onStatusUpdate }
           : `Your order for "${product.name ?? 'your item'}" has been delivered!`,
         data: { route: '/orders', type: 'order_status' },
       },
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`Order marked as ${newStatus}`);
     onStatusUpdate?.(order.id, newStatus);
     onClose();
@@ -518,7 +518,7 @@ function SellerOrderCard({ order, onStatusUpdate, navigate, onDetail }: {
       user_id: order.buyer_id,
       type: 'payment_sent',
       from_user_id: order.seller_id,
-    }).catch(() => {});
+    }).then(() => {}, () => {});
 
     // Send push notification to buyer
     const notifTitle = newStatus === 'shipped' ? '📦 Order Shipped!' : '✅ Order Delivered!';
@@ -533,7 +533,7 @@ function SellerOrderCard({ order, onStatusUpdate, navigate, onDetail }: {
         body:    notifBody,
         data: { route: '/orders', type: 'order_status' },
       },
-    }).catch(() => {});
+    }).then(() => {}, () => {});
 
     toast.success(`Order marked as ${newStatus}`);
     onStatusUpdate(order.id, newStatus);

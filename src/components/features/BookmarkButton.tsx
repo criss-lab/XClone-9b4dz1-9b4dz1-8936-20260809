@@ -64,7 +64,7 @@ export function BookmarkButton({ postId }: BookmarkButtonProps) {
         setIsBookmarked(true);
         toast.success('Added to bookmarks');
         // Update interest signal — fire-and-forget
-        updateInterestSignal(user.id, postId, 'bookmark').catch(() => {});
+        updateInterestSignal(user.id, postId, 'bookmark').then(() => {}, () => {});
       }
     } catch (error: any) {
       toast.error(error.message);

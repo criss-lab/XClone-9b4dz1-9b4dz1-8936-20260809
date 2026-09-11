@@ -1,0 +1,42 @@
+name: Testagram Fediverse Delivery Worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/federation-delivery-worker/**'
+      - '.github/workflows/fediverse-delivery-worker.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testagram-fediverse-delivery-worker
+  cancel-in-progress: true
+
+env:
+  FUNCTION_URL: https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/federation-delivery-worker
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate internal credential
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: test -n "$SUPABASE_SECRET_KEY"
+      - name: Drain federation queue
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          curl -sS --fail-with-body --max-time 45 \
+            -X POST "$FUNCTION_URL" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "x-federation-internal: $SUPABASE_SECRET_KEY" \
+            -H 'Content-Type: application/json' \
+            -d '{}' | tee "$RUNNER_TEMP/federation-worker.json"

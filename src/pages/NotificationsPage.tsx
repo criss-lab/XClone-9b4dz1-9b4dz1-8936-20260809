@@ -1,719 +1,197 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSEO } from '@/hooks/useSEO';
 import { TopBar } from '@/components/layout/TopBar';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
-import {
-  Heart, Repeat2, UserPlus, MessageCircle, AtSign,
-  BadgeCheck, Loader2, DollarSign, CheckCircle2, Smartphone,
-  TrendingUp, Bell, CreditCard, ArrowDownLeft, Globe, UserCheck,
-  Star, ExternalLink, RefreshCw, Flame, Trophy, Zap, XCircle, Megaphone,
-  Settings2, Send as SendIcon, X,
-} from 'lucide-react';
+import { AtSign, Bell, CheckCheck, Filter, Flame, Globe, Heart, Loader2, Mail, MessageCircle, Repeat2, Search, Settings2, ShieldCheck, Trash2, UserPlus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatDistanceToNow } from 'date-fns';
-import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
 import { useFediversePolling } from '@/hooks/useFediversePolling';
 
-function NotificationsAdBanner() { return <PageAdBanner />; }
+const PAGE_SIZE = 30;
+type FilterKey = 'all' | 'unread' | 'social' | 'mentions' | 'payments' | 'creator' | 'fediverse';
+type NotificationRow = any;
+const SOCIAL = new Set(['like', 'repost', 'follow', 'reply', 'mention', 'quote', 'comment']);
+const PAYMENTS = new Set(['payment_success', 'payment_sent', 'payment_failed', 'payout_sent', 'deposit_confirmed', 'boost_activated']);
+const CREATOR = new Set(['ad_active', 'ad_rejected', 'new_ad', 'tip_received', 'streak_milestone', 'leaderboard', 'verification', 'community', 'live_event', 'live_gift', 'sponsorship']);
 
-const PAGE_SIZE = 20;
+function iconFor(kind: string) {
+  if (kind === 'like') return <Heart className="w-5 h-5 text-pink-500" fill="currentColor" />;
+  if (kind === 'repost') return <Repeat2 className="w-5 h-5 text-green-500" />;
+  if (kind === 'follow') return <UserPlus className="w-5 h-5 text-primary" />;
+  if (kind === 'reply' || kind === 'comment' || kind === 'quote') return <MessageCircle className="w-5 h-5 text-blue-500" />;
+  if (kind === 'mention') return <AtSign className="w-5 h-5 text-violet-500" />;
+  if (kind.startsWith('fediverse_')) return <Globe className="w-5 h-5 text-purple-500" />;
+  if (kind.includes('payment') || kind.includes('deposit') || kind.includes('payout')) return <ShieldCheck className="w-5 h-5 text-green-600" />;
+  if (kind === 'streak_milestone') return <Flame className="w-5 h-5 text-orange-500" />;
+  return <Bell className="w-5 h-5 text-muted-foreground" />;
+}
 
-type NotifTab = 'all' | 'mentions' | 'payments' | 'fediverse';
-
-// ── Inline Mention Reply Component ───────────────────────────────────────────
-function MentionReplyInput({ postId, onPosted }: { postId: string; onPosted: () => void }) {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const [text, setText] = useState('');
-  const [posting, setPosting] = useState(false);
-  const [show, setShow] = useState(false);
-
-  const submit = async () => {
-    if (!user) { navigate('/auth'); return; }
-    if (!text.trim()) return;
-    setPosting(true);
-    const { error } = await supabase.from('replies').insert({ post_id: postId, user_id: user.id, content: text.trim() });
-    if (!error) {
-      setText('');
-      setShow(false);
-      toast.success('Reply sent!');
-      onPosted();
-    } else {
-      toast.error('Failed to send reply');
-    }
-    setPosting(false);
-  };
-
-  if (!show) {
-    return (
-      <button onClick={() => setShow(true)}
-        className="mt-2 flex items-center gap-1.5 text-xs text-primary font-semibold hover:underline transition-colors">
-        <MessageCircle className="w-3.5 h-3.5" />Reply
-      </button>
-    );
+function textFor(n: NotificationRow) {
+  const actor = n.actor?.username ? `@${n.actor.username}` : 'Someone';
+  const data = n.data ?? {};
+  switch (n.kind) {
+    case 'like': return `${actor} liked your post`;
+    case 'repost': return `${actor} reposted your post`;
+    case 'follow': return `${actor} followed you`;
+    case 'reply': return `${actor} replied to your post`;
+    case 'comment': return `${actor} commented on your post`;
+    case 'mention': return `${actor} mentioned you`;
+    case 'quote': return `${actor} quoted your post`;
+    case 'fediverse_follow': return `${actor} followed you from the Fediverse`;
+    case 'fediverse_mention': return `${actor} mentioned you from the Fediverse`;
+    case 'fediverse_like': return `${actor} favourited your federated post`;
+    case 'fediverse_repost': return `${actor} boosted your federated post`;
+    case 'payment_success': return data.message ?? `Payment of ${data.amount ?? ''} confirmed`;
+    case 'deposit_confirmed': return `Deposit confirmed${data.receipt ? ` · Receipt ${data.receipt}` : ''}`;
+    case 'payment_sent': return `Payment of ${data.amount ?? ''} sent`;
+    case 'payout_sent': return `Payout of ${data.amount ?? ''} sent via ${data.method ?? 'payout'}`;
+    case 'payment_failed': return `Payment failed${data.reason ? ` — ${data.reason}` : ''}`;
+    case 'boost_activated': return `Your boost is now active${data.estimated_reach ? ` · estimated reach ${Number(data.estimated_reach).toLocaleString()}` : ''}`;
+    case 'streak_milestone': return `🔥 You reached a ${data.streak_day ?? ''}-day streak milestone`;
+    case 'tip_received': return `You received a creator tip${data.amount ? ` of ${data.amount}` : ''}`;
+    case 'ad_active': return 'Your ad was approved and is live';
+    case 'ad_rejected': return 'Your ad was rejected — review the campaign details';
+    case 'new_ad': return `${actor} submitted an ad for review`;
+    case 'verification': return data.message ?? 'Your verification status was updated';
+    case 'leaderboard': return data.message ?? 'Your leaderboard position changed';
+    default: return data.message ?? 'You have a new notification';
   }
+}
 
-  return (
-    <div className="mt-2 flex items-center gap-2" onClick={e => e.stopPropagation()}>
-      <input type="text" value={text} onChange={e => setText(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } if (e.key === 'Escape') setShow(false); }}
-        placeholder="Write a reply…" maxLength={280} autoFocus
-        className="flex-1 text-sm bg-muted/60 border border-border rounded-xl px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/30" />
-      <button onClick={submit} disabled={!text.trim() || posting}
-        className="text-primary disabled:opacity-30 transition-opacity">
-        {posting ? <Loader2 className="w-4 h-4 animate-spin" /> : <SendIcon className="w-4 h-4" />}
-      </button>
-      <button onClick={() => { setShow(false); setText(''); }} className="text-muted-foreground hover:text-foreground">
-        <X className="w-3.5 h-3.5" />
-      </button>
-    </div>
-  );
+function avatarFor(n: NotificationRow) {
+  if (n.actor?.avatar_url) return <img src={n.actor.avatar_url} alt={n.actor.username ?? ''} className="w-10 h-10 rounded-full object-cover" />;
+  return <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary">{(n.actor?.username ?? 'T').slice(0, 1).toUpperCase()}</div>;
 }
 
 export default function NotificationsPage() {
   useSEO({ noindex: true, title: 'Notifications', url: '/notifications' });
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [notifications, setNotifications] = useState<any[]>([]);
+  const [rows, setRows] = useState<NotificationRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<NotifTab>('all');
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [filter, setFilter] = useState<FilterKey>('all');
+  const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [showFilters, setShowFilters] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const { notifs: fedNotifs, loading: fedLoading, lastPolled, refresh: refreshFed } = useFediversePolling(filter === 'fediverse' ? user?.id : null);
 
-  // ── Smart Notification Grouping: group likes/reposts by post, and consecutive follows ──
-  function groupNotifications(notifs: any[]): any[] {
-    const result: any[] = [];
-    const used = new Set<number>();
-    for (let i = 0; i < notifs.length; i++) {
-      if (used.has(i)) continue;
-      const n = notifs[i];
-      // Group likes + reposts by same post_id across nearby window
-      if (n.type === 'like' || n.type === 'repost') {
-        const group: any[] = [n];
-        used.add(i);
-        for (let j = i + 1; j < Math.min(notifs.length, i + 20); j++) {
-          if (!used.has(j) && notifs[j].type === n.type && notifs[j].post_id === n.post_id) {
-            group.push(notifs[j]);
-            used.add(j);
-          }
-        }
-        if (group.length > 1) {
-          result.push({ _grouped: true, type: n.type, post_id: n.post_id, post: n.post, items: group, created_at: n.created_at, read: group.every((g: any) => g.read) });
-        } else {
-          result.push(n);
-        }
-        continue;
-      }
-      // Group follows: collapse consecutive follow notifications
-      if (n.type === 'follow') {
-        const group: any[] = [n];
-        used.add(i);
-        for (let j = i + 1; j < Math.min(notifs.length, i + 10); j++) {
-          if (!used.has(j) && notifs[j].type === 'follow') {
-            group.push(notifs[j]);
-            used.add(j);
-          }
-        }
-        if (group.length > 1) {
-          result.push({ _grouped: true, type: 'follow', post_id: null, post: null, items: group, created_at: n.created_at, read: group.every((g: any) => g.read) });
-        } else {
-          result.push(n);
-        }
-        continue;
-      }
-      used.add(i);
-      result.push(n);
-    }
-    return result;
-  }
+  const hydrate = useCallback(async (base: any[]) => {
+    const actorIds = [...new Set(base.map(n => n.actor_id).filter(Boolean))];
+    const postIds = [...new Set(base.map(n => n.post_id).filter(Boolean))];
+    const [actorsResult, postsResult] = await Promise.all([
+      actorIds.length ? supabase.from('user_profiles').select('id,username,display_name,avatar_url,verified').in('id', actorIds) : Promise.resolve({ data: [] as any[] }),
+      postIds.length ? supabase.from('posts').select('id,content,body').in('id', postIds) : Promise.resolve({ data: [] as any[] }),
+    ]);
+    const actors = new Map((actorsResult.data ?? []).map((a: any) => [a.id, a]));
+    const posts = new Map((postsResult.data ?? []).map((p: any) => [p.id, p]));
+    return base.map(n => ({ ...n, actor: actors.get(n.actor_id), post: posts.get(n.post_id) }));
+  }, []);
 
-  // Live Fediverse inbox polling (30s interval)
-  const { notifs: fedNotifs, loading: fedLoading, lastPolled, refresh: refreshFed } =
-    useFediversePolling(activeTab === 'fediverse' ? user?.id : null);
+  const fetchPage = useCallback(async (pageNum: number) => {
+    if (!user) return [];
+    let q = supabase.from('notifications').select('id,recipient_id,actor_id,kind,post_id,read_at,created_at,data,priority,category,group_key,action_url,archived_at,expires_at').eq('recipient_id', user.id).is('archived_at', null).order('created_at', { ascending: false }).range(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE - 1);
+    if (filter === 'unread') q = q.is('read_at', null);
+    if (filter === 'mentions') q = q.in('kind', ['mention', 'fediverse_mention']);
+    if (filter === 'payments') q = q.in('kind', [...PAYMENTS]);
+    if (filter === 'creator') q = q.in('kind', [...CREATOR]);
+    if (filter === 'social') q = q.in('kind', [...SOCIAL]);
+    const { data, error } = await q;
+    if (error) throw error;
+    return hydrate(data ?? []);
+  }, [filter, hydrate, user]);
 
-  const fetchNotifications = async (pageNum = 0) => {
-    if (!user) return;
+  const refresh = useCallback(async () => {
+    if (!user || filter === 'fediverse') return;
     setLoading(true);
     try {
-      let query = supabase
-        .from('notifications')
-        .select('*, from_user:user_profiles!notifications_from_user_id_fkey(*), post:posts(*)')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .range(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE - 1);
+      const data = await fetchPage(0);
+      setRows(data);
+      setPage(0);
+      setHasMore(data.length === PAGE_SIZE);
+      setSelected([]);
+    } catch (e) {
+      console.error('[notifications] fetch failed', e);
+      toast.error('Could not load notifications');
+    } finally { setLoading(false); }
+  }, [fetchPage, filter, user]);
 
-      if (activeTab === 'mentions') {
-        query = query.eq('type', 'mention');
-      } else if (activeTab === 'payments') {
-        query = query.in('type', [
-          'payment_success', 'payment_sent', 'payment_failed',
-          'payout_sent', 'deposit_confirmed', 'boost_activated',
-        ]);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      if (pageNum === 0) setNotifications(data ?? []);
-      else setNotifications(prev => [...prev, ...(data ?? [])]);
-      setPage(pageNum);
-    } catch (err) {
-      console.error('[notifications] fetch error:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const markAsRead = async () => {
-    if (!user) return;
-    await supabase
-      .from('notifications')
-      .update({ read: true })
-      .eq('user_id', user.id)
-      .eq('read', false);
-  };
-
-  const markAllAsRead = async () => {
-    if (!user) return;
-    await supabase
-      .from('notifications')
-      .update({ read: true })
-      .eq('user_id', user.id)
-      .eq('read', false);
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-  };
+  useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
-    if (!user) {
-      navigate('/auth');
-      return;
-    }
-    if (activeTab !== 'fediverse') {
-      fetchNotifications(0);
-      markAsRead();
-    }
-  }, [user, activeTab, navigate]); // Added navigate to dependency array
+    if (!user) return;
+    const channel = supabase.channel(`notifications:${user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${user.id}` }, async payload => {
+        const hydrated = await hydrate([payload.new]);
+        setRows(prev => [hydrated[0], ...prev.filter(r => r.id !== payload.new.id)]);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${user.id}` }, payload => {
+        setRows(prev => prev.map(r => r.id === payload.new.id ? { ...r, ...payload.new } : r).filter(r => !r.archived_at));
+      }).subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [hydrate, user]);
 
-  const loadMore = async (): Promise<boolean> => {
-    if (activeTab === 'fediverse') return false;
-    const nextPage = page + 1;
-    await fetchNotifications(nextPage);
-    // The original code was `return notifications.length % PAGE_SIZE === 0;` which is likely incorrect
-    // as `notifications` is state from *before* `fetchNotifications` resolves.
-    // It should check the *newly fetched* data or rely on a different condition.
-    // However, since the error is about a missing ESLint rule definition and not runtime logic,
-    // I'm preserving the original logic here, but noting its potential issue.
-    // A more robust check might involve comparing `data.length` from `fetchNotifications`
-    // or passing the new page's data length back.
-    return notifications.length % PAGE_SIZE === 0;
+  const unreadCount = rows.filter(n => !n.read_at).length;
+  const filteredRows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return needle ? rows.filter(n => `${textFor(n)} ${n.post?.content ?? ''}`.toLowerCase().includes(needle)) : rows;
+  }, [query, rows]);
+
+  const markRead = async (ids: string[]) => {
+    if (!ids.length) return;
+    const { error } = await supabase.rpc('mark_notifications_read', { p_notification_ids: ids });
+    if (error) { toast.error('Could not update notifications'); return; }
+    setRows(prev => prev.map(n => ids.includes(n.id) ? { ...n, read_at: n.read_at ?? new Date().toISOString() } : n));
   };
 
-  const { lastElementRef, loading: loadingMore } = useInfiniteScroll(loadMore);
-
-  // ── Icon helpers ────────────────────────────────────────────────────────────
-  const getIcon = (type: string) => {
-    switch (type) {
-      case 'like':              return <Heart className="w-8 h-8 text-pink-600" fill="currentColor" />;
-      case 'repost':            return <Repeat2 className="w-8 h-8 text-green-500" />;
-      case 'follow':            return <UserPlus className="w-8 h-8 text-primary" />;
-      case 'reply':             return <MessageCircle className="w-8 h-8 text-primary" />;
-      case 'mention':           return <AtSign className="w-8 h-8 text-primary" />;
-      case 'payment_success':
-      case 'deposit_confirmed': return <CheckCircle2 className="w-8 h-8 text-green-600" />;
-      case 'payment_sent':
-      case 'payout_sent':       return <ArrowDownLeft className="w-8 h-8 text-blue-600" />;
-      case 'payment_failed':    return <CreditCard className="w-8 h-8 text-destructive" />;
-      case 'boost_activated':   return <TrendingUp className="w-8 h-8 text-purple-600" />;
-      case 'streak_milestone':   return <Flame className="w-8 h-8 text-orange-500" />;
-      case 'ad_active':          return <CheckCircle2 className="w-8 h-8 text-green-600" />;
-      case 'ad_rejected':        return <XCircle className="w-8 h-8 text-destructive" />;
-      case 'new_ad':             return <Megaphone className="w-8 h-8 text-amber-500" />;
-      default:                   return <Bell className="w-8 h-8 text-muted-foreground" />;
-    }
+  const archive = async (ids: string[]) => {
+    if (!ids.length) return;
+    const { error } = await supabase.rpc('archive_notifications', { p_notification_ids: ids });
+    if (error) { toast.error('Could not clear notifications'); return; }
+    setRows(prev => prev.filter(n => !ids.includes(n.id)));
+    setSelected(prev => prev.filter(id => !ids.includes(id)));
+    toast.success(ids.length === 1 ? 'Notification cleared' : `${ids.length} notifications cleared`);
   };
 
-  const getText = (n: any) => {
-    const username = n.from_user?.username ?? 'Someone';
-    const meta = n.metadata ?? {};
-    switch (n.type) {
-      case 'like':              return `${username} liked your post`;
-      case 'repost':            return `${username} reposted your post`;
-      case 'follow':            return `${username} followed you`;
-      case 'reply':             return `${username} replied to your post`;
-      case 'mention':           return `${username} mentioned you`;
-      case 'payment_success':
-        return meta.message ?? `M-Pesa payment of KES ${meta.amount ?? ''} confirmed`;
-      case 'deposit_confirmed':
-        return `Deposit of KES ${meta.kes_amount ?? meta.amount ?? ''} confirmed · Receipt: ${meta.receipt ?? ''}`;
-      case 'payment_sent':
-        if (meta.purpose === 'creator_payout')
-          return `Creator payout of $${meta.amount} (KES ${meta.kes_amount}) sent to ${meta.phone}`;
-        if (meta.purpose === 'paypal_withdrawal')
-          return `PayPal withdrawal of $${meta.amount} submitted to ${meta.email}`;
-        return `Payment of $${meta.amount} sent`;
-      case 'payout_sent':
-        return `Payout of $${meta.amount} sent via ${meta.method ?? 'M-Pesa'}`;
-      case 'payment_failed':
-        return `Payment failed — ${meta.reason ?? 'please try again'}`;
-      case 'boost_activated':
-        return `Your post boost is now active · Est. reach: ${(meta.estimated_reach ?? 0).toLocaleString()}`;
-      case 'ad_active':          return 'Your ad has been approved and is now live!';
-      case 'ad_rejected':         return 'Your ad was rejected. Check admin notes for details.';
-      case 'new_ad':              return `${username} submitted a new ad for review.`;
-      case 'streak_milestone': {
-        const day = meta?.streak_day ?? n.from_user_id ? undefined : undefined;
-        if (n.from_user_id === user?.id) {
-          // Self-generated milestone
-          return day === 7
-            ? '🏆 You hit a 7-day max streak! Keep it going!'
-            : `🔥 You hit a ${day ?? ''}‑day streak milestone! Congrats!`;
-        }
-        return '🔥 Streak milestone reached!';
-      }
-      default:                  return 'New notification';
-    }
-  };
-
-  const isPaymentType = (type: string) =>
-    ['payment_success', 'payment_sent', 'payment_failed', 'payout_sent', 'deposit_confirmed', 'boost_activated', 'ad_active', 'ad_rejected', 'new_ad'].includes(type);
-
-  const getStreakMilestoneDay = (n: any): number => {
-    // Infer milestone from the notification row; we stored type='streak_milestone'
-    // and from_user_id === user.id so we check the daily_rewards table lazily via metadata
-    return n.metadata?.streak_day ?? 0;
-  };
-
-  const getNotifBg = (type: string) => {
-    if (['payment_success', 'deposit_confirmed'].includes(type)) return 'bg-green-50/50 dark:bg-green-900/10';
-    if (['payment_sent', 'payout_sent'].includes(type)) return 'bg-blue-50/50 dark:bg-blue-900/10';
-    if (type === 'payment_failed') return 'bg-red-50/50 dark:bg-red-900/10';
-    if (type === 'boost_activated') return 'bg-purple-50/50 dark:bg-purple-900/10';
-    if (type === 'streak_milestone') return 'bg-orange-50/60 dark:bg-orange-900/10';
-    if (type === 'ad_active') return 'bg-green-50/50 dark:bg-green-900/10';
-    if (type === 'ad_rejected') return 'bg-red-50/50 dark:bg-red-900/10';
-    if (type === 'new_ad') return 'bg-amber-50/50 dark:bg-amber-900/10';
-    return '';
-  };
-
-  // ── Fediverse notification helpers ──────────────────────────────────────────
-  const getFedIcon = (type: string) => {
-    switch (type?.toLowerCase()) {
-      case 'follow':    return <UserCheck className="w-6 h-6 text-purple-500" />;
-      case 'like':
-      case 'favourite': return <Star className="w-6 h-6 text-yellow-500" />;
-      case 'boost':
-      case 'announce':  return <Repeat2 className="w-6 h-6 text-green-500" />;
-      case 'mention':   return <AtSign className="w-6 h-6 text-primary" />;
-      case 'create':    return <MessageCircle className="w-6 h-6 text-primary" />;
-      default:          return <Globe className="w-6 h-6 text-purple-400" />;
-    }
-  };
-
-  const getFedText = (n: any) => {
-    const actor = n.actor_url ?? n.account?.url ?? 'A remote user';
-    const actorShort = actor.replace(/https?:\/\//, '').split('/').pop() ?? actor;
-    const type = (n.activity_type ?? n.type ?? '').toLowerCase();
-    switch (type) {
-      case 'follow':    return `${actorShort} followed you from the Fediverse`;
-      case 'like':
-      case 'favourite': return `${actorShort} favourited your post`;
-      case 'boost':
-      case 'announce':  return `${actorShort} boosted your post`;
-      case 'mention':   return `${actorShort} mentioned you`;
-      case 'create':    return `${actorShort} replied to your post`;
-      default:          return `${actorShort} interacted with you`;
-    }
+  const loadMore = async () => {
+    if (!hasMore || loadingMore || filter === 'fediverse') return;
+    setLoadingMore(true);
+    try {
+      const next = page + 1;
+      const data = await fetchPage(next);
+      setRows(prev => [...prev, ...data]);
+      setPage(next);
+      setHasMore(data.length === PAGE_SIZE);
+    } finally { setLoadingMore(false); }
   };
 
   if (!user) return null;
-
-  const tabs: { key: NotifTab; label: string }[] = [
-    { key: 'all',       label: 'All'       },
-    { key: 'mentions',  label: '@Mentions' },
-    { key: 'payments',  label: 'Payments'  },
-    { key: 'fediverse', label: 'Fediverse' },
+  const filters: { key: FilterKey; label: string }[] = [
+    { key: 'all', label: 'All' }, { key: 'unread', label: 'Unread' }, { key: 'social', label: 'Social' }, { key: 'mentions', label: 'Mentions' }, { key: 'payments', label: 'Payments' }, { key: 'creator', label: 'Creator' }, { key: 'fediverse', label: 'Fediverse' },
   ];
 
-  const unreadMentions = notifications.filter(n => n.type === 'mention' && !n.read).length;
-
-  return (
-    <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <TopBar title="Notifications" />
-      <NotificationsAdBanner />
-
-      {/* Tabs */}
-      <div className="sticky top-14 z-30 bg-background border-b border-border">
-        <div className="flex items-center">
-          <div className="flex flex-1 overflow-x-auto scrollbar-hide">
-            {tabs.map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => setActiveTab(key)}
-                className={`flex-1 min-w-[80px] py-4 font-semibold transition-colors border-b-2 text-sm whitespace-nowrap relative ${
-                  activeTab === key
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:bg-muted/50'
-                }`}
-              >
-                {label}
-                {key === 'mentions' && unreadMentions > 0 && (
-                  <span className="absolute top-2.5 right-1.5 min-w-[16px] h-4 bg-primary text-primary-foreground text-[9px] font-black rounded-full flex items-center justify-center px-0.5">
-                    {unreadMentions > 9 ? '9+' : unreadMentions}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-1 shrink-0 pr-2">
-            {activeTab !== 'fediverse' && notifications.some(n => !n.read) && (
-              <button
-                onClick={markAllAsRead}
-                className="px-2 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10 rounded-full transition-colors whitespace-nowrap flex items-center gap-1"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                Mark all
-              </button>
-            )}
-            <button
-              onClick={() => navigate('/notification-preferences')}
-              title="Notification Preferences"
-              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-full transition-colors"
-            >
-              <Settings2 className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+  return <div className="min-h-screen bg-background pb-16 md:pb-0">
+    <TopBar />
+    <PageAdBanner />
+    <div className="sticky top-14 z-30 bg-background/95 backdrop-blur border-b border-border">
+      <div className="max-w-3xl mx-auto px-3 py-2 flex items-center gap-2">
+        <div className="flex-1"><h1 className="font-black text-lg">Notifications</h1><p className="text-[11px] text-muted-foreground">{unreadCount ? `${unreadCount} unread` : "You're all caught up"}</p></div>
+        {unreadCount > 0 && <button onClick={() => markRead(rows.filter(n => !n.read_at).map(n => n.id))} className="px-3 py-2 rounded-full text-xs font-bold text-primary hover:bg-primary/10 flex items-center gap-1"><CheckCheck className="w-4 h-4" /> Read all</button>}
+        <button onClick={() => setShowFilters(v => !v)} className={`p-2 rounded-full ${showFilters ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}`}><Filter className="w-4 h-4" /></button>
+        <button onClick={() => navigate('/notification-preferences')} className="p-2 rounded-full hover:bg-muted"><Settings2 className="w-4 h-4" /></button>
       </div>
-
-      {/* Loading state */}
-      {(activeTab === 'fediverse' ? fedLoading && fedNotifs.length === 0 : loading) ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        </div>
-      ) : activeTab === 'fediverse' ? (
-        /* ── Fediverse Notifications (live polled) ── */
-        <div>
-          {/* Polling status bar */}
-          <div className="flex items-center justify-between px-4 py-2 bg-purple-500/5 border-b border-purple-500/10 text-xs text-purple-500">
-            <span className="flex items-center gap-1.5">
-              <Globe className="w-3 h-3" />
-              Live · polls every 30s
-              {lastPolled && (
-                <span className="text-muted-foreground">
-                  · last {formatDistanceToNow(lastPolled, { addSuffix: true })}
-                </span>
-              )}
-            </span>
-            <button
-              onClick={refreshFed}
-              className="flex items-center gap-1 hover:text-purple-700 transition-colors"
-            >
-              <RefreshCw className={`w-3 h-3 ${fedLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
-
-          {fedNotifs.length === 0 ? (
-            <div className="text-center py-16 text-muted-foreground px-6">
-              <Globe className="w-12 h-12 mx-auto mb-3 opacity-40" />
-              <p className="font-semibold">No Fediverse notifications yet</p>
-              <p className="text-sm mt-1">Follows, likes, and boosts from Mastodon/Misskey appear here</p>
-              <button
-                onClick={() => navigate('/fediverse')}
-                className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-full text-sm font-medium"
-              >
-                Go to Fediverse
-              </button>
-            </div>
-          ) : (
-            fedNotifs.map((n: any, idx: number) => (
-              <div
-                key={n.id ?? idx}
-                className="border-b border-border p-4 hover:bg-purple-500/5 transition-colors"
-              >
-                <div className="flex gap-3 items-start">
-                  <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center flex-shrink-0">
-                    {getFedIcon(n.activity_type ?? n.type)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{getFedText(n)}</p>
-                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                      <span className="flex items-center gap-1 text-xs text-purple-500">
-                        <Globe className="w-3 h-3" />
-                        Fediverse
-                      </span>
-                      {n.created_at && (
-                        <span className="text-xs text-muted-foreground">
-                          · {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-                        </span>
-                      )}
-                    </div>
-                    {(n.actor_url ?? n.account?.url) && (
-                      <a
-                        href={n.actor_url ?? n.account?.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-1 flex items-center gap-1 text-xs text-primary hover:underline"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        View actor
-                      </a>
-                    )}
-                  </div>
-                  {!n.processed && (
-                    <div className="w-2.5 h-2.5 bg-purple-500 rounded-full flex-shrink-0 mt-1" />
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      ) : (
-        /* ── Local Notifications ── */
-        notifications.length === 0 ? (
-          <div className="text-center py-16 text-muted-foreground">
-            {activeTab === 'payments' ? (
-              <>
-                <DollarSign className="w-12 h-12 mx-auto mb-3 opacity-40" />
-                <p className="font-semibold">No payment notifications yet</p>
-                <p className="text-sm mt-1">Deposits, payouts, and boosts will appear here</p>
-              </>
-            ) : activeTab === 'mentions' ? (
-              <>
-                <AtSign className="w-12 h-12 mx-auto mb-3 opacity-40" />
-                <p className="font-semibold">No mentions yet</p>
-                <p className="text-sm mt-1">When someone @mentions you in a post, it'll appear here</p>
-              </>
-            ) : (
-              <>
-                <Bell className="w-12 h-12 mx-auto mb-3 opacity-40" />
-                <p className="font-semibold">No notifications yet</p>
-                <p className="text-sm mt-1">When you get notifications, they'll show up here</p>
-              </>
-            )}
-          </div>
-        ) : (
-          <div>
-            {groupNotifications(notifications).map((n: any, idx: number) =>
-              // ── Grouped like / repost row ──────────────────────────────────
-              n._grouped ? (
-                <div
-                  key={`group-${n.type}-${n.post_id}-${idx}`}
-                  ref={idx === notifications.length - 1 ? lastElementRef : null}
-                  onClick={() => n.post_id && navigate(`/post/${n.post_id}`)}
-                  className={`border-b border-border p-4 hover:bg-muted/5 cursor-pointer transition-colors ${
-                    !n.read ? 'bg-primary/3' : ''
-                  }`}
-                >
-                  <div className="flex gap-3 items-start">
-                    <div className="flex-shrink-0 pt-1">{getIcon(n.type)}</div>
-                    <div className="flex-1 min-w-0">
-                      {/* Stacked avatars */}
-                      <div className="flex items-center mb-1.5">
-                        {n.items.slice(0, 5).map((item: any, ai: number) => (
-                          <div
-                            key={item.id}
-                            className="w-7 h-7 rounded-full bg-muted border-2 border-background overflow-hidden -ml-1 first:ml-0 shrink-0"
-                            style={{ zIndex: 5 - ai }}
-                          >
-                            {item.from_user?.avatar_url
-                              ? <img src={item.from_user.avatar_url} alt={item.from_user.username} className="w-full h-full object-cover" />
-                              : <div className="w-full h-full flex items-center justify-center text-[9px] font-bold">{item.from_user?.username?.[0]?.toUpperCase() ?? '?'}</div>
-                            }
-                          </div>
-                        ))}
-                        {n.items.length > 5 && (
-                          <div className="w-7 h-7 rounded-full bg-muted border-2 border-background -ml-1 flex items-center justify-center text-[9px] font-bold text-muted-foreground shrink-0">
-                            +{n.items.length - 5}
-                          </div>
-                        )}
-                        {!n.read && <div className="w-2 h-2 bg-primary rounded-full ml-auto shrink-0" />}
-                      </div>
-                      {/* Summary text — handle follow groups too */}
-                      <p className="text-sm">
-                        <span className="font-bold">{n.items[0].from_user?.username ?? 'Someone'}</span>
-                        {n.items.length === 2 && <> and <span className="font-bold">{n.items[1].from_user?.username ?? 'another'}</span></>}
-                        {n.items.length > 2 && <> and <span className="font-semibold">{n.items.length - 1} others</span></>}
-                        <span className="text-muted-foreground">
-                          {n.type === 'like' ? ' liked' : n.type === 'repost' ? ' reposted' : ' followed'} your {n.type === 'follow' ? 'account' : 'post'}
-                        </span>
-                      </p>
-                      {n.post?.content && (
-                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{n.post.content}</p>
-                      )}
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : n.type === 'streak_milestone' ? (
-                <div
-                  key={n.id}
-                  ref={idx === notifications.length - 1 ? lastElementRef : null}
-                  onClick={() => navigate('/daily-rewards')}
-                  className="border-b border-orange-200/40 dark:border-orange-900/20 p-4 cursor-pointer transition-colors bg-gradient-to-r from-orange-500/10 via-amber-500/5 to-transparent hover:from-orange-500/15"
-                >
-                  <div className="flex gap-3 items-start">
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center flex-shrink-0 shadow-sm shadow-orange-500/20">
-                      <Flame className="w-6 h-6 text-white" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <Trophy className="w-3.5 h-3.5 text-yellow-500" />
-                        <span className="text-xs font-bold text-orange-600 dark:text-orange-400 uppercase tracking-wide">Streak Milestone</span>
-                        {!n.read && <span className="ml-auto w-2 h-2 bg-orange-500 rounded-full" />}
-                      </div>
-                      <p className="font-semibold text-sm text-foreground">{getText(n)}</p>
-                      <div className="flex items-center gap-3 mt-2">
-                        <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-orange-500/15 border border-orange-500/20">
-                          <Zap className="w-3 h-3 text-orange-500" />
-                          <span className="text-xs font-bold text-orange-600 dark:text-orange-400">Keep it up!</span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : n.type === 'mention' ? (
-                /* ── Mention card with inline reply ── */
-                <div
-                  key={n.id}
-                  ref={idx === notifications.length - 1 ? lastElementRef : null}
-                  className={`border-b border-border p-4 transition-colors bg-primary/[0.02] hover:bg-primary/[0.04] ${
-                    !n.read ? 'border-l-2 border-l-primary' : ''
-                  }`}
-                >
-                  <div className="flex gap-3">
-                    <div className="shrink-0">
-                      {n.from_user?.avatar_url ? (
-                        <img src={n.from_user.avatar_url} alt={n.from_user.username}
-                          className="w-10 h-10 rounded-full object-cover cursor-pointer"
-                          onClick={() => navigate(`/profile/${n.from_user.username}`)} />
-                      ) : (
-                        <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-sm font-bold text-primary cursor-pointer"
-                          onClick={() => navigate(`/profile/${n.from_user?.username}`)}>
-                          {n.from_user?.username?.[0]?.toUpperCase() ?? '@'}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                        <span className="flex items-center gap-1 text-[10px] font-bold text-primary uppercase tracking-wide">
-                          <AtSign className="w-3 h-3" />Mention
-                        </span>
-                        {!n.read && <span className="w-2 h-2 bg-primary rounded-full" />}
-                        <span className="ml-auto text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1 mb-1">
-                        <button onClick={() => navigate(`/profile/${n.from_user?.username}`)}
-                          className="font-bold text-sm hover:underline">{n.from_user?.username}</button>
-                        {n.from_user?.verified && <BadgeCheck className="w-3.5 h-3.5 text-primary" fill="currentColor" />}
-                        <span className="text-sm text-muted-foreground">mentioned you</span>
-                      </div>
-                      {/* Post content preview */}
-                      {n.post?.content && (
-                        <button onClick={() => n.post_id && navigate(`/post/${n.post_id}`)}
-                          className="w-full text-left mt-1 mb-1 px-3 py-2 bg-muted/50 border border-border rounded-xl hover:bg-muted/80 transition-colors">
-                          <p className="text-sm text-foreground line-clamp-3 leading-relaxed">{n.post.content}</p>
-                          {n.post_id && (
-                            <span className="text-xs text-primary font-semibold mt-1 block hover:underline">
-                              View post →
-                            </span>
-                          )}
-                        </button>
-                      )}
-                      {/* Inline reply */}
-                      {n.post_id && (
-                        <MentionReplyInput
-                          postId={n.post_id}
-                          onPosted={() => fetchNotifications(0)}
-                        />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  key={n.id}
-                  ref={idx === notifications.length - 1 ? lastElementRef : null}
-                  onClick={() => {
-                    if (n.post_id) navigate(`/post/${n.post_id}`);
-                    else if (n.from_user_id && !isPaymentType(n.type))
-                      navigate(`/profile/${n.from_user?.username}`);
-                    else if (isPaymentType(n.type)) navigate('/wallet');
-                  }}
-                  className={`border-b border-border p-4 hover:bg-muted/5 cursor-pointer transition-colors ${getNotifBg(n.type)}`}
-                >
-                  <div className="flex gap-3">
-                    <div className="flex-shrink-0 pt-1">{getIcon(n.type)}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start gap-2">
-                        {isPaymentType(n.type) ? (
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                            ['payment_success', 'deposit_confirmed'].includes(n.type)
-                              ? 'bg-green-100 dark:bg-green-900/30'
-                              : n.type === 'boost_activated'
-                              ? 'bg-purple-100 dark:bg-purple-900/30'
-                              : 'bg-blue-100 dark:bg-blue-900/30'
-                          }`}>
-                            <Smartphone className="w-4 h-4 text-green-600" />
-                          </div>
-                        ) : n.from_user?.avatar_url ? (
-                          <img
-                            src={n.from_user.avatar_url}
-                            alt={n.from_user.username}
-                            className="w-8 h-8 rounded-full object-cover shrink-0"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0">
-                            {n.from_user?.username?.[0]?.toUpperCase() ?? '?'}
-                          </div>
-                        )}
-                        <div className="flex-1">
-                          {!isPaymentType(n.type) && (
-                            <div className="flex items-center gap-1 flex-wrap">
-                              <span className="font-bold">{n.from_user?.username}</span>
-                              {n.from_user?.verified && (
-                                <BadgeCheck className="w-4 h-4 text-primary" fill="currentColor" />
-                              )}
-                            </div>
-                          )}
-                          <p className={`text-sm ${isPaymentType(n.type) ? 'font-medium' : 'text-muted-foreground'}`}>
-                            {getText(n)}
-                          </p>
-                          {n.post?.content && (
-                            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                              {n.post.content}
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-                          </p>
-                        </div>
-                        {!n.read && (
-                          <div className="w-2.5 h-2.5 bg-primary rounded-full shrink-0 mt-1" />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            )}
-            {loadingMore && (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin text-primary" />
-              </div>
-            )}
-          </div>
-        )
-      )}
+      <div className="max-w-3xl mx-auto px-3 pb-2 flex gap-2 overflow-x-auto scrollbar-hide">{filters.map(f => <button key={f.key} onClick={() => setFilter(f.key)} className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap ${filter === f.key ? 'bg-primary text-primary-foreground' : 'bg-muted/60 hover:bg-muted text-muted-foreground'}`}>{f.label}{f.key === 'unread' && unreadCount > 0 ? ` · ${unreadCount}` : ''}</button>)}</div>
+      {showFilters && <div className="max-w-3xl mx-auto px-3 pb-3 flex gap-2"><div className="flex-1 flex items-center gap-2 border border-border rounded-xl px-3 bg-muted/30"><Search className="w-4 h-4 text-muted-foreground" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search notifications…" className="bg-transparent outline-none py-2 text-sm w-full" />{query && <button onClick={() => setQuery('')}><X className="w-4 h-4" /></button>}</div>{selected.length > 0 && <button onClick={() => archive(selected)} className="px-3 rounded-xl border border-destructive/30 text-destructive text-xs font-bold flex items-center gap-1"><Trash2 className="w-4 h-4" /> Clear</button>}</div>}
     </div>
-  );
+
+    {filter === 'fediverse' ? <div className="max-w-3xl mx-auto"><div className="px-4 py-2 flex items-center justify-between text-xs border-b border-purple-500/10 bg-purple-500/5 text-purple-500"><span><Globe className="w-3 h-3 inline mr-1" />Live Fediverse inbox{lastPolled ? ` · ${formatDistanceToNow(lastPolled, { addSuffix: true })}` : ''}</span><button onClick={refreshFed} className="font-bold">Refresh</button></div>{fedLoading && !fedNotifs.length ? <Spinner /> : fedNotifs.length ? fedNotifs.map((n: any, i: number) => <div key={n.id ?? i} className="p-4 border-b border-border"><div className="flex gap-3"><div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">{iconFor(`fediverse_${n.activity_type ?? n.type}`)}</div><div><p className="text-sm font-semibold">{n.actor_url ?? n.account?.url ?? 'Remote user'} interacted with you</p><p className="text-xs text-muted-foreground mt-1">{n.activity_type ?? n.type} · {n.created_at ? formatDistanceToNow(new Date(n.created_at), { addSuffix: true }) : 'recently'}</p></div></div></div>) : <Empty title="No Fediverse notifications" body="Follows, mentions, favourites and boosts from federated networks will appear here." />}</div> : loading ? <Spinner /> : filteredRows.length === 0 ? <Empty title={query ? 'No matches' : filter === 'unread' ? 'Nothing unread' : 'No notifications yet'} body={query ? 'Try another search.' : 'Your social activity, creator events and account updates will appear here.'} /> : <div className="max-w-3xl mx-auto">{filteredRows.map(n => { const unread = !n.read_at; const checked = selected.includes(n.id); return <div key={n.id} className={`group p-4 border-b border-border ${unread ? 'bg-primary/[0.035]' : ''} hover:bg-muted/30`}><div className="flex gap-3 items-start"><input aria-label="Select notification" type="checkbox" checked={checked} onChange={() => setSelected(prev => checked ? prev.filter(id => id !== n.id) : [...prev, n.id])} className="mt-3 accent-primary" /><div className="relative shrink-0">{avatarFor(n)}<span className="absolute -right-1 -bottom-1 w-6 h-6 rounded-full bg-background border border-border flex items-center justify-center">{iconFor(n.kind)}</span></div><button onClick={() => { if (unread) void markRead([n.id]); if (n.action_url) navigate(n.action_url); else if (n.post_id) navigate(`/post/${n.post_id}`); else if (n.actor?.username) navigate(`/profile/${n.actor.username}`); }} className="flex-1 min-w-0 text-left"><div className="flex items-start gap-2"><p className="text-sm font-medium flex-1">{textFor(n)}</p>{unread && <span className="w-2.5 h-2.5 rounded-full bg-primary mt-1.5 shrink-0" />}</div>{n.post?.content && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{n.post.content}</p>}<div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted-foreground"><span className="capitalize">{n.category ?? 'social'}</span><span>·</span><span>{formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}</span>{n.priority === 'urgent' && <span className="text-destructive font-bold">Urgent</span>}</div></button><div className="opacity-0 group-hover:opacity-100 flex items-center gap-1"><button title="Mark unread" onClick={() => supabase.from('notifications').update({ read_at: null }).eq('id', n.id).eq('recipient_id', user.id).then(({ error }) => { if (!error) setRows(prev => prev.map(r => r.id === n.id ? { ...r, read_at: null } : r)); })} className="p-2 rounded-full hover:bg-muted"><Mail className="w-4 h-4" /></button><button title="Clear" onClick={() => archive([n.id])} className="p-2 rounded-full hover:bg-destructive/10 text-destructive"><Trash2 className="w-4 h-4" /></button></div></div></div>; })}{hasMore && <button onClick={loadMore} disabled={loadingMore} className="w-full py-5 text-sm font-bold text-primary">{loadingMore ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Load more'}</button>}</div>}
+  </div>;
 }
+
+function Spinner() { return <div className="py-20 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>; }
+function Empty({ title, body }: { title: string; body: string }) { return <div className="py-20 text-center text-muted-foreground px-6"><div className="w-16 h-16 rounded-2xl bg-muted/60 mx-auto mb-4 flex items-center justify-center"><Bell className="w-9 h-9" /></div><p className="font-bold text-foreground">{title}</p><p className="text-sm mt-1 max-w-sm mx-auto">{body}</p></div>; }

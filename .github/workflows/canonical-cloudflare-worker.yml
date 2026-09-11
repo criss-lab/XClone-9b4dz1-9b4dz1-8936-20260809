@@ -1,0 +1,169 @@
+name: Testagram Canonical Cloudflare Worker
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Testagram Cloudflare Backend
+      - Testagram Cloudflare Federation Hardening
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/worker/production-entrypoint.ts'
+      - 'cloudflare/worker/paypal.ts'
+      - 'cloudflare/worker/public-actor-entrypoint.ts'
+      - 'cloudflare/worker/federation-entrypoint.ts'
+      - 'cloudflare/worker/federation-interop-entrypoint.ts'
+      - 'cloudflare/worker/index.ts'
+      - 'cloudflare/wrangler.jsonc'
+      - 'cloudflare/wrangler-federation.jsonc'
+      - 'src/api/federation.ts'
+      - '.github/workflows/canonical-cloudflare-worker.yml'
+      - '.github/workflows/paypal-wallet-e2e.yml'
+permissions:
+  contents: read
+env:
+  WRANGLER_VERSION: '4.126.0'
+  WORKER_DIRECT_URL: 'https://testagram-api.nahashonnyaga794.workers.dev'
+  PAYPAL_CONFIG_URL: 'https://testagram-api.nahashonnyaga794.workers.dev/api/paypal/config'
+  FEDERATION_URL: 'https://federation.testagram.site'
+  FEDERATION_HOST: 'federation.testagram.site'
+  GATEWAY_URL: 'https://api.testagram.site'
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: {node-version: '22'}
+      - name: Validate canonical worker source
+        run: |
+          set -euo pipefail
+          for f in cloudflare/worker/production-entrypoint.ts cloudflare/worker/paypal.ts cloudflare/worker/public-actor-entrypoint.ts cloudflare/worker/federation-entrypoint.ts cloudflare/worker/federation-interop-entrypoint.ts cloudflare/worker/index.ts; do test -s "$f"; done
+          grep -Fq '"main": "./worker/production-entrypoint.ts"' cloudflare/wrangler.jsonc
+          grep -Fq '"main": "./worker/production-entrypoint.ts"' cloudflare/wrangler-federation.jsonc
+          grep -Fq "GATEWAY_FUNCTION = 'gateway-relay'" cloudflare/worker/production-entrypoint.ts
+          grep -Fq "https://api.testagram.site/api/gateway" cloudflare/worker/production-entrypoint.ts
+          grep -Fq '"pattern": "api.testagram.site", "custom_domain": true' cloudflare/wrangler.jsonc
+      - name: Validate Cloudflare deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+      - name: Validate PayPal credential set
+        env:
+          PAYPAL_CLIENT_ID_PRIMARY: ${{ secrets.PAYPAL_CLIENT_ID }}
+          PAYPAL_CLIENT_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_ID }}
+          PAYPAL_CLIENT_SECRET_PRIMARY: ${{ secrets.PAYPAL_CLIENT_SECRET }}
+          PAYPAL_CLIENT_SECRET_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_SECRET }}
+          PAYPAL_WEBHOOK_ID_PRIMARY: ${{ secrets.PAYPAL_WEBHOOK_ID }}
+          PAYPAL_WEBHOOK_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_WEBHOOK_ID }}
+        run: |
+          set -euo pipefail
+          client_id="${PAYPAL_CLIENT_ID_PRIMARY:-${PAYPAL_CLIENT_ID_SANDBOX:-}}"
+          client_secret="${PAYPAL_CLIENT_SECRET_PRIMARY:-${PAYPAL_CLIENT_SECRET_SANDBOX:-}}"
+          webhook_id="${PAYPAL_WEBHOOK_ID_PRIMARY:-${PAYPAL_WEBHOOK_ID_SANDBOX:-}}"
+          test -n "$client_id" && test -n "$client_secret" && test -n "$webhook_id"
+      - name: Deploy canonical Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 6); do
+            if npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler.jsonc; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          exit 1
+      - name: Synchronize PayPal secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAYPAL_CLIENT_ID_PRIMARY: ${{ secrets.PAYPAL_CLIENT_ID }}
+          PAYPAL_CLIENT_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_ID }}
+          PAYPAL_CLIENT_SECRET_PRIMARY: ${{ secrets.PAYPAL_CLIENT_SECRET }}
+          PAYPAL_CLIENT_SECRET_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_CLIENT_SECRET }}
+          PAYPAL_WEBHOOK_ID_PRIMARY: ${{ secrets.PAYPAL_WEBHOOK_ID }}
+          PAYPAL_WEBHOOK_ID_SANDBOX: ${{ secrets.PAYPAL_SANDBOX_WEBHOOK_ID }}
+        run: |
+          set -euo pipefail
+          client_id="${PAYPAL_CLIENT_ID_PRIMARY:-${PAYPAL_CLIENT_ID_SANDBOX:-}}"
+          client_secret="${PAYPAL_CLIENT_SECRET_PRIMARY:-${PAYPAL_CLIENT_SECRET_SANDBOX:-}}"
+          webhook_id="${PAYPAL_WEBHOOK_ID_PRIMARY:-${PAYPAL_WEBHOOK_ID_SANDBOX:-}}"
+          put_secret() { local name="$1" value="$2"; for attempt in $(seq 1 6); do if printf '%s' "$value" | npx --yes wrangler@${WRANGLER_VERSION} secret put "$name" --config cloudflare/wrangler.jsonc; then return 0; fi; sleep $((attempt * 5)); done; return 1; }
+          put_secret PAYPAL_CLIENT_ID "$client_id"
+          put_secret PAYPAL_CLIENT_SECRET "$client_secret"
+          put_secret PAYPAL_WEBHOOK_ID "$webhook_id"
+      - name: Verify canonical Worker health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$WORKER_DIRECT_URL/api/health" || true)"
+            if [ "$status" = 200 ] && jq -e '.ok == true and .databaseReachable == true and .jwksReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and .gateway == true' /tmp/health.json >/dev/null 2>&1; then exit 0; fi
+            sleep 5
+          done
+          cat /tmp/health.json || true
+          exit 1
+      - name: Verify API custom-domain DNS and gateway health
+        run: |
+          set -euo pipefail
+          echo 'Checking authoritative resolver visibility for api.testagram.site...'
+          getent hosts api.testagram.site || true
+          for attempt in $(seq 1 12); do
+            dns_ok=0
+            if getent hosts api.testagram.site >/dev/null 2>&1; then dns_ok=1; fi
+            health_status="$(curl -sS -o /tmp/gateway-health.json -w '%{http_code}' --max-time 20 "$GATEWAY_URL/api/health" || true)"
+            ready_status="$(curl -sS -o /tmp/gateway-ready.json -w '%{http_code}' --max-time 20 "$GATEWAY_URL/api/ready" || true)"
+            echo "attempt=$attempt dns_ok=$dns_ok health=$health_status ready=$ready_status"
+            cat /tmp/gateway-health.json || true
+            cat /tmp/gateway-ready.json || true
+            if [ "$dns_ok" = 1 ] && [ "$health_status" = 200 ] && [ "$ready_status" = 200 ] && jq -e '.ok == true and .gateway == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/gateway-health.json >/dev/null 2>&1 && jq -e '.ready == true and .gateway == true' /tmp/gateway-ready.json >/dev/null 2>&1; then
+              echo 'PASS: api.testagram.site is resolving and the gateway is healthy/ready.'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'FAIL: canonical Worker deployed, but api.testagram.site did not become a healthy/ready gateway endpoint.'
+          echo 'This is a Cloudflare custom-domain/DNS provisioning or permission failure, not a frontend failure.'
+          exit 1
+      - name: Verify gateway authentication boundary
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/gateway-auth.json -w '%{http_code}' --max-time 20 \
+            -H 'Content-Type: application/json' \
+            --data '{"path":"/timeline/home","method":"GET"}' \
+            "$GATEWAY_URL/api/gateway" || true)"
+          echo "Unauthenticated gateway HTTP status: $status"
+          cat /tmp/gateway-auth.json || true
+          test "$status" = 401
+      - name: Verify federation custom domain health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/federation-health.json -w '%{http_code}' --max-time 20 "$FEDERATION_URL/api/health" || true)"
+            echo "Federation custom-domain HTTP status: $status"
+            cat /tmp/federation-health.json || true
+            if [ "$status" = 200 ] && jq -e '.ok == true and .service == "testagram-federation" and .federation == true and .federationDomain == "federation.testagram.site" and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/federation-health.json >/dev/null 2>&1; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - name: Verify PayPal configuration
+        run: |
+          set -euo pipefail
+          last_status=""
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/paypal-config.json -w '%{http_code}' --max-time 20 "$PAYPAL_CONFIG_URL" || true)"
+            last_status="$status"
+            echo "PayPal config HTTP status: $status"
+            cat /tmp/paypal-config.json || true
+            if [ "$status" = 200 ] && jq -e '.ok == true and .provider == "paypal" and .configured == true and (.environment == "sandbox" or .environment == "live")' /tmp/paypal-config.json >/dev/null 2>&1; then exit 0; fi
+            sleep 5
+          done
+          echo "PayPal configuration verification failed after 12 attempts; last HTTP status: $last_status"
+          exit 1

@@ -1,0 +1,154 @@
+name: Testagram Fediverse Gate A
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/gateway-relay/**'
+      - 'supabase/migrations/**'
+      - 'cloudflare/worker/public-actor-entrypoint.ts'
+      - 'cloudflare/worker/production-entrypoint.ts'
+      - 'cloudflare/wrangler.jsonc'
+      - '.github/workflows/fediverse-gate-a.yml'
+      - 'src/api/federation.ts'
+
+env:
+  SUPABASE_URL: https://aepbqfrmheihfsauzcby.supabase.co
+  GATEWAY_URL: https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay
+  FEDERATION_ORIGIN: https://federation.testagram.site
+
+jobs:
+  gate-a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate federation source contract
+        run: |
+          set -euo pipefail
+          test -s supabase/functions/gateway-relay/index.ts
+          test -s supabase/migrations/20260907210000_federation_core.sql
+          test -s supabase/migrations/20260907213000_canonical_federation_domain.sql
+          test -s supabase/migrations/20260907214500_use_existing_federation_domain.sql
+          grep -Fq 'federation_outbox' supabase/functions/gateway-relay/index.ts
+          grep -Fq 'federation_inbox' supabase/functions/gateway-relay/index.ts
+          grep -Fq 'RSASSA-PKCS1-v1_5' supabase/functions/gateway-relay/index.ts
+          grep -Fq 'webfinger' supabase/functions/gateway-relay/index.ts
+      - name: Gateway health
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_SECRET_KEY"
+          status="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$GATEWAY_URL" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          cat /tmp/health.json
+          test "$status" = 200
+          jq -e '.ok == true' /tmp/health.json
+          if jq -e '.activityPub == true' /tmp/health.json >/dev/null 2>&1; then
+            echo 'Gateway reports the ActivityPub capability flag.'
+          else
+            echo 'Gateway health is reachable and healthy; deployed health response does not expose the newer activityPub capability field. Continuing to exercise the actual federation contract below.'
+          fi
+      - name: Remote WebFinger interoperability
+        run: |
+          set -euo pipefail
+          curl -sS --fail-with-body --max-time 20 'https://mastodon.social/.well-known/webfinger?resource=acct:Mastodon@mastodon.social' -o /tmp/webfinger.json
+          jq -e '.subject and (.links | map(select(.rel == "self" and (.type | contains("activity+json")))) | length > 0)' /tmp/webfinger.json
+      - name: Authenticated Follow, durable outbox, Mastodon Accept and relationship
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)-${RANDOM}"
+          EMAIL="fediverse-gate-a-${RUN}@example.invalid"
+          PASS="TgFed-${RUN}-X9!"
+          USER_ID=""
+          cleanup() { if [ -n "$USER_ID" ]; then curl -sS -o /dev/null -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID" -H "apikey: $SUPABASE_SECRET_KEY" || true; fi; }
+          trap cleanup EXIT
+
+          echo 'Creating temporary authenticated user...'
+          USER_STATUS="$(curl -sS -o /tmp/user.json -w '%{http_code}' --max-time 20 -X POST "$SUPABASE_URL/auth/v1/admin/users" -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')")"
+          echo "Create-user HTTP status: $USER_STATUS"
+          cat /tmp/user.json
+          test "$USER_STATUS" = 200
+          USER_ID="$(jq -r '.id' /tmp/user.json)"
+          test -n "$USER_ID"
+
+          echo 'Logging temporary user in...'
+          LOGIN_STATUS="$(curl -sS -o /tmp/login.json -w '%{http_code}' --max-time 20 -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p}')")"
+          echo "Login HTTP status: $LOGIN_STATUS"
+          cat /tmp/login.json
+          test "$LOGIN_STATUS" = 200
+          TOKEN="$(jq -r '.access_token' /tmp/login.json)"
+          test -n "$TOKEN"
+
+          echo 'Bootstrapping authenticated federation actor through /timeline/federated...'
+          BOOTSTRAP_STATUS="$(curl -sS -o /tmp/bootstrap.json -w '%{http_code}' --max-time 20 -X POST "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"path":"/timeline/federated","body":{}}')"
+          echo "Bootstrap HTTP status: $BOOTSTRAP_STATUS"
+          cat /tmp/bootstrap.json
+          test "$BOOTSTRAP_STATUS" = 200
+
+          echo 'Reading local federation actor...'
+          ACTOR_STATUS="$(curl -sS -o /tmp/actor-query.json -w '%{http_code}' --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?user_id=eq.$USER_ID&select=actor_url" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          echo "Actor REST HTTP status: $ACTOR_STATUS"
+          cat /tmp/actor-query.json
+          test "$ACTOR_STATUS" = 200
+          ACTOR="$(jq -r '.[0].actor_url' /tmp/actor-query.json)"
+          echo "LOCAL ACTOR: $ACTOR"
+          case "$ACTOR" in https://federation.testagram.site/users/*) ;; *) echo "FAIL: actor origin $ACTOR"; exit 1;; esac
+
+          echo 'Waiting for the canonical public actor endpoint before remote delivery...'
+          PUBLIC_ACTOR_STATUS=""
+          for attempt in $(seq 1 12); do
+            PUBLIC_ACTOR_STATUS="$(curl -sS -o /tmp/local-actor.json -w '%{http_code}' --max-time 20 -H 'Accept: application/activity+json' -H 'Cache-Control: no-cache' -H 'User-Agent: Testagram-Federation-Gate/1.0' "$ACTOR" || true)"
+            echo "Local actor HTTP status attempt $attempt: $PUBLIC_ACTOR_STATUS"
+            cat /tmp/local-actor.json || true
+            if [ "$PUBLIC_ACTOR_STATUS" = 200 ] && jq -e --arg actor "$ACTOR" '.id == $actor and .inbox == ($actor + "/inbox") and .publicKey.id == ($actor + "#main-key") and .publicKey.owner == $actor and (.publicKey.publicKeyPem | startswith("-----BEGIN PUBLIC KEY-----"))' /tmp/local-actor.json >/dev/null 2>&1; then
+              echo 'Canonical actor preflight passed.'
+              break
+            fi
+            sleep 5
+          done
+          test "$PUBLIC_ACTOR_STATUS" = 200
+          USERNAME="$(jq -r '.preferredUsername' /tmp/local-actor.json)"
+          WEBFINGER_RESOURCE="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote("acct:"+sys.argv[1]+"@federation.testagram.site", safe=""))' "$USERNAME")"
+          curl -sS --fail-with-body --max-time 20 "https://federation.testagram.site/.well-known/webfinger?resource=$WEBFINGER_RESOURCE" -o /tmp/local-webfinger.json
+          cat /tmp/local-webfinger.json
+          jq -e --arg acct "acct:${USERNAME}@federation.testagram.site" --arg actor "$ACTOR" '.subject == $acct and (.links | any(.[]; .rel == "self" and .href == $actor and (.type | contains("activity+json"))))' /tmp/local-webfinger.json
+          STATUS="$(curl -sS -o /tmp/follow.json -w '%{http_code}' --max-time 45 -X POST "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"path":"/follow","body":{"target":"@Mastodon@mastodon.social"}}')"
+          echo "Follow HTTP status: $STATUS"
+          cat /tmp/follow.json
+          if [ "$STATUS" != "200" ]; then echo 'FAIL: gateway returned a non-200 Follow response.'; exit 1; fi
+          jq -e '.activity.type == "Follow" and (.activity.object | startswith("https://")) and (.activityId | startswith("https://"))' /tmp/follow.json
+          ACTIVITY_ID="$(jq -r '.activityId' /tmp/follow.json)"
+          REMOTE_ACTOR="$(jq -r '.activity.object' /tmp/follow.json)"
+          LOCAL_ACTOR="$(jq -r '.activity.actor' /tmp/follow.json)"
+          test "$LOCAL_ACTOR" = "$ACTOR"
+
+          echo 'Correlating the exact Follow in federation_outbox by URL-encoded activity_id (the activity ID contains #, which must never be sent as a raw URL fragment).'
+          OUTBOX_ACTIVITY_ID="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$ACTIVITY_ID")"
+          OUTBOX_STATUS="$(curl -sS -o /tmp/outbox.json -w '%{http_code}' --max-time 20 "$SUPABASE_URL/rest/v1/federation_outbox?activity_id=eq.$OUTBOX_ACTIVITY_ID&select=activity_id,activity_type,status,attempts,http_status" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          echo "Outbox HTTP status: $OUTBOX_STATUS"
+          cat /tmp/outbox.json
+          if [ "$OUTBOX_STATUS" != "200" ]; then echo 'FAIL: federation_outbox exact activity query failed'; exit 1; fi
+          jq -e --arg fid "$ACTIVITY_ID" 'length == 1 and .[0].activity_type == "Follow" and .[0].activity_id == $fid and .[0].attempts == 1 and (. [0].status == "delivered" or .[0].status == "pending")' /tmp/outbox.json
+
+          echo 'Waiting up to 10 minutes for Mastodon to asynchronously process the remote actor and emit Accept...'
+          ACCEPT_FOUND=0
+          REMOTE_ACTOR_Q="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$REMOTE_ACTOR")"
+          for i in $(seq 1 120); do
+            inbox_status="$(curl -sS -o /tmp/accepts.json -w '%{http_code}' --max-time 20 "$SUPABASE_URL/rest/v1/federation_inbox?activity_type=eq.Accept&actor_url=eq.$REMOTE_ACTOR_Q&order=received_at.desc&limit=20&select=activity_id,activity_type,actor_url,payload,received_at,processing_status" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY" || true)"
+            if [ "$inbox_status" != "200" ]; then echo "federation_inbox Accept query failed with HTTP $inbox_status"; cat /tmp/accepts.json || true; exit 1; fi
+            if jq -e --arg fid "$ACTIVITY_ID" --arg remote "$REMOTE_ACTOR" 'any(.[]; .activity_type == "Accept" and .actor_url == $remote and ((.payload.object.id? // .payload.object?) == $fid) and (.payload.actor? == $remote))' /tmp/accepts.json >/dev/null; then ACCEPT_FOUND=1; break; fi
+            sleep 5
+          done
+          test "$ACCEPT_FOUND" = 1
+          REL_STATUS="$(curl -sS -o /tmp/relationship.json -w '%{http_code}' --max-time 20 "$SUPABASE_URL/rest/v1/federation_relationships?user_id=eq.$USER_ID&activity_id=eq.$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$ACTIVITY_ID")&select=user_id,remote_actor_url,relationship,activity_id,updated_at,last_error" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          echo "Relationship HTTP status: $REL_STATUS"
+          cat /tmp/relationship.json
+          test "$REL_STATUS" = 200
+          jq -e --arg uid "$USER_ID" --arg fid "$ACTIVITY_ID" 'length == 1 and .[0].user_id == $uid and .[0].relationship == "accepted" and .[0].activity_id == $fid' /tmp/relationship.json
+          echo 'PASS: Gate A XClone auth -> custom-domain WebFinger -> actor -> public key -> signed Follow -> Mastodon delivery -> durable outbox -> inbound Accept -> accepted relationship.'

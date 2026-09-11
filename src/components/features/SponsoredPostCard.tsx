@@ -15,7 +15,7 @@ export function SponsoredPostCard({ post }: SponsoredPostCardProps) {
       const adId = post.ad_id ?? post.id;
       supabase.rpc('track_ad_view', { ad_id_param: adId }).catch(() => {
         // Fallback: direct update
-        supabase.from('user_ads').update({ impressions: (post.impressions ?? 0) + 1 }).eq('id', adId).catch(() => {});
+        supabase.from('user_ads').update({ impressions: (post.impressions ?? 0) + 1 }).eq('id', adId).then(() => {}, () => {});
       });
     }
   }, [post.ad_id ?? post.id]);
@@ -23,7 +23,7 @@ export function SponsoredPostCard({ post }: SponsoredPostCardProps) {
   const handleClick = async () => {
     const adId = post.ad_id ?? post.id;
     if (adId) {
-      await supabase.from('user_ads').update({ clicks: (post.clicks ?? 0) + 1 }).eq('id', adId).catch(() => {});
+      await supabase.from('user_ads').update({ clicks: (post.clicks ?? 0) + 1 }).eq('id', adId).then(() => {}, () => {});
     }
     const url = post.target_url;
     if (url) window.open(url, '_blank', 'noopener,noreferrer');

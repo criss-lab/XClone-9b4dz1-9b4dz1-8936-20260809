@@ -25,7 +25,6 @@ export function FediverseBadge({ username, remoteFollowers = 0, compact = false 
       <button
         onClick={handleCopy}
         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/20 transition-colors text-xs font-medium text-purple-600 dark:text-purple-400"
-        title="Copy Fediverse handle"
       >
         <Globe className="w-3 h-3" />
         <span className="hidden sm:inline">{handle}</span>
@@ -50,7 +49,6 @@ export function FediverseBadge({ username, remoteFollowers = 0, compact = false 
       <button
         onClick={handleCopy}
         className="p-2 hover:bg-purple-500/10 rounded-full transition-colors shrink-0"
-        title="Copy handle"
       >
         {copied
           ? <CheckCircle className="w-4 h-4 text-green-500" />

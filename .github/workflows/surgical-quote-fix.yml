@@ -1,0 +1,43 @@
+name: Surgical Quote Persistence Repair
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch quote composer flow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/components/features/ComposePost.tsx')
+          s = p.read_text()
+          old = "if (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData) return;"
+          new = "if (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData && !quotedPostId) return;"
+          if old in s and new not in s:
+              s = s.replace(old, new, 1)
+          old_payload = "is_video: false,\n"
+          new_payload = "is_video: false,\n        quoted_post_id: quotedPostId || null,\n"
+          if new_payload not in s:
+              marker = "is_video: false,\n"
+              if marker in s:
+                  s = s.replace(marker, new_payload, 1)
+          p.write_text(s)
+          PY
+      - name: Commit surgical fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/components/features/ComposePost.tsx
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: persist quoted post IDs in composer'
+          git push

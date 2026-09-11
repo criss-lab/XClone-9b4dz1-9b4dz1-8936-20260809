@@ -2,30 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-
-    <!-- App icon favicons -->
     <link rel="icon" type="image/jpeg" href="/app-icon.jpg" />
     <link rel="apple-touch-icon" href="/app-icon.jpg" />
-
-    <!-- Performance: preconnect critical origins -->
     <link rel="preconnect" href="https://lrqqpudyrkmitbeilrqq.backend.onspace.ai" crossorigin />
     <link rel="preconnect" href="https://pagead2.googlesyndication.com" crossorigin />
     <link rel="preconnect" href="https://api.coingecko.com" crossorigin />
     <link rel="preconnect" href="https://api.qrserver.com" crossorigin />
     <link rel="dns-prefetch" href="https://images.unsplash.com" />
     <link rel="dns-prefetch" href="https://lrqqpudyrkmitbeilrqq.backend.onspace.ai" />
-    <!-- Prefetch the SPA entry immediately after first paint -->
-    <link rel="modulepreload" href="/src/main.jsx" />
-
-    <!-- Mobile App Settings -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Testagram" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="theme-color" content="#7c3aed" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-
-    <!-- Essential SEO -->
     <title>Testagram – Social Media, Short Videos & Global Conversations</title>
     <meta name="description" content="Testagram is a social platform for short videos, breaking news, trending stories, communities, live spaces, and global conversations. Post, share, earn." />
     <meta name="keywords" content="testagram, social media, short videos, reels, tiktok style, breaking news, trending, communities, live spaces, creator monetization, kenya, africa" />
@@ -35,11 +25,7 @@
     <meta name="application-name" content="Testagram" />
     <meta http-equiv="content-language" content="en" />
     <meta name="format-detection" content="telephone=no" />
-
-    <!-- Canonical URL -->
     <link rel="canonical" href="https://testagram.site" />
-
-    <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://testagram.site" />
     <meta property="og:title" content="Testagram – Social Media, Short Videos & Global Conversations" />
@@ -50,83 +36,35 @@
     <meta property="og:image:alt" content="Testagram Social Platform" />
     <meta property="og:site_name" content="Testagram" />
     <meta property="og:locale" content="en_US" />
-
-    <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@testagram" />
     <meta name="twitter:url" content="https://testagram.site" />
     <meta name="twitter:title" content="Testagram – Social Media, Short Videos & Global Conversations" />
     <meta name="twitter:description" content="Post short videos, join communities, earn from your content, and connect worldwide on Testagram." />
     <meta name="twitter:image" content="https://testagram.site/og-image.jpg" />
-
-    <!-- Schema.org WebSite -->
     <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "WebSite",
-        "name": "Testagram",
-        "url": "https://testagram.site",
-        "description": "Social media platform for short videos, communities, and global conversations.",
-        "potentialAction": {
-          "@type": "SearchAction",
-          "target": "https://testagram.site/search?q={search_term_string}",
-          "query-input": "required name=search_term_string"
-        }
-      }
+      {"@context":"https://schema.org","@type":"WebSite","name":"Testagram","url":"https://testagram.site","description":"Social media platform for short videos, communities, and global conversations.","potentialAction":{"@type":"SearchAction","target":"https://testagram.site/search?q={search_term_string}","query-input":"required name=search_term_string"}}
     </script>
-
-    <!-- Schema.org Organization -->
     <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "Organization",
-        "name": "Testagram",
-        "url": "https://testagram.site",
-        "logo": "https://testagram.site/tsocial-logo.png",
-        "description": "Testagram is a social platform for short videos, breaking news, communities, and global conversations."
-      }
+      {"@context":"https://schema.org","@type":"Organization","name":"Testagram","url":"https://testagram.site","logo":"https://testagram.site/tsocial-logo.png","description":"Testagram is a social platform for short videos, breaking news, communities, and global conversations."}
     </script>
-
-    <!-- Schema.org WebApplication -->
     <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "WebApplication",
-        "name": "Testagram",
-        "url": "https://testagram.site",
-        "applicationCategory": "SocialNetworkingApplication",
-        "operatingSystem": "Any",
-        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-        "featureList": ["Short videos", "Communities", "Live Spaces", "Creator monetization", "Fediverse federation"]
-      }
+      {"@context":"https://schema.org","@type":"WebApplication","name":"Testagram","url":"https://testagram.site","applicationCategory":"SocialNetworkingApplication","operatingSystem":"Any","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":["Short videos","Communities","Live Spaces","Creator monetization","Fediverse federation"]}
     </script>
-
-    <!-- Google AdSense -- publisher ID for account verification -->
     <meta name="google-adsense-account" content="ca-pub-2458567543017441" />
-    <script
-      async
-      src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2458567543017441"
-      crossorigin="anonymous"
-    ></script>
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2458567543017441" crossorigin="anonymous"></script>
   </head>
-
   <body>
-    <!-- Theme applied before React renders to prevent flash -->
     <script>
       (function () {
         try {
           var theme = localStorage.getItem("theme");
-          if (!theme) {
-            theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-          }
+          if (!theme) theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
           document.documentElement.classList.add(theme);
           document.documentElement.style.colorScheme = theme;
-        } catch (e) {
-          document.documentElement.classList.add("dark");
-        }
+        } catch (e) { document.documentElement.classList.add("dark"); }
       })();
     </script>
-
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

@@ -1,0 +1,35 @@
+name: Fediverse syntax cleanup
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove duplicate generated declarations
+        run: |
+          set -e
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/components/features/FederatedPostCard.tsx')
+          s = p.read_text()
+          marker = "  const profileHref = actorTarget ? `/fediverse/profile?actor=${encodeURIComponent(actorTarget)}` : '';"
+          lines = s.splitlines(True)
+          seen = False
+          out = []
+          for line in lines:
+              if line.strip() == marker.strip():
+                  if seen:
+                      continue
+                  seen = True
+              out.append(line)
+          p.write_text(''.join(out))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/components/features/FederatedPostCard.tsx
+          git commit -m 'fix(fediverse): remove duplicate profile link declaration' || true
+          git push || true

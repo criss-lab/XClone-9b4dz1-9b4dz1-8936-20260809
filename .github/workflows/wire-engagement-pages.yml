@@ -1,0 +1,50 @@
+name: Wire engagement pages
+on:
+  push:
+    branches: [main]
+jobs:
+  wire:
+    if: ${{ !contains(github.event.head_commit.message, '[engagement-wired]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - name: Patch router and composer safely
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/App.tsx'); s=p.read_text()
+          imp="const PostEngagementPage = lazy(() => import('@/pages/PostEngagementPage'));"
+          if imp not in s:
+              marker="const PostThreadPage = lazy(() => import('@/pages/PostThreadPage'));"
+              s=s.replace(marker, marker+'\n'+imp)
+          route='<Route path="/post/:postId/:kind" element={<PostEngagementPage />} />'
+          if route not in s:
+              marker='<Route path="/post/:postId" element={<PostThreadPage />} />'
+              s=s.replace(marker, marker+route)
+          p.write_text(s)
+          p=Path('src/components/features/ComposePost.tsx')
+          if p.exists():
+              s=p.read_text()
+              s=s.replace("if (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData) return;", "if (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData && !quotedPostId) return;")
+              if 'quoted_post_id: quotedPostId || null' not in s:
+                  s=s.replace('const { data: insertedPost', 'const { data: insertedPost')
+                  s=s.replace('user_id: user.id,', 'user_id: user.id,\n        quoted_post_id: quotedPostId || null,', 1)
+              p.write_text(s)
+          PY
+      - name: Validate
+        run: |
+          npm run typecheck || npx tsc --noEmit
+          npm run build
+      - name: Commit surgical wiring
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/App.tsx src/components/features/ComposePost.tsx
+          git diff --cached --quiet || git commit -m "feat: wire post engagement routes and quote composer [engagement-wired]"
+          git push

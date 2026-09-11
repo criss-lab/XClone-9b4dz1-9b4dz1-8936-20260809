@@ -451,7 +451,6 @@ export function TipButton({ postId, creatorId, creatorUsername, senderId, sender
         onClick={e => { e.preventDefault(); e.stopPropagation(); if (!disabled) setOpen(true); }}
         disabled={disabled}
         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-amber-500 transition-colors disabled:opacity-40"
-        title="Tip creator"
       >
         <Gift className="w-4 h-4" />
         <span>Tip</span>

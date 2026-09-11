@@ -205,7 +205,6 @@ export function SpaceRecordingsPlaylist({ spaceId }: SpaceRecordingsPlaylistProp
                 size="icon"
                 variant="ghost"
                 className="rounded-full h-10 w-10 flex-shrink-0"
-                title="Open full player"
               >
                 <ExternalLink className="w-4 h-4" />
               </Button>

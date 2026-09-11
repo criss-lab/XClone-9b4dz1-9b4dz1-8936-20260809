@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909150145_fix_federation_queue_trigger_dedupe is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

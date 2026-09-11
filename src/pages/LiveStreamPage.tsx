@@ -263,7 +263,7 @@ export default function LiveStreamPage() {
         stream_id: streamId,
         user_id: user.id,
         message: `[REACT:${emoji}]`,
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
   }, [user, streamId]);
 

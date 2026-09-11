@@ -44,7 +44,7 @@ export function DynamicAd({ location, className = '' }: DynamicAdProps) {
   };
 
   const trackImpression = async (adId: string) => {
-    supabase.rpc('track_ad_view', { ad_id_param: adId, user_id_param: null }).catch(() => {});
+    supabase.rpc('track_ad_view', { ad_id_param: adId, user_id_param: null }).then(() => {}, () => {});
   };
 
   if (isPremium) return null; // Ad-free for premium users

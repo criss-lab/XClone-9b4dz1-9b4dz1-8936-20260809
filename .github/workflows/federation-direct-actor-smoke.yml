@@ -1,0 +1,120 @@
+name: Testagram Direct Actor Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/federation-direct-actor-smoke.yml'
+      - 'supabase/functions/gateway-relay/index.ts'
+      - 'cloudflare/worker/public-actor-entrypoint.ts'
+      - 'cloudflare/worker/federation-interop-entrypoint.ts'
+      - 'cloudflare/wrangler-federation.jsonc'
+      - 'cloudflare/wrangler.jsonc'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_URL: https://aepbqfrmheihfsauzcby.supabase.co
+  GATEWAY_URL: https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay
+  FEDERATION_ORIGIN: https://federation.testagram.site
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate canonical federation configuration
+        run: |
+          set -euo pipefail
+          grep -Fq 'https://federation.testagram.site' cloudflare/worker/public-actor-entrypoint.ts
+          grep -Fq 'https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay' cloudflare/worker/public-actor-entrypoint.ts
+          grep -Fq 'RSASSA-PKCS1-v1_5' supabase/functions/gateway-relay/index.ts
+          if grep -Fq 'mastodon.social' supabase/functions/gateway-relay/index.ts; then
+            echo 'Gateway contains a Mastodon-specific hardcode.'
+            exit 1
+          fi
+
+      - name: Verify canonical public actor and WebFinger
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_ID}-${RANDOM}"
+          EMAIL="fedi-actor-${RUN}@example.invalid"
+          PASS="TgActor-${RUN}-X9!"
+          USER_ID=""
+          trap 'test -z "$USER_ID" || curl -sS -o /dev/null -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID" -H "apikey: $SUPABASE_SECRET_KEY" || true' EXIT
+
+          test -n "$SUPABASE_PUBLISHABLE_KEY" || { echo 'Missing SUPABASE_PUBLISHABLE_KEY'; exit 1; }
+          test -n "$SUPABASE_SECRET_KEY" || { echo 'Missing SUPABASE_SECRET_KEY'; exit 1; }
+
+          curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/admin/users" \
+            -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" >/tmp/user.json
+          USER_ID="$(jq -er '.id' /tmp/user.json)"
+
+          TOKEN="$(curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p}')" | jq -er '.access_token')"
+
+          # Any authenticated gateway route initializes the local ActivityPub actor.
+          status="$(curl -sS -o /tmp/timeline.json -w '%{http_code}' --max-time 60 \
+            "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"path":"/timeline/federated","body":{}}')"
+          echo "timeline bootstrap HTTP $status"
+          cat /tmp/timeline.json
+          test "$status" = 200
+
+          ACTOR_ROW="$(curl -sS --fail-with-body \
+            "$SUPABASE_URL/rest/v1/federation_actors?user_id=eq.$USER_ID&select=actor_url,username,inbox_url" \
+            -H "apikey: $SUPABASE_SECRET_KEY")"
+          ACTOR="$(jq -er '.[0].actor_url' <<<"$ACTOR_ROW")"
+          USERNAME="$(jq -er '.[0].username' <<<"$ACTOR_ROW")"
+          INBOX="$(jq -er '.[0].inbox_url' <<<"$ACTOR_ROW")"
+          echo "actor URL: $ACTOR"
+          echo "inbox URL: $INBOX"
+          test "$ACTOR" = "$FEDERATION_ORIGIN/users/$USERNAME"
+          test "$INBOX" = "$ACTOR/inbox"
+
+          # Direct actor fetch: require ActivityPub content negotiation and reject Cloudflare challenges.
+          status="$(curl -sS -o /tmp/actor.json -D /tmp/actor-headers.txt -w '%{http_code}' --max-time 30 \
+            -H 'Accept: application/activity+json' -H 'User-Agent: Testagram-Federation-Smoke/2.0' "$ACTOR")"
+          echo "actor HTTP $status"
+          cat /tmp/actor-headers.txt
+          cat /tmp/actor.json
+          test "$status" = 200
+          ! grep -qi '^cf-mitigated: challenge' /tmp/actor-headers.txt
+          jq -e --arg actor "$ACTOR" --arg inbox "$INBOX" \
+            '.id == $actor and .type == "Person" and .inbox == $inbox and .outbox == ($actor + "/outbox") and .followers == ($actor + "/followers") and .following == ($actor + "/following") and .publicKey.id == ($actor + "#main-key") and .publicKey.owner == $actor and (.publicKey.publicKeyPem | startswith("-----BEGIN PUBLIC KEY-----"))' \
+            /tmp/actor.json
+
+          # WebFinger is independently checked against the actor URL.
+          RESOURCE="acct:${USERNAME}@federation.testagram.site"
+          status="$(curl -sS -o /tmp/webfinger.json -D /tmp/webfinger-headers.txt -w '%{http_code}' --max-time 30 \
+            -H 'Accept: application/jrd+json' -H 'User-Agent: Testagram-Federation-Smoke/2.0' \
+            "$FEDERATION_ORIGIN/.well-known/webfinger?resource=$(jq -nr --arg r "$RESOURCE" '$r|@uri')")"
+          echo "WebFinger HTTP $status"
+          cat /tmp/webfinger-headers.txt
+          cat /tmp/webfinger.json
+          test "$status" = 200
+          ! grep -qi '^cf-mitigated: challenge' /tmp/webfinger-headers.txt
+          jq -e --arg subject "$RESOURCE" --arg actor "$ACTOR" \
+            '.subject == $subject and any(.links[]?; .rel == "self" and .href == $actor and (.type | contains("activity+json")))' \
+            /tmp/webfinger.json
+
+          # Verify the public inbox route is at least addressable without treating a GET as delivery.
+          inbox_status="$(curl -sS -o /tmp/inbox.json -D /tmp/inbox-headers.txt -w '%{http_code}' --max-time 30 \
+            -H 'Accept: application/activity+json' -H 'User-Agent: Testagram-Federation-Smoke/2.0' "$INBOX")"
+          echo "inbox GET HTTP $inbox_status"
+          cat /tmp/inbox-headers.txt
+          cat /tmp/inbox.json
+          test "$inbox_status" = 405 || test "$inbox_status" = 404
+          ! grep -qi '^cf-mitigated: challenge' /tmp/inbox-headers.txt
+
+          echo 'Canonical federation actor smoke passed: actor + WebFinger + inbox reachability + ActivityPub schema.'

@@ -1,0 +1,61 @@
+name: Testagram Supabase Edge Functions Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/functions/**'
+      - 'supabase/migrations/**'
+      - 'supabase/config.toml'
+      - '.github/workflows/supabase-edge-functions-deploy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testagram-supabase-edge-functions
+  cancel-in-progress: false
+
+jobs:
+  deploy-edge-functions:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SUPABASE_PROJECT_REF: aepbqfrmheihfsauzcby
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate deployment credentials
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo 'Missing SUPABASE_ACCESS_TOKEN.'; exit 1; }
+          case "$SUPABASE_ACCESS_TOKEN" in sbp_*) echo 'Supabase Management API token format detected.';; *) echo 'SUPABASE_ACCESS_TOKEN is not a Supabase personal access token.'; exit 1;; esac
+      - name: Verify target project access
+        run: |
+          set -euo pipefail
+          status_code="$(curl -sS -o "$RUNNER_TEMP/supabase-project.json" -w '%{http_code}' -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H 'Accept: application/json' "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF")"
+          test "$status_code" = 200 || { echo "Supabase project access failed with HTTP $status_code."; exit 1; }
+      - name: Install Supabase CLI
+        run: npm install --global supabase@latest
+      - name: Deploy gateway-relay Edge Function
+        run: supabase functions deploy gateway-relay --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy federation-transport Edge Function
+        run: supabase functions deploy federation-transport --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy federation-interact Edge Function
+        run: supabase functions deploy federation-interact --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy activitypub-federation Edge Function
+        run: supabase functions deploy activitypub-federation --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy federation-delivery-worker Edge Function
+        run: supabase functions deploy federation-delivery-worker --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy search-everything Edge Function
+        run: supabase functions deploy search-everything --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy feed-fast Edge Function
+        run: supabase functions deploy feed-fast --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy post-create Edge Function
+        run: supabase functions deploy post-create --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy media-upload Edge Function
+        run: supabase functions deploy media-upload --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy federation-discovery Edge Function
+        run: supabase functions deploy federation-discovery --project-ref "$SUPABASE_PROJECT_REF"

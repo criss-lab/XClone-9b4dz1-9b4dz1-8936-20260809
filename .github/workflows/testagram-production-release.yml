@@ -1,0 +1,242 @@
+name: Testagram Production Release Gate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: testagram-production-release-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_SHA: ${{ github.sha }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify release identity
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$RELEASE_SHA"
+          echo "Release commit=$actual"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Source/static validation
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts
+          npm run typecheck
+          npm run lint
+
+      - name: Dispatch Supabase production migration gate
+        id: migration_dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch ref must be a branch/tag; the immutable release SHA is carried as an input.
+          response=$(gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/$REPO/actions/workflows/supabase-production-migrate.yml/dispatches" \
+            -f ref=main \
+            -f "inputs[release_sha]=$TARGET_SHA")
+          run_id=$(printf '%s' "$response" | jq -r '.workflow_run_id // empty')
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Supabase migration dispatched run=$run_id release_sha=$TARGET_SHA"
+
+      - name: Wait for Supabase production migration gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.migration_dispatch.outputs.run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RUN_ID"
+          echo "Supabase migration run=$RUN_ID target_sha=$TARGET_SHA"
+          for attempt in $(seq 1 90); do
+            payload=$(gh api "/repos/$REPO/actions/runs/$RUN_ID")
+            state=$(printf '%s' "$payload" | jq -r '.status')
+            conclusion=$(printf '%s' "$payload" | jq -r '.conclusion // ""')
+            head_sha=$(printf '%s' "$payload" | jq -r '.head_sha')
+            echo "attempt=$attempt status=$state conclusion=$conclusion workflow_ref_sha=$head_sha"
+            if [ "$state" = completed ]; then
+              test "$conclusion" = success
+              logs=$(mktemp)
+              trap 'rm -f "$logs"' EXIT
+              gh run view "$RUN_ID" --log > "$logs"
+              grep -Fq "Migration release commit=$TARGET_SHA" "$logs"
+              echo "Supabase migration exact-commit identity verified: $TARGET_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Supabase production migration did not complete within the release-gate timeout.'
+          exit 1
+
+      - name: Dispatch Supabase authenticated E2E gate
+        id: e2e_dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          response=$(gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/$REPO/actions/workflows/supabase-social-e2e.yml/dispatches" \
+            -f ref=main \
+            -f "inputs[release_sha]=$TARGET_SHA")
+          run_id=$(printf '%s' "$response" | jq -r '.workflow_run_id // empty')
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Supabase E2E dispatched run=$run_id release_sha=$TARGET_SHA"
+
+      - name: Wait for Supabase E2E gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.e2e_dispatch.outputs.run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RUN_ID"
+          echo "Supabase E2E run=$RUN_ID target_sha=$TARGET_SHA"
+          for attempt in $(seq 1 60); do
+            payload=$(gh api "/repos/$REPO/actions/runs/$RUN_ID")
+            state=$(printf '%s' "$payload" | jq -r '.status')
+            conclusion=$(printf '%s' "$payload" | jq -r '.conclusion // ""')
+            head_sha=$(printf '%s' "$payload" | jq -r '.head_sha')
+            echo "attempt=$attempt status=$state conclusion=$conclusion workflow_ref_sha=$head_sha"
+            if [ "$state" = completed ]; then
+              test "$conclusion" = success
+              logs=$(mktemp)
+              trap 'rm -f "$logs"' EXIT
+              gh run view "$RUN_ID" --log > "$logs"
+              grep -Fq "E2E release commit=$TARGET_SHA" "$logs"
+              echo "Supabase E2E exact-commit identity verified: $TARGET_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Supabase E2E did not complete within the release-gate timeout.'
+          exit 1
+
+      - name: Genuine production build
+        run: npm run build
+
+      - name: Verify compiled production artifact
+        run: |
+          set -euo pipefail
+          test -s dist/index.html
+          test -d dist/assets
+          if grep -q '/src/main.jsx' dist/index.html; then
+            echo 'ERROR: compiled output still references raw Vite source.'
+            exit 1
+          fi
+          grep -Eq 'src="/assets/[^" ]+\.js"' dist/index.html
+
+      - name: Dispatch Vercel production deployment
+        id: vercel_dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          response=$(gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/$REPO/actions/workflows/vercel-production-deploy.yml/dispatches" \
+            -f ref=main \
+            -f "inputs[release_sha]=$TARGET_SHA")
+          run_id=$(printf '%s' "$response" | jq -r '.workflow_run_id // empty')
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Vercel deployment dispatched run=$run_id release_sha=$TARGET_SHA"
+
+      - name: Wait for Vercel production deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.vercel_dispatch.outputs.run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RUN_ID"
+          echo "Vercel deployment run=$RUN_ID target_sha=$TARGET_SHA"
+          for attempt in $(seq 1 90); do
+            payload=$(gh api "/repos/$REPO/actions/runs/$RUN_ID")
+            state=$(printf '%s' "$payload" | jq -r '.status')
+            conclusion=$(printf '%s' "$payload" | jq -r '.conclusion // ""')
+            head_sha=$(printf '%s' "$payload" | jq -r '.head_sha')
+            echo "attempt=$attempt status=$state conclusion=$conclusion workflow_ref_sha=$head_sha"
+            if [ "$state" = completed ]; then
+              test "$conclusion" = success
+              logs=$(mktemp)
+              trap 'rm -f "$logs"' EXIT
+              gh run view "$RUN_ID" --log > "$logs"
+              grep -Fq "Vercel deployment release commit=$TARGET_SHA" "$logs"
+              echo "Vercel exact-commit identity verified: $TARGET_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Vercel production deployment did not complete within the release-gate timeout.'
+          exit 1
+
+      - name: Live production smoke test
+        run: |
+          set -euo pipefail
+          url='https://testagram.site/'
+          tmp_headers=$(mktemp)
+          tmp_body=$(mktemp)
+          trap 'rm -f "$tmp_headers" "$tmp_body"' EXIT
+
+          for attempt in $(seq 1 12); do
+            echo "Production smoke attempt=$attempt url=$url"
+            if curl --fail --silent --show-error --location \
+              --connect-timeout 10 --max-time 30 \
+              --retry 2 --retry-delay 2 \
+              -D "$tmp_headers" -o "$tmp_body" "$url"; then
+              status=$(awk 'NR==1 {print $2}' "$tmp_headers")
+              test "$status" -ge 200
+              test "$status" -lt 400
+              test -s "$tmp_body"
+              if grep -Eq '<div[^>]+id="root"|/assets/[^" ]+\.js' "$tmp_body"; then
+                echo "Production smoke passed HTTP=$status and compiled app markers were found."
+                exit 0
+              fi
+              echo 'Production returned HTML, but the compiled app marker was not found yet.'
+            else
+              echo 'Production request failed; retrying for deployment propagation.'
+            fi
+            sleep 10
+          done
+
+          echo 'Production smoke test failed after all propagation retries.'
+          echo '--- response headers ---'
+          cat "$tmp_headers" || true
+          echo '--- response body (first 120 lines) ---'
+          sed -n '1,120p' "$tmp_body" || true
+          exit 1

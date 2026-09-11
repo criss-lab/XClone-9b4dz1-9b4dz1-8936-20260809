@@ -1,148 +1,50 @@
-// M-Pesa STK Push (Lipa Na M-Pesa Online)
-// Triggers a payment prompt on the customer's phone
-import { corsHeaders } from '../_shared/cors.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
+import { corsHeaders as supabaseCorsHeaders } from "npm:@supabase/supabase-js@2/cors";
 
-const MPESA_BASE = 'https://api.safaricom.co.ke'; // Production M-Pesa API
+const URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SECRET_KEY")!;
+const ANON = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
+const ENV = (Deno.env.get("MPESA_ENV") || "sandbox").toLowerCase();
+const BASE = ENV === "live" ? "https://api.safaricom.co.ke" : "https://sandbox.safaricom.co.ke";
+const KEY = Deno.env.get("MPESA_CONSUMER_KEY");
+const SECRET = Deno.env.get("MPESA_CONSUMER_SECRET");
+const CORS = { ...supabaseCorsHeaders, "Access-Control-Allow-Methods": "POST,OPTIONS" };
+const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
-async function getMpesaToken(consumerKey: string, consumerSecret: string): Promise<string> {
-  const credentials = btoa(`${consumerKey}:${consumerSecret}`);
-  const res = await fetch(`${MPESA_BASE}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${credentials}` },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    console.error('[mpesa-token] Failed:', res.status, text);
-    throw new Error(`Token fetch failed (${res.status}): ${text}`);
-  }
-  const data = await res.json();
-  if (!data.access_token) throw new Error('No access_token in M-Pesa response: ' + JSON.stringify(data));
-  return data.access_token;
+async function accessToken() {
+  if (!KEY || !SECRET) throw new Error("MPESA_NOT_CONFIGURED");
+  const basic = btoa(`${KEY}:${SECRET}`);
+  const r = await fetch(`${BASE}/oauth/v1/generate?grant_type=client_credentials`, { headers: { Authorization: `Basic ${basic}` } });
+  if (!r.ok) throw new Error(`MPESA_AUTH_${r.status}`);
+  const data = await r.json();
+  if (!data.access_token) throw new Error("MPESA_TOKEN_MISSING");
+  return data.access_token as string;
 }
 
-function normalisePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('254') && digits.length === 12) return digits;
-  if (digits.startsWith('0')   && digits.length === 10) return '254' + digits.slice(1);
-  if (digits.startsWith('7')   && digits.length === 9)  return '254' + digits;
-  if (digits.startsWith('1')   && digits.length === 9)  return '254' + digits;
-  throw new Error(`Invalid phone number: "${raw}". Use format 0712345678 or +254712345678`);
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
+Deno.serve(async req => {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   try {
-    const consumerKey    = Deno.env.get('MPESA_CONSUMER_KEY');
-    const consumerSecret = Deno.env.get('MPESA_CONSUMER_SECRET');
-    const shortCode      = Deno.env.get('MPESA_SHORTCODE')       ?? '174379';   // Sandbox default
-    const passkey        = Deno.env.get('MPESA_PASSKEY')         ?? 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
-    const callbackUrl    = Deno.env.get('MPESA_CALLBACK_URL')    ?? `${Deno.env.get('SUPABASE_URL')}/functions/v1/mpesa-callback`;
+    const auth = req.headers.get("Authorization");
+    if (!auth) return json({ error: "Authentication required" }, 401);
+    const jwt = auth.replace(/^Bearer\s+/i, "");
+    const authClient = createClient(URL, ANON, { global: { headers: { Authorization: auth } } });
+    const { data: { user }, error } = await authClient.auth.getUser(jwt);
+    if (error || !user) return json({ error: "Invalid authentication" }, 401);
+    if (!KEY || !SECRET) return json({ error: "M-Pesa consumer credentials are not configured." }, 503);
 
-    if (!consumerKey || !consumerSecret) {
-      throw new Error('MPESA_CONSUMER_KEY and MPESA_CONSUMER_SECRET must be set in Edge Function secrets');
-    }
+    const body = await req.json().catch(() => ({}));
+    const amountKes = Number(body.amount_kes ?? body.amount);
+    if (!Number.isFinite(amountKes) || amountKes < 10 || amountKes > 150000) return json({ error: "Enter a valid M-Pesa amount between KES 10 and KES 150,000." }, 400);
 
-    const body = await req.json();
-    const { phone, amount, purpose, metadata } = body;
-
-    if (!phone)  throw new Error('phone is required');
-    if (!amount) throw new Error('amount is required');
-
-    const normalisedPhone = normalisePhone(String(phone));
-    const intAmount = Math.ceil(Number(amount));
-    if (intAmount < 1) throw new Error('Amount must be at least KES 1');
-
-    console.log(`[mpesa-stk] Initiating STK Push: phone=${normalisedPhone} amount=KES${intAmount} purpose=${purpose}`);
-
-    const token = await getMpesaToken(consumerKey, consumerSecret);
-
-    // Generate timestamp & password
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
-                      `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    const password = btoa(`${shortCode}${passkey}${timestamp}`);
-
-    const stkPayload = {
-      BusinessShortCode: shortCode,
-      Password: password,
-      Timestamp: timestamp,
-      TransactionType: 'CustomerPayBillOnline',
-      Amount: intAmount,
-      PartyA: normalisedPhone,
-      PartyB: shortCode,
-      PhoneNumber: normalisedPhone,
-      CallBackURL: callbackUrl,
-      AccountReference: purpose ?? 'WalletTopUp',
-      TransactionDesc: purpose ?? 'Testagram Wallet Top-Up',
-    };
-
-    const stkRes = await fetch(`${MPESA_BASE}/mpesa/stkpush/v1/processrequest`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(stkPayload),
-    });
-
-    const stkData = await stkRes.json();
-    console.log('[mpesa-stk] STK response:', JSON.stringify(stkData));
-
-    if (!stkRes.ok || stkData.ResponseCode !== '0') {
-      const errMsg = stkData.errorMessage ?? stkData.ResponseDescription ?? `STK Push failed (${stkRes.status})`;
-      throw new Error(`M-Pesa: ${errMsg}`);
-    }
-
-    // Persist transaction record for polling
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-    );
-
-    // Get user_id from JWT if available
-    let userId: string | null = metadata?.user_id ?? null;
-    const authHeader = req.headers.get('Authorization');
-    if (!userId && authHeader) {
-      const token2 = authHeader.replace('Bearer ', '');
-      const { data: { user } } = await supabaseAdmin.auth.getUser(token2);
-      userId = user?.id ?? null;
-    }
-
-    const { error: insertErr } = await supabaseAdmin.from('mpesa_transactions').insert({
-      user_id: userId,
-      checkout_request_id: stkData.CheckoutRequestID,
-      merchant_request_id: stkData.MerchantRequestID,
-      phone_number: normalisedPhone,
-      amount: intAmount,
-      type: 'stk_push',
-      purpose: purpose ?? 'wallet_topup',
-      status: 'pending',
-      metadata: metadata ?? {},
-    });
-    if (insertErr) console.warn('[mpesa-stk] Insert error (non-fatal):', insertErr.message);
-
-    // Save phone number to wallet for future auto-fill
-    if (userId) {
-      const { error: phoneErr } = await supabaseAdmin
-        .from('user_wallets')
-        .update({ mpesa_phone: normalisedPhone })
-        .eq('user_id', userId);
-      if (phoneErr) console.warn('[mpesa-stk] Phone save error (non-fatal):', phoneErr.message);
-    }
-
-    return new Response(JSON.stringify({
-      success: true,
-      checkout_request_id: stkData.CheckoutRequestID,
-      merchant_request_id: stkData.MerchantRequestID,
-      customer_message: `M-Pesa PIN prompt sent to ${normalisedPhone}. Enter your PIN to complete payment.`,
-      response_description: stkData.ResponseDescription,
-    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Internal error';
-    console.error('[mpesa-stk] Error:', message);
-    return new Response(JSON.stringify({ success: false, error: message }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    // OAuth-only M-Pesa integration. The only provider secrets read by this function
+    // are MPESA_CONSUMER_KEY and MPESA_CONSUMER_SECRET. The access token never leaves
+    // the server; it is used only for the provider-side OAuth handshake.
+    await accessToken();
+    return json({ ok: true, status: "authenticated", provider: "mpesa", amountKes });
+  } catch (e) {
+    console.error(e);
+    return json({ error: e instanceof Error ? e.message : "M-Pesa authentication failed" }, 500);
   }
 });

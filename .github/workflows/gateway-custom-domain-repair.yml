@@ -1,0 +1,92 @@
+name: Testagram Gateway Custom Domain Repair
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gateway-custom-domain-repair.yml'
+      - 'cloudflare/wrangler.jsonc'
+      - 'cloudflare/worker/production-entrypoint.ts'
+      - 'cloudflare/worker/federation-interop-entrypoint.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '4.126.0'
+  WORKER_DIRECT_URL: 'https://testagram-api.nahashonnyaga794.workers.dev'
+  GATEWAY_URL: 'https://api.testagram.site'
+
+jobs:
+  repair-and-verify:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Validate canonical custom-domain configuration
+        run: |
+          set -euo pipefail
+          grep -Fq '"pattern": "api.testagram.site", "custom_domain": true' cloudflare/wrangler.jsonc
+          grep -Fq '"pattern": "federation.testagram.site", "custom_domain": true' cloudflare/wrangler.jsonc
+          grep -Fq "GATEWAY_FUNCTION = 'gateway-relay'" cloudflare/worker/production-entrypoint.ts
+      - name: Validate Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+      - name: Deploy canonical Worker and provision custom domains
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler.jsonc
+      - name: Verify direct Worker health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/direct-health.json -w '%{http_code}' --max-time 20 "$WORKER_DIRECT_URL/api/health" || true)"
+            echo "direct attempt=$attempt status=$status"
+            cat /tmp/direct-health.json || true
+            if [ "$status" = 200 ] && jq -e '.ok == true and .gateway == true and .databaseReachable == true and .jwksReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/direct-health.json >/dev/null 2>&1; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - name: Verify api.testagram.site DNS and health readiness
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 18); do
+            dns='false'
+            getent hosts api.testagram.site >/dev/null 2>&1 && dns='true'
+            health="$(curl -sS -o /tmp/api-health.json -w '%{http_code}' --max-time 20 "$GATEWAY_URL/api/health" || true)"
+            ready="$(curl -sS -o /tmp/api-ready.json -w '%{http_code}' --max-time 20 "$GATEWAY_URL/api/ready" || true)"
+            echo "attempt=$attempt dns=$dns health=$health ready=$ready"
+            cat /tmp/api-health.json || true
+            cat /tmp/api-ready.json || true
+            if [ "$dns" = true ] && [ "$health" = 200 ] && [ "$ready" = 200 ] && jq -e '.ok == true and .gateway == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/api-health.json >/dev/null 2>&1 && jq -e '.ready == true and .gateway == true' /tmp/api-ready.json >/dev/null 2>&1; then
+              echo 'GATEWAY DNS/ROUTING PASS'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'GATEWAY DNS/ROUTING FAIL'
+          echo 'The Worker deployed, but the api.testagram.site custom domain is not resolving to a healthy Worker.'
+          exit 1
+      - name: Verify exact gateway request boundary
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/gateway-auth.json -w '%{http_code}' --max-time 20 \
+            -H 'Origin: https://testagram.site' \
+            -H 'Content-Type: application/json' \
+            --data '{"path":"/timeline/home","method":"GET","params":{}}' \
+            "$GATEWAY_URL/api/gateway" || true)"
+          echo "exact gateway unauthenticated HTTP=$status"
+          cat /tmp/gateway-auth.json || true
+          test "$status" = 401

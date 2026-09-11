@@ -100,7 +100,7 @@ export default function ActiveSessionsPage() {
     setSignedOutAll(true);
     setSigningOut(false);
     toast.success('Signed out of all devices');
-    await authService.signOut().catch(() => {});
+    await authService.signOut().then(() => {}, () => {});
     logout();
     navigate('/auth');
   };

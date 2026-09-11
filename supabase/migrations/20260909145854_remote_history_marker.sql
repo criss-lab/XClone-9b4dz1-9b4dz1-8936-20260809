@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909145854_add_federation_delivery_queue is already applied in production.
+-- The original source file is not present in this checkout; this marker keeps local migration history aligned without re-running it.

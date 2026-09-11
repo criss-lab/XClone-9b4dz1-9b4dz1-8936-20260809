@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909150304_add_federation_worker_metrics_rpc is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

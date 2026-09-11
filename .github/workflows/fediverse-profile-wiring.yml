@@ -1,0 +1,75 @@
+name: One-time Fediverse profile interaction patch
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply surgical Fediverse UI wiring
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('src/pages/FediversePage.tsx')
+          s=p.read_text()
+          old="""    const avatarUrl = actor.avatar_url ?? actor.icon?.url ?? actor.avatar;\n    const content = p.content ?? p.text ?? '';"""
+          new="""    const avatarUrl = actor.avatar_url ?? actor.icon?.url ?? actor.avatar;\n    const actorUrl = actor.id ?? actor.url ?? actor.actor_url ?? p.actor_url ?? p.account?.url ?? '';\n    const profileHref = actorUrl ? `/fediverse/profile?actor=${encodeURIComponent(actorUrl)}` : '';\n    const content = p.content ?? p.text ?? '';"""
+          s=s.replace(old,new)
+          old="""          <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden shrink-0`}>\n            {avatarUrl ? <img src={avatarUrl} alt={username} className=\"w-full h-full object-cover\" /> :\n              <div className=\"w-full h-full flex items-center justify-center font-bold text-xs\">{username[0]?.toUpperCase()}</div>}\n          </div>"""
+          new="""          {profileHref ? <a href={profileHref} data-fediverse-profile=\"true\" aria-label={`Open ${username} Fediverse profile`} className=\"shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-primary\">\n            <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden`}>\n              {avatarUrl ? <img src={avatarUrl} alt={username} className=\"w-full h-full object-cover\" /> : <div className=\"w-full h-full flex items-center justify-center font-bold text-xs\">{username[0]?.toUpperCase()}</div>}\n            </div>\n          </a> : <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden shrink-0`}>{avatarUrl ? <img src={avatarUrl} alt={username} className=\"w-full h-full object-cover\" /> : <div className=\"w-full h-full flex items-center justify-center font-bold text-xs\">{username[0]?.toUpperCase()}</div>}</div>}"""
+          s=s.replace(old,new)
+          old="""              <span className={`font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</span>\n              <span className=\"text-xs text-purple-500 flex items-center gap-0.5\"><Globe className=\"w-3 h-3\" />{domain}</span>"""
+          new="""              {profileHref ? <a href={profileHref} data-fediverse-profile=\"true\" className={`font-semibold hover:underline ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</a> : <span className={`font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</span>}\n              {profileHref ? <a href={profileHref} data-fediverse-profile=\"true\" className=\"text-xs text-purple-500 flex items-center gap-0.5 hover:underline\"><Globe className=\"w-3 h-3\" />{domain}</a> : <span className=\"text-xs text-purple-500 flex items-center gap-0.5\"><Globe className=\"w-3 h-3\" />{domain}</span>}"""
+          s=s.replace(old,new)
+          s=re.sub(r"  const handleFedLike = async \(post: any\) => \{.*?\n  \};\n\n  const handleFedBoost", """  const handleFedLike = async (post: any) => {
+    if (!user) { navigate('/auth'); return; }
+    const key = post.object_url ?? post.uri ?? post.url ?? post.id;
+    if (!key) return;
+    const enabled = !postStates[key]?.liked;
+    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: enabled } }));
+    try { enabled ? await federation.favorite(key) : await federation.unfavorite(key); }
+    catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !enabled } })); toast.error(err?.message ?? 'Like failed'); }
+  };
+
+  const handleFedBoost""", s, flags=re.S)
+          s=re.sub(r"  const handleFedBoost = async \(post: any\) => \{.*?\n  \};\n\n  const handleFedReply", """  const handleFedBoost = async (post: any) => {
+    if (!user) { navigate('/auth'); return; }
+    const key = post.object_url ?? post.uri ?? post.url ?? post.id;
+    if (!key) return;
+    const enabled = !postStates[key]?.boosted;
+    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: enabled } }));
+    try { enabled ? await federation.boost(key) : await federation.unboost(key); }
+    catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !enabled } })); toast.error(err?.message ?? 'Repost failed'); }
+  };
+
+  const handleFedReply""", s, flags=re.S)
+          s=re.sub(r"  const handleFedReply = async \(post: any\) => \{.*?\n  \};\n\n  const handleFollow", """  const handleFedReply = async (post: any) => {
+    if (!user) { navigate('/auth'); return; }
+    const key = post.object_url ?? post.uri ?? post.url ?? post.id;
+    if (!key) return;
+    const text = postStates[key]?.replyText?.trim();
+    if (!text) return;
+    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: true } }));
+    try {
+      await federation.reply({ postId: key, content: text });
+      toast.success('Reply sent to the Fediverse!');
+      setPostStates(prev => ({ ...prev, [key]: { ...prev[key], replyText: '', replyOpen: false, sending: false } }));
+    } catch (err: any) {
+      toast.error(`Reply failed: ${err.message ?? ''}`);
+      setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: false } }));
+    }
+  };
+
+  const handleFollow""", s, flags=re.S)
+          p.write_text(s)
+          PY
+          if git diff --quiet -- src/pages/FediversePage.tsx; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/pages/FediversePage.tsx
+          git commit -m 'fix(fediverse): use canonical interactions and clickable profiles'
+          git push

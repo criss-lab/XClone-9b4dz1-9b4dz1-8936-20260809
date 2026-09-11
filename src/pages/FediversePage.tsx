@@ -259,7 +259,7 @@ export default function FediversePage() {
     })).filter((r: any) => r.object_url);
     if (!rows.length) return;
     await supabase.from('remote_posts').upsert(rows, { onConflict: 'object_url', ignoreDuplicates: false })
-      .then(() => setCachedAt(new Date())).catch(() => {});
+      .then(() => setCachedAt(new Date())).then(() => {}, () => {});
   };
 
   const fetchFederatedFeed = async () => {
@@ -281,7 +281,7 @@ export default function FediversePage() {
       const fresh = Array.isArray(res) ? res : res?.posts ?? res?.data ?? [];
       if (fresh.length > 0) {
         setRemotePosts(fresh);
-        cacheFederatedPosts(fresh).catch(() => {});
+        cacheFederatedPosts(fresh).then(() => {}, () => {});
         setCachedAt(new Date());
       }
     } catch {
@@ -470,51 +470,33 @@ export default function FediversePage() {
 
   const handleFedLike = async (post: any) => {
     if (!user) { navigate('/auth'); return; }
-    const key = post.object_url ?? post.id;
+    const key = post.object_url ?? post.uri ?? post.url ?? post.id;
     if (!key) return;
-    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !prev[key]?.liked } }));
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/activitypub-federation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'like', object_url: key, user_id: user.id }),
-      });
-    } catch {}
+    const enabled = !postStates[key]?.liked;
+    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: enabled } }));
+    try { enabled ? await federation.favorite(key) : await federation.unfavorite(key); }
+    catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !enabled } })); toast.error(err?.message ?? 'Like failed'); }
   };
 
   const handleFedBoost = async (post: any) => {
     if (!user) { navigate('/auth'); return; }
-    const key = post.object_url ?? post.id;
+    const key = post.object_url ?? post.uri ?? post.url ?? post.id;
     if (!key) return;
-    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !prev[key]?.boosted } }));
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/activitypub-federation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'boost', object_url: key, user_id: user.id }),
-      });
-    } catch {}
+    const enabled = !postStates[key]?.boosted;
+    setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: enabled } }));
+    try { enabled ? await federation.boost(key) : await federation.unboost(key); }
+    catch (err: any) { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !enabled } })); toast.error(err?.message ?? 'Repost failed'); }
   };
 
   const handleFedReply = async (post: any) => {
     if (!user) { navigate('/auth'); return; }
-    const key = post.object_url ?? post.id;
+    const key = post.object_url ?? post.uri ?? post.url ?? post.id;
     if (!key) return;
     const text = postStates[key]?.replyText?.trim();
     if (!text) return;
     setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: true } }));
     try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/activitypub-federation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'reply', object_url: key, content: text, user_id: user.id }),
-      });
+      await federation.reply({ postId: key, content: text });
       toast.success('Reply sent to the Fediverse!');
       setPostStates(prev => ({ ...prev, [key]: { ...prev[key], replyText: '', replyOpen: false, sending: false } }));
     } catch (err: any) {
@@ -616,6 +598,8 @@ export default function FediversePage() {
     const username = actor.preferredUsername ?? actor.username ?? actor.acct?.split('@')[0] ?? 'unknown';
     const domain = actor.domain ?? (() => { try { return new URL(p.actor_url ?? '').hostname; } catch { return ''; } })();
     const avatarUrl = actor.avatar_url ?? actor.icon?.url ?? actor.avatar;
+    const actorUrl = actor.id ?? actor.url ?? actor.actor_url ?? p.actor_url ?? p.account?.url ?? '';
+    const profileHref = actorUrl ? `/fediverse/profile?actor=${encodeURIComponent(actorUrl)}` : '';
     const content = p.content ?? p.text ?? '';
     const created = p.published_at ?? p.created_at ?? p.published ?? '';
     const key = p.object_url ?? p.uri ?? p.url ?? p.id ?? Math.random().toString();
@@ -624,14 +608,15 @@ export default function FediversePage() {
     return (
       <div className={`${compact ? 'p-3' : 'p-4'} hover:bg-muted/5 transition-colors`}>
         <div className="flex gap-3">
-          <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden shrink-0`}>
-            {avatarUrl ? <img src={avatarUrl} alt={username} className="w-full h-full object-cover" /> :
-              <div className="w-full h-full flex items-center justify-center font-bold text-xs">{username[0]?.toUpperCase()}</div>}
-          </div>
+          {profileHref ? <a href={profileHref} data-fediverse-profile="true" aria-label={`Open ${username} Fediverse profile`} className="shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-primary">
+            <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden`}>
+              {avatarUrl ? <img src={avatarUrl} alt={username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-xs">{username[0]?.toUpperCase()}</div>}
+            </div>
+          </a> : <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden shrink-0`}>{avatarUrl ? <img src={avatarUrl} alt={username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-xs">{username[0]?.toUpperCase()}</div>}</div>}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-              <span className={`font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</span>
-              <span className="text-xs text-purple-500 flex items-center gap-0.5"><Globe className="w-3 h-3" />{domain}</span>
+              {profileHref ? <a href={profileHref} data-fediverse-profile="true" className={`font-semibold hover:underline ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</a> : <span className={`font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</span>}
+              {profileHref ? <a href={profileHref} data-fediverse-profile="true" className="text-xs text-purple-500 flex items-center gap-0.5 hover:underline"><Globe className="w-3 h-3" />{domain}</a> : <span className="text-xs text-purple-500 flex items-center gap-0.5"><Globe className="w-3 h-3" />{domain}</span>}
               {created && <span className="text-xs text-muted-foreground">· {formatDistanceToNow(new Date(created), { addSuffix: true })}</span>}
             </div>
             <div className={`${compact ? 'text-xs' : 'text-sm'} leading-relaxed line-clamp-3`} dangerouslySetInnerHTML={{ __html: content }} />
