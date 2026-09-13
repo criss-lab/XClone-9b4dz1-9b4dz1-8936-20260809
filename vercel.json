@@ -3,12 +3,6 @@
   "installCommand": "sed -i '/^node-options/d' .npmrc && npm install && node _patch-vite.cjs",
   "buildCommand": "node _build.cjs",
   "outputDirectory": "dist",
-  "functions": {
-    "api/**/*.ts": {
-      "runtime": "nodejs22.x",
-      "maxDuration": 30
-    }
-  },
   "rewrites": [
     { "source": "/api/media/:id", "destination": "https://api.testagram.site/api/media/:id" },
     { "source": "/(.*)", "destination": "/index.html" }
