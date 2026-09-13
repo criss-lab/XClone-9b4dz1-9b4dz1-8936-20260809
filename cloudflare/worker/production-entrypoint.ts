@@ -100,10 +100,27 @@ async function gateway(request: Request, env: Env): Promise<Response> {
   return json(env, { ok: false, error: lastError, code: 'GATEWAY_UPSTREAM_UNAVAILABLE', requestId: id, retryable: innerMethod === 'GET' }, 503, id, request);
 }
 
+function receiverScopedFederationRequest(request: Request): Request {
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.hostname !== 'federation.testagram.site' || !url.pathname.match(/^\/users\/[^/]+\/followers_synchronization$/) || url.searchParams.has('domain')) return request;
+  const signatureInput = request.headers.get('Signature-Input') || '';
+  const legacySignature = request.headers.get('Signature') || '';
+  const keyId = signatureInput.match(/;keyid="([^"]+)"/)?.[1] || legacySignature.match(/(?:^|,)\s*keyId="([^"]+)"/)?.[1] || '';
+  if (!keyId) return request;
+  try {
+    const signer = new URL(keyId.split('#')[0]);
+    if (!signer.hostname) return request;
+    url.searchParams.set('domain', signer.hostname.toLowerCase());
+    return new Request(url.toString(), request);
+  } catch {
+    return request;
+  }
+}
+
 export default { async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url), id = requestId(request);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors(env, 'GET,POST,PATCH,PUT,DELETE,OPTIONS', request), 'x-request-id': id } });
-  if (url.hostname === 'federation.testagram.site') return federationInterop.fetch(request, env, ctx);
+  if (url.hostname === 'federation.testagram.site') return federationInterop.fetch(receiverScopedFederationRequest(request), env, ctx);
   if (url.pathname === '/api/health') return health(env, id, request);
   if (url.pathname === '/api/ready') return ready(env, id, request);
   if (url.pathname === '/api/media' && request.method === 'POST') return uploadMedia(request, env as any);
