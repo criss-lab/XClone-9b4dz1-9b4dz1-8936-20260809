@@ -124,8 +124,8 @@ jobs:
             echo '--- API health ---'; cat /tmp/api-health.json || true; echo
             echo '--- Federation health ---'; cat /tmp/federation-health.json || true; echo
             if [ "$api_status" = 200 ] && [ "$federation_status" = 200 ]; then
-              jq -e '.ok == true and .service == "testagram-api" and .databaseReachable == true and .jwksReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/api-health.json >/dev/null || { echo 'API health assertion failed.'; exit 1; }
-              jq -e '.ok == true and .service == "testagram-federation" and .federation == true and .federationDomain == "federation.testagram.site" and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/federation-health.json >/dev/null || { echo 'Federation health assertion failed.'; exit 1; }
+              jq -e '.ok == true and .service == "testagram-api" and .gateway == true and .federation == true and .federationDomain == "federation.testagram.site" and .databaseReachable == true and .jwksReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/api-health.json >/dev/null || { echo 'API health assertion failed.'; exit 1; }
+              jq -e '.ok == true and .service == "testagram-api" and .databaseReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/federation-health.json >/dev/null || { echo 'Federation health assertion failed.'; exit 1; }
               echo 'API and federation health gates are green.'
               exit 0
             fi
