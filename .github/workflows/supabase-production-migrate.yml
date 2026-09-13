@@ -1,10 +1,6 @@
 name: Testagram Supabase Production Migrations
 
 on:
-  # This workflow is intentionally dispatch-only. The production release gate
-  # dispatches exactly one immutable migration run for each release SHA.
-  # Keeping push triggers here as well created two migration runs for the same
-  # release and made the release gate observe a competing/cancelled run.
   workflow_dispatch:
     inputs:
       release_sha:
@@ -14,11 +10,6 @@ on:
 
 permissions:
   contents: read
-
-# Production migration runs must serialize globally.
-concurrency:
-  group: testagram-supabase-production-migrations-production
-  cancel-in-progress: false
 
 env:
   SUPABASE_PROJECT_REF: aepbqfrmheihfsauzcby
@@ -30,7 +21,9 @@ jobs:
   migrate-production:
     runs-on: ubuntu-latest
     environment: production
-
+    concurrency:
+      group: testagram-supabase-production-migrations-production
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with:
@@ -45,14 +38,20 @@ jobs:
           echo "Migration release commit=$actual"
 
       - name: Install Supabase CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json
-          import urllib.request
-
+          import json, os, urllib.request
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'User-Agent': 'Testagram-CI',
+          }
           api = 'https://api.github.com/repos/supabase/cli/releases/latest'
-          request = urllib.request.Request(api, headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'Testagram-CI'})
+          request = urllib.request.Request(api, headers=headers)
           with urllib.request.urlopen(request) as response:
               release = json.load(response)
           assets = release.get('assets', [])
@@ -60,8 +59,8 @@ jobs:
           if asset is None:
               names = ', '.join(item.get('name', '') for item in assets)
               raise SystemExit(f'Could not find Supabase Linux amd64 asset in {release.get("tag_name")}: {names}')
-          print(asset['browser_download_url'])
-          with urllib.request.urlopen(asset['browser_download_url']) as response, open('/tmp/supabase.tar.gz', 'wb') as output:
+          download = urllib.request.Request(asset['browser_download_url'], headers=headers)
+          with urllib.request.urlopen(download) as response, open('/tmp/supabase.tar.gz', 'wb') as output:
               output.write(response.read())
           PY
           tar -xzf /tmp/supabase.tar.gz -C /tmp
@@ -119,49 +118,35 @@ jobs:
         run: |
           set -euo pipefail
           history="$(supabase migration list --db-url "$SUPABASE_DB_URL")"
-
           local_versions="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sed -nE 's/^([0-9]{8,14})_.*/\1/p' | sort -n)"
           latest_local="$(printf '%s\n' "$local_versions" | tail -n 1)"
           test -n "$latest_local" || { echo 'No local Supabase migrations found.'; exit 1; }
-
           remote_versions="$(printf '%s\n' "$history" | sed -nE 's/.*`([0-9]{8,14})`[[:space:]]*\|.*/\1/p' | sort -nu)"
           remote_only=""
           while IFS= read -r version; do
             [ -n "$version" ] || continue
-            if find supabase/migrations -maxdepth 1 -type f -name "${version}_*.sql" -print -quit | grep -q .; then
-              continue
-            fi
-
+            if find supabase/migrations -maxdepth 1 -type f -name "${version}_*.sql" -print -quit | grep -q .; then continue; fi
             if [ "$version" -gt "$latest_local" ]; then
               remote_only="${remote_only}${remote_only:+$'\n'}$version"
               continue
             fi
-
             echo "Stale remote-only migration $version detected; repairing history as reverted."
             supabase migration repair "$version" --status reverted --db-url "$SUPABASE_DB_URL"
           done <<< "$remote_versions"
-
           if [ -n "$remote_only" ]; then
             echo 'Production contains migration versions newer than this release; refusing to rewrite their history.'
-            echo 'Remote-newer versions:'
             printf '%s\n' "$remote_only"
             exit 1
           fi
 
       - name: Verify reconciled production migration history
-        run: |
-          set -euo pipefail
-          supabase migration list --db-url "$SUPABASE_DB_URL"
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
 
       - name: Preview pending production migrations
-        run: |
-          set -euo pipefail
-          supabase db push --db-url "$SUPABASE_DB_URL" --dry-run --include-all
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run --include-all
 
       - name: Apply pending production migrations
-        run: |
-          set -euo pipefail
-          supabase db push --db-url "$SUPABASE_DB_URL" --include-all
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all
 
       - name: Verify production migration history
         run: |
