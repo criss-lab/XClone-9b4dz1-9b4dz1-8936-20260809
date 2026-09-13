@@ -38,6 +38,17 @@ async function profile(env: any, userId: string) {
   return rows[0] || null;
 }
 
+async function moveMetadata(env: any, actorId: string) {
+  const [outbound, inbound] = await Promise.all([
+    db(env, `federation_actor_moves?old_actor_uri=eq.${encodeURIComponent(actorId)}&select=new_actor_uri`).catch(() => []),
+    db(env, `federation_actor_moves?new_actor_uri=eq.${encodeURIComponent(actorId)}&select=old_actor_uri`).catch(() => []),
+  ]);
+  return {
+    ...(outbound[0]?.new_actor_uri ? { movedTo: outbound[0].new_actor_uri } : {}),
+    ...(inbound.length ? { alsoKnownAs: [...new Set(inbound.map((x: any) => String(x.old_actor_uri || '')).filter(Boolean))] } : {}),
+  };
+}
+
 async function webfinger(env: any, request: Request) {
   const resource = new URL(request.url).searchParams.get('resource') || '';
   const value = resource.replace(/^acct:/, '').replace(/^@/, '');
@@ -61,6 +72,7 @@ async function actorGet(env: any, username: string) {
     inbox: `${id}/inbox`, outbox: `${id}/outbox`, followers: `${id}/followers`, following: `${id}/following`,
     manuallyApprovesFollowers: p.protected_account === true, discoverable, indexable: discoverable,
     publicKey: { id: `${id}#main-key`, owner: id, publicKeyPem: row.public_key_pem },
+    ...(await moveMetadata(env, id)),
   };
   if (p.bio) actor.summary = p.bio;
   if (p.website) actor.url = p.website;
@@ -96,6 +108,43 @@ async function remoteInteractionObject(env: any, request: Request, username: str
   const expectedId = `${ORIGIN}/users/${encodeURIComponent(actorName(local, username))}/remote-interactions/${interactionId}`;
   if (object.id !== expectedId) return ap({ error: 'object identity mismatch' }, 409);
   return ap({ '@context': Array.isArray(payload['@context']) ? payload['@context'] : CTX, ...object });
+}
+
+async function verifyCollectionSyncRequest(req: Request, local: any, expectedDomain: string) {
+  const signatureHeader = req.headers.get('Signature'), date = req.headers.get('Date');
+  if (!signatureHeader || !date) throw new Error('Collection-Synchronization requires a signed GET');
+  const timestamp = Date.parse(date);
+  if (!Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 12 * 60 * 60 * 1000) throw new Error('Stale Collection-Synchronization signature');
+  const parsed: Record<string, string> = {};
+  for (const part of signatureHeader.split(/,(?=\w+=)/)) { const i = part.indexOf('='); if (i > 0) parsed[part.slice(0, i).trim()] = part.slice(i + 1).trim().replace(/^"|"$/g, ''); }
+  if ((parsed.algorithm || '').toLowerCase() !== 'rsa-sha256' || !parsed.keyId || !parsed.signature || !parsed.headers) throw new Error('Unsupported Collection-Synchronization HTTP signature');
+  const actorUri = parsed.keyId.split('#')[0];
+  if (new URL(actorUri).hostname.toLowerCase() !== expectedDomain.toLowerCase()) throw new Error('Collection-Synchronization signer domain mismatch');
+  const remote = await signedGet(local, actorUri);
+  if (!remote.ok) throw new Error(`Remote signer ${remote.status}`);
+  const actor = await remote.json() as any;
+  if (actor.id !== actorUri || actor.publicKey?.owner !== actorUri || !actor.publicKey?.publicKeyPem) throw new Error('Remote signer actor is invalid');
+  const key = await crypto.subtle.importKey('spki', pemToBytes(actor.publicKey.publicKeyPem), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  const u = new URL(req.url), lines: string[] = [];
+  for (const header of parsed.headers.toLowerCase().split(/\s+/).filter(Boolean)) {
+    if (header === '(request-target)') lines.push(`(request-target): get ${u.pathname}${u.search}`);
+    else if (header === 'host') lines.push(`host: ${u.host}`);
+    else { const value = req.headers.get(header); if (value === null) throw new Error(`signed header missing: ${header}`); lines.push(`${header}: ${value}`); }
+  }
+  if (!await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, ub64(parsed.signature), new TextEncoder().encode(lines.join('\n')))) throw new Error('Invalid Collection-Synchronization signature');
+  return actorUri;
+}
+
+async function followersSynchronization(env: any, request: Request, username: string) {
+  const local = await actorRecord(env, username);
+  if (!local) return ap({ error: 'actor not found' }, 404);
+  const url = new URL(request.url), domain = (url.searchParams.get('domain') || '').toLowerCase().trim();
+  if (!domain || !/^[a-z0-9.-]+$/.test(domain)) return ap({ error: 'domain is required' }, 400);
+  await verifyCollectionSyncRequest(request, local, domain);
+  const rows = await db(env, `federated_relationships?local_user_id=eq.${encodeURIComponent(local.user_id)}&relationship=eq.follower&state=in.(accepted,active)&select=remote_actor_uri`) as any[];
+  const orderedItems = [...new Set((rows || []).map((r: any) => String(r.remote_actor_uri || '')).filter((uri: string) => { try { return new URL(uri).hostname.toLowerCase() === domain; } catch { return false; } }))].sort();
+  const collectionId = `${local.actor_url || local.uri}/followers`;
+  return ap({ '@context': CTX, id: `${collectionId}?domain=${encodeURIComponent(domain)}`, type: 'OrderedCollection', totalItems: orderedItems.length, orderedItems });
 }
 
 async function signedGet(local: any, url: string) {
@@ -219,10 +268,12 @@ export default {
     const inboxMatch = url.pathname.match(/^\/users\/([^/]+)\/inbox$/);
     const noteMatch = url.pathname.match(/^\/users\/([^/]+)\/notes\/([^/]+)$/);
     const interactionObjectMatch = url.pathname.match(/^\/users\/([^/]+)\/remote-interactions\/([0-9a-f-]+)$/i);
+    const syncMatch = url.pathname.match(/^\/users\/([^/]+)\/followers_synchronization$/);
     if (request.method === 'GET' && url.pathname === '/.well-known/webfinger') return webfinger(env, request);
     if (request.method === 'GET' && actorMatch) return actorGet(env, decodeURIComponent(actorMatch[1]));
     if (request.method === 'GET' && noteMatch) return noteGet(env, decodeURIComponent(noteMatch[1]), decodeURIComponent(noteMatch[2]));
     if (request.method === 'GET' && interactionObjectMatch) return remoteInteractionObject(env, request, decodeURIComponent(interactionObjectMatch[1]), interactionObjectMatch[2]);
+    if (request.method === 'GET' && syncMatch) return followersSynchronization(env, request, decodeURIComponent(syncMatch[1]));
     if (request.method === 'POST' && inboxMatch) return handleFederationInteraction(request, env, decodeURIComponent(inboxMatch[1]));
     return worker.fetch(request, env, ctx);
   },
