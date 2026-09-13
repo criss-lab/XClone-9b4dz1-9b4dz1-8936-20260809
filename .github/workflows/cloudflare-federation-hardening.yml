@@ -57,6 +57,7 @@ jobs:
           grep -Fq 'alsoKnownAs' cloudflare/worker/federation-interop-entrypoint.ts
           grep -Fq 'movedTo' cloudflare/worker/federation-interop-entrypoint.ts
           grep -Fq 'followers_synchronization' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'receiverScopedFederationRequest' cloudflare/worker/production-entrypoint.ts
           if grep -Fq 'testagram-api.nahashonnyaga794.workers.dev' cloudflare/worker/federation-interop-entrypoint.ts; then
             echo 'workers.dev federation origin is forbidden in canonical federation source'
             exit 1
