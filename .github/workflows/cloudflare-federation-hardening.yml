@@ -54,6 +54,9 @@ jobs:
           grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/production-entrypoint.ts
           grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/public-actor-entrypoint.ts
           grep -Fq 'federation.testagram.site' cloudflare/wrangler-federation.jsonc
+          grep -Fq 'alsoKnownAs' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'movedTo' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'followers_synchronization' cloudflare/worker/federation-interop-entrypoint.ts
           if grep -Fq 'testagram-api.nahashonnyaga794.workers.dev' cloudflare/worker/federation-interop-entrypoint.ts; then
             echo 'workers.dev federation origin is forbidden in canonical federation source'
             exit 1
@@ -96,7 +99,7 @@ jobs:
             sleep 5
           done
           test "$status" = 200
-          jq -e '.ok == true and .federation == true and .federationDomain == "federation.testagram.site"' /tmp/health.json >/dev/null
+          jq -e '.ok == true and .service == "testagram-api" and .gateway == true and .federation == true and .federationDomain == "federation.testagram.site" and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and .databaseReachable == true and .r2Binding == true' /tmp/health.json >/dev/null
           curl -sS --fail-with-body --max-time 20 "$base/.well-known/nodeinfo" >/tmp/nodeinfo-link.json
           jq -e '.links | length > 0' /tmp/nodeinfo-link.json >/dev/null
           curl -sS --fail-with-body --max-time 20 "$base/nodeinfo/2.1" >/tmp/nodeinfo.json
