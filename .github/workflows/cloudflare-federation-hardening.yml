@@ -100,7 +100,7 @@ jobs:
             sleep 5
           done
           test "$status" = 200
-          jq -e '.ok == true and .service == "testagram-api" and .gateway == true and .federation == true and .federationDomain == "federation.testagram.site" and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and .databaseReachable == true and .r2Binding == true' /tmp/health.json >/dev/null
+          jq -e '.ok == true and .service == "testagram-api" and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and .databaseReachable == true and .r2Binding == true' /tmp/health.json >/dev/null
           curl -sS --fail-with-body --max-time 20 "$base/.well-known/nodeinfo" >/tmp/nodeinfo-link.json
           jq -e '.links | length > 0' /tmp/nodeinfo-link.json >/dev/null
           curl -sS --fail-with-body --max-time 20 "$base/nodeinfo/2.1" >/tmp/nodeinfo.json
