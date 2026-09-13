@@ -1,5 +1,4 @@
 import publicActor from './public-actor-entrypoint';
-import federation from './federation-entrypoint';
 import federationInterop from './federation-interop-entrypoint';
 import { handlePayPal, PayPalEnv } from './paypal';
 import { uploadMedia, getMedia, deleteMedia } from './index';
@@ -32,7 +31,6 @@ function responseOrigin(env: Env, request?: Request): string {
   if (ALLOWED_APP_ORIGINS.has(env.APP_ORIGIN)) return env.APP_ORIGIN;
   return 'https://www.testagram.site';
 }
-
 function cors(env: Env, methods = 'GET,POST,PATCH,PUT,DELETE,OPTIONS', request?: Request) {
   return {
     'Access-Control-Allow-Origin': responseOrigin(env, request),
