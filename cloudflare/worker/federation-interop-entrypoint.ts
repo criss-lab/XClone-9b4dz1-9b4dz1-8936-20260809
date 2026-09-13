@@ -22,14 +22,80 @@ function actorName(row: any, fallback: string) { return String(row.username || r
 function b64(x: ArrayBuffer | Uint8Array) { return btoa(String.fromCharCode(...new Uint8Array(x))); }
 function ub64(x: string) { return Uint8Array.from(atob(x), c => c.charCodeAt(0)); }
 function pemToBytes(pem: string) { return ub64(pem.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, '')); }
+function ap(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/activity+json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' } }); }
 
 async function actorRecord(env: any, username: string) {
   const encoded = encodeURIComponent(username);
   const canonical = `${ORIGIN}/users/${encoded}`;
-  const byUrl = await db(env, `federation_actors?actor_url=eq.${encodeURIComponent(canonical)}&select=*`).catch(() => []);
-  if (byUrl[0]) return byUrl[0];
-  const byName = await db(env, `federation_actors?username=eq.${encoded}&select=*`).catch(() => []);
-  return byName[0] || null;
+  const canonicalRows = await db(env, `federation_actors?actor_url=eq.${encodeURIComponent(canonical)}&select=*`).catch(() => []);
+  if (canonicalRows[0]) return canonicalRows[0];
+  const rows = await db(env, `federation_actors?username=eq.${encoded}&select=*`).catch(() => []);
+  return rows[0] || null;
+}
+
+async function profile(env: any, userId: string) {
+  const rows = await db(env, `profiles?id=eq.${encodeURIComponent(userId)}&select=id,username,display_name,avatar_url,bio,website,location,verified_tier,protected_account`).catch(() => []);
+  return rows[0] || null;
+}
+
+async function webfinger(env: any, request: Request) {
+  const resource = new URL(request.url).searchParams.get('resource') || '';
+  const value = resource.replace(/^acct:/, '').replace(/^@/, '');
+  const [username, domain] = value.split('@');
+  if (!username || domain !== DOMAIN) return new Response(JSON.stringify({ error: 'actor not found' }), { status: 404, headers: { 'Content-Type': 'application/jrd+json; charset=utf-8' } });
+  const row = await actorRecord(env, username);
+  if (!row) return new Response(JSON.stringify({ error: 'actor not found' }), { status: 404, headers: { 'Content-Type': 'application/jrd+json; charset=utf-8' } });
+  const name = actorName(row, username), id = `${ORIGIN}/users/${encodeURIComponent(name)}`;
+  return new Response(JSON.stringify({ subject: `acct:${name}@${DOMAIN}`, aliases: [id], links: [{ rel: 'self', type: 'application/activity+json', href: id }] }), { status: 200, headers: { 'Content-Type': 'application/jrd+json; charset=utf-8', 'Cache-Control': 'no-store' } });
+}
+
+async function actorGet(env: any, username: string) {
+  const row = await actorRecord(env, username);
+  if (!row) return ap({ error: 'actor not found' }, 404);
+  const p = await profile(env, row.user_id);
+  if (!p) return ap({ error: 'profile not found' }, 404);
+  const name = actorName(row, p.username || username), id = `${ORIGIN}/users/${encodeURIComponent(name)}`;
+  const discoverable = p.protected_account !== true;
+  const actor: any = {
+    '@context': CTX, id, type: 'Person', preferredUsername: name, name: String(p.display_name || name).trim() || name, url: id,
+    inbox: `${id}/inbox`, outbox: `${id}/outbox`, followers: `${id}/followers`, following: `${id}/following`,
+    manuallyApprovesFollowers: p.protected_account === true, discoverable, indexable: discoverable,
+    publicKey: { id: `${id}#main-key`, owner: id, publicKeyPem: row.public_key_pem },
+  };
+  if (p.bio) actor.summary = p.bio;
+  if (p.website) actor.url = p.website;
+  if (p.avatar_url) actor.icon = { type: 'Image', mediaType: 'image/jpeg', url: p.avatar_url };
+  if (p.location) actor.location = { type: 'Place', name: p.location };
+  if (p.verified_tier && p.verified_tier !== 'none') actor.attachment = [{ type: 'PropertyValue', name: 'Verified', value: p.verified_tier }];
+  actor.webfinger = `acct:${name}@${DOMAIN}`;
+  return ap(actor);
+}
+
+async function noteGet(env: any, username: string, noteId: string) {
+  const local = await actorRecord(env, username);
+  if (!local) return ap({ error: 'actor not found' }, 404);
+  const rows = await db(env, `posts?id=eq.${encodeURIComponent(noteId)}&author_id=eq.${encodeURIComponent(local.user_id)}&select=*&limit=1`) as any[];
+  const post = rows[0];
+  if (!post || String(post.visibility || 'public') !== 'public') return ap({ error: 'object not found' }, 404);
+  const id = `${ORIGIN}/users/${encodeURIComponent(actorName(local, username))}/notes/${encodeURIComponent(noteId)}`;
+  const published = post.created_at || post.published_at || new Date().toISOString();
+  const tags = Array.isArray(post.hashtags) ? post.hashtags : [];
+  return ap({ '@context': CTX, id, type: 'Note', attributedTo: local.actor_url || local.uri, url: id, content: String(post.content || ''), published, to: ['https://www.w3.org/ns/activitystreams#Public'], cc: [`${local.actor_url || local.uri}/followers`], sensitive: false, ...(tags.length ? { tag: tags } : {}), attachment: Array.isArray(post.media_urls) ? post.media_urls.map((url: string) => ({ type: 'Document', mediaType: 'application/octet-stream', url })) : [] });
+}
+
+async function remoteInteractionObject(env: any, request: Request, username: string, interactionId: string) {
+  if (request.method !== 'GET') return null;
+  const local = await actorRecord(env, username);
+  if (!local) return ap({ error: 'actor not found' }, 404);
+  const rows = await db(env, `federation_remote_interactions?id=eq.${encodeURIComponent(interactionId)}&local_user_id=eq.${encodeURIComponent(local.user_id)}&select=id,interaction_type,status,payload,object_url,activity_uri`) as any[];
+  const row = rows[0];
+  if (!row || !['reply', 'quote'].includes(String(row.interaction_type))) return ap({ error: 'object not found' }, 404);
+  const payload = row.payload && typeof row.payload === 'object' ? row.payload : null;
+  const object = payload?.object && typeof payload.object === 'object' ? payload.object : null;
+  if (!object || typeof object.id !== 'string') return ap({ error: 'object not found' }, 404);
+  const expectedId = `${ORIGIN}/users/${encodeURIComponent(actorName(local, username))}/remote-interactions/${interactionId}`;
+  if (object.id !== expectedId) return ap({ error: 'object identity mismatch' }, 409);
+  return ap({ '@context': Array.isArray(payload['@context']) ? payload['@context'] : CTX, ...object });
 }
 
 async function signedGet(local: any, url: string) {
@@ -42,10 +108,7 @@ async function signedGet(local: any, url: string) {
 
 function parseLegacySignature(value: string) {
   const out: Record<string, string> = {};
-  for (const part of value.split(/,(?=\w+=)/)) {
-    const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim().replace(/^"|"$/g, '');
-  }
+  for (const part of value.split(/,(?=\w+=)/)) { const i = part.indexOf('='); if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim().replace(/^"|"$/g, ''); }
   return out;
 }
 
@@ -53,11 +116,11 @@ function parseStructuredParams(value: string) {
   const match = value.match(/^sig1=(\([^)]*\))(.*)$/);
   if (!match) throw new Error('Malformed Signature-Input');
   const components = [...match[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
-  const params = match[2];
-  const created = Number(params.match(/;created=(\d+)/)?.[1] || 0);
-  const keyId = params.match(/;keyid="([^"]+)"/)?.[1] || '';
-  const alg = params.match(/;alg="([^"]+)"/)?.[1] || '';
-  return { components, params: match[1] + params, created, keyId, alg };
+  const params = match[1] + match[2];
+  const created = Number(match[2].match(/;created=(\d+)/)?.[1] || 0);
+  const keyId = match[2].match(/;keyid="([^"]+)"/)?.[1] || '';
+  const alg = match[2].match(/;alg="([^"]+)"/)?.[1] || '';
+  return { components, params, created, keyId, alg };
 }
 
 function parseRfcSignature(value: string) {
@@ -66,38 +129,32 @@ function parseRfcSignature(value: string) {
   return match[1];
 }
 
-async function verifyRfc9421(req: Request, body: string, local: any) {
-  const input = req.headers.get('Signature-Input');
-  const signature = req.headers.get('Signature');
-  const digest = req.headers.get('Content-Digest');
+async function verifyRfc9421(req: Request, body: string, local: any, actorUri: string) {
+  const input = req.headers.get('Signature-Input'), signature = req.headers.get('Signature'), digest = req.headers.get('Content-Digest');
   if (!input || !signature || !digest) throw new Error('Missing RFC9421 signature headers');
   const parsed = parseStructuredParams(input);
   if (parsed.components.length !== 3 || !parsed.components.includes('@method') || !parsed.components.includes('@target-uri') || !parsed.components.includes('content-digest')) throw new Error('RFC9421 signature must cover @method, @target-uri and content-digest');
   if (parsed.alg !== 'rsa-v1_5-sha256') throw new Error('Unsupported RFC9421 algorithm');
-  if (!parsed.keyId || parsed.keyId.split('#')[0] !== local.remoteActorUri) throw new Error('RFC9421 keyId actor mismatch');
+  if (!parsed.keyId || parsed.keyId.split('#')[0] !== actorUri) throw new Error('RFC9421 keyId actor mismatch');
   if (!parsed.created || Math.abs(Date.now() / 1000 - parsed.created) > MAX_CLOCK_SKEW) throw new Error('Stale RFC9421 signature');
   const digestMatch = digest.match(/^sha-256=:([^:]+):$/i);
   if (!digestMatch) throw new Error('Unsupported Content-Digest');
   const expectedDigest = b64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)));
   if (digestMatch[1] !== expectedDigest) throw new Error('Content-Digest mismatch');
-  const signatureValue = ub64(parseRfcSignature(signature));
-  const remote = await signedGet(local, parsed.keyId.split('#')[0]);
+  const remote = await signedGet(local, actorUri);
   if (!remote.ok) throw new Error(`Remote actor ${remote.status}`);
   const actor = await remote.json() as any;
+  if (actor.id !== actorUri || actor.publicKey?.owner !== actorUri) throw new Error('Remote actor identity mismatch');
   const pem = actor.publicKey?.publicKeyPem;
   if (!pem) throw new Error('Remote actor has no public key');
   const key = await crypto.subtle.importKey('spki', pemToBytes(pem), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-  const target = new URL(req.url).toString();
-  const lines = [`"@method": ${req.method}`, `"@target-uri": ${target}`, `"content-digest": ${digest}`, `"@signature-params": ${parsed.params}`];
-  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, signatureValue, new TextEncoder().encode(lines.join('\n')));
-  if (!valid) throw new Error('Invalid RFC9421 signature');
-  return parsed.keyId.split('#')[0];
+  const lines = [`"@method": ${req.method}`, `"@target-uri": ${new URL(req.url).toString()}`, `"content-digest": ${digest}`, `"@signature-params": ${parsed.params}`];
+  if (!await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, ub64(parseRfcSignature(signature)), new TextEncoder().encode(lines.join('\n')))) throw new Error('Invalid RFC9421 signature');
+  return actorUri;
 }
 
 async function verifyLegacy(req: Request, body: string, local: any) {
-  const signatureHeader = req.headers.get('Signature');
-  const date = req.headers.get('Date');
-  const digest = req.headers.get('Digest');
+  const signatureHeader = req.headers.get('Signature'), date = req.headers.get('Date'), digest = req.headers.get('Digest');
   if (!signatureHeader || !date || !digest) throw new Error('Missing ActivityPub signature headers');
   const timestamp = Date.parse(date);
   if (!Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 12 * 60 * 60 * 1000) throw new Error('Stale ActivityPub signature');
@@ -119,24 +176,18 @@ async function verifyLegacy(req: Request, body: string, local: any) {
     else if (header === 'host') lines.push(`host: ${u.host}`);
     else { const value = req.headers.get(header); if (value === null) throw new Error(`signed header missing: ${header}`); lines.push(`${header}: ${value}`); }
   }
-  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, ub64(parsed.signature), new TextEncoder().encode(lines.join('\n')));
-  if (!valid) throw new Error('Invalid ActivityPub HTTP signature');
+  if (!await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, ub64(parsed.signature), new TextEncoder().encode(lines.join('\n')))) throw new Error('Invalid ActivityPub HTTP signature');
   return actorUri;
 }
 
 async function verifyRequest(req: Request, body: string, local: any) {
-  const signatureInput = req.headers.get('Signature-Input');
-  if (signatureInput) {
-    const keyId = signatureInput.match(/;keyid="([^"]+)"/)?.[1] || '';
-    const actorUri = keyId.split('#')[0];
+  const input = req.headers.get('Signature-Input');
+  if (input) {
+    const actorUri = input.match(/;keyid="([^"]+)"/)?.[1]?.split('#')[0] || '';
     if (!actorUri) throw new Error('RFC9421 keyId is required');
-    return verifyRfc9421(req, body, { ...local, remoteActorUri: actorUri });
+    return verifyRfc9421(req, body, local, actorUri);
   }
   return verifyLegacy(req, body, local);
-}
-
-function ap(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/activity+json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' } });
 }
 
 export async function handleFederationInteraction(req: Request, env: any, username: string) {
@@ -168,10 +219,10 @@ export default {
     const inboxMatch = url.pathname.match(/^\/users\/([^/]+)\/inbox$/);
     const noteMatch = url.pathname.match(/^\/users\/([^/]+)\/notes\/([^/]+)$/);
     const interactionObjectMatch = url.pathname.match(/^\/users\/([^/]+)\/remote-interactions\/([0-9a-f-]+)$/i);
-    if (request.method === 'GET' && url.pathname === '/.well-known/webfinger') return new Response(JSON.stringify({ error: 'Use canonical federation WebFinger handler' }), { status: 404, headers: { 'Content-Type': 'application/jrd+json; charset=utf-8' } });
-    if (request.method === 'GET' && actorMatch) return new Response(JSON.stringify({ error: 'Use canonical federation actor handler' }), { status: 404, headers: { 'Content-Type': 'application/activity+json; charset=utf-8' } });
-    if (request.method === 'GET' && noteMatch) return new Response(JSON.stringify({ error: 'Use canonical federation object handler' }), { status: 404, headers: { 'Content-Type': 'application/activity+json; charset=utf-8' } });
-    if (request.method === 'GET' && interactionObjectMatch) return new Response(JSON.stringify({ error: 'Use canonical federation object handler' }), { status: 404, headers: { 'Content-Type': 'application/activity+json; charset=utf-8' } });
+    if (request.method === 'GET' && url.pathname === '/.well-known/webfinger') return webfinger(env, request);
+    if (request.method === 'GET' && actorMatch) return actorGet(env, decodeURIComponent(actorMatch[1]));
+    if (request.method === 'GET' && noteMatch) return noteGet(env, decodeURIComponent(noteMatch[1]), decodeURIComponent(noteMatch[2]));
+    if (request.method === 'GET' && interactionObjectMatch) return remoteInteractionObject(env, request, decodeURIComponent(interactionObjectMatch[1]), interactionObjectMatch[2]);
     if (request.method === 'POST' && inboxMatch) return handleFederationInteraction(request, env, decodeURIComponent(inboxMatch[1]));
     return worker.fetch(request, env, ctx);
   },
