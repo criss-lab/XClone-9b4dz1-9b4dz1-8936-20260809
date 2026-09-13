@@ -49,6 +49,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
+          cache: npm
 
       - name: Validate Vercel deployment credentials
         env:
@@ -68,7 +69,7 @@ jobs:
           echo 'Vercel deployment credentials are present.'
 
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Bind deployment to the exact Vercel project
         env:
@@ -85,13 +86,14 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          npx --yes vercel@latest pull --yes --environment=production --token "$VERCEL_TOKEN"
+          npx --yes vercel@latest pull --yes --environment=production --token "$VERCEL_TOKEN" 2>&1 | tee /tmp/vercel-pull.log
           test -s .vercel/.env.production.local
           echo 'Vercel Production environment was pulled for the build.'
           if grep -Eq '^(VITE_SUPABASE_URL|VITE_SUPABASE_PUBLISHABLE_KEY|VITE_SUPABASE_ANON_KEY)=' .vercel/.env.production.local; then
             echo 'Required Supabase build variables are present in the pulled Vercel Production environment.'
           else
-            echo 'ERROR: Vercel Production is missing VITE_SUPABASE_URL and/or VITE_SUPABASE_PUBLISHABLE_KEY (or VITE_SUPABASE_ANON_KEY).'
+            echo 'ERROR: Vercel Production is missing required Vite Supabase variables.'
+            sed -E 's/(=.*)/=<redacted>/' .vercel/.env.production.local || true
             exit 1
           fi
 
@@ -100,7 +102,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          npx --yes vercel@latest build --prod --token "$VERCEL_TOKEN"
+          npx --yes vercel@latest build --prod --token "$VERCEL_TOKEN" 2>&1 | tee /tmp/vercel-build.log
 
       - name: Verify Vite output is a compiled deployment
         run: |
@@ -112,6 +114,7 @@ jobs:
             exit 1
           fi
           grep -Eq 'src="/assets/[^" ]+\.js"' dist/index.html
+          echo 'Compiled Vite output verified.'
 
       - name: Deploy exact production bundle to Vercel and capture deployment URL
         id: deploy
@@ -119,9 +122,13 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          npx --yes vercel@latest deploy --prebuilt --prod --token "$VERCEL_TOKEN" | tee /tmp/vercel-deploy.log
-          deployment_url=$(grep -E '^https://[^[:space:]]+\.vercel\.app/?$' /tmp/vercel-deploy.log | tail -1)
-          test -n "$deployment_url"
+          npx --yes vercel@latest deploy --prebuilt --prod --token "$VERCEL_TOKEN" 2>&1 | tee /tmp/vercel-deploy.log
+          deployment_url=$(grep -Eo 'https://[A-Za-z0-9._-]+\.vercel\.app' /tmp/vercel-deploy.log | tail -1 || true)
+          if [ -z "$deployment_url" ]; then
+            echo 'ERROR: Vercel deployment completed without a parseable deployment URL.'
+            cat /tmp/vercel-deploy.log
+            exit 1
+          fi
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
           echo "Captured immutable deployment: $deployment_url"
 
@@ -132,8 +139,8 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$DEPLOYMENT_URL"
-          npx --yes vercel@latest alias set "$DEPLOYMENT_URL" testagram.site --token "$VERCEL_TOKEN"
-          npx --yes vercel@latest alias set "$DEPLOYMENT_URL" www.testagram.site --token "$VERCEL_TOKEN"
+          npx --yes vercel@latest alias set "$DEPLOYMENT_URL" testagram.site --token "$VERCEL_TOKEN" 2>&1 | tee /tmp/vercel-alias-root.log
+          npx --yes vercel@latest alias set "$DEPLOYMENT_URL" www.testagram.site --token "$VERCEL_TOKEN" 2>&1 | tee /tmp/vercel-alias-www.log
           echo 'Both testagram.site and www.testagram.site are bound to the exact production deployment.'
 
       - name: Production hostname smoke verification
@@ -141,7 +148,7 @@ jobs:
           set -euo pipefail
           for host in testagram.site www.testagram.site; do
             status=$(curl -L -sS -o /tmp/testagram-${host}.html -w '%{http_code}' --max-time 20 "https://${host}/spaces")
+            echo "https://${host}/spaces -> HTTP ${status}"
             test "$status" = "200"
             grep -q 'assets/' "/tmp/testagram-${host}.html"
-            echo "https://${host}/spaces -> HTTP ${status}"
           done
