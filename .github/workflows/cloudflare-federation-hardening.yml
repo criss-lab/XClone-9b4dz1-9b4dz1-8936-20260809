@@ -40,9 +40,10 @@ jobs:
           set -euo pipefail
           test -f cloudflare/worker/federation-interop-entrypoint.ts
           test -f cloudflare/worker/federation-interaction-entrypoint.ts
+          test -f cloudflare/worker/production-entrypoint.ts
+          test -f cloudflare/worker/public-actor-entrypoint.ts
           grep -Fq "const DOMAIN = 'federation.testagram.site'" cloudflare/worker/federation-interop-entrypoint.ts
           grep -Fq 'export async function handleFederationInteraction' cloudflare/worker/federation-interaction-entrypoint.ts
-          grep -Fq "from './federation-interaction-entrypoint'" cloudflare/worker/federation-interop-entrypoint.ts
           grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/production-entrypoint.ts
           grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/public-actor-entrypoint.ts
           grep -Fq 'federation.testagram.site' cloudflare/wrangler-federation.jsonc
@@ -50,6 +51,7 @@ jobs:
             echo 'workers.dev federation origin is forbidden in canonical federation source'
             exit 1
           fi
+          echo 'PASS: canonical federation source graph'
       - name: Compile canonical federation Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
