@@ -49,6 +49,7 @@ jobs:
           test -f supabase/functions/federation-inbox/index.ts
           test -f supabase/functions/_shared/activitypub-compat.ts
           grep -Fq "const DOMAIN = 'federation.testagram.site'" cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'export async function handleFederationInteraction' cloudflare/worker/federation-interop-entrypoint.ts
           grep -Fq 'export async function handleFederationInteraction' cloudflare/worker/federation-interaction-entrypoint.ts
           grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/production-entrypoint.ts
           grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/public-actor-entrypoint.ts
