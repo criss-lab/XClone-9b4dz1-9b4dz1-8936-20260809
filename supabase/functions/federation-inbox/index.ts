@@ -51,6 +51,8 @@ Deno.serve(async req => {
     let verifiedKeyId = "edge";
     let expiresAt = new Date(Date.now() + MAX_CLOCK_SKEW * 1000).toISOString();
     if (edgeVerified) {
+      const edgeCredential = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim() || (req.headers.get("apikey") || "").trim();
+      if (!SERVICE || edgeCredential !== SERVICE) return json({ error: "Invalid federation edge credential" }, 401);
       if (!edgeActor || edgeActor !== actor) return json({ error: "Edge actor verification mismatch" }, 401);
     } else {
       const verified = await verifyDirectSignature(req, raw, actor); verifiedKeyId = verified.keyId; expiresAt = verified.expiresAt;
