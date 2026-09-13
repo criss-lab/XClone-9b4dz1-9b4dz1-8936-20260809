@@ -194,9 +194,31 @@ jobs:
           test -n "$SPACE_ID"
 
           echo '9. User B joins the Space; listener count is database-derived...'
-          curl -sS --fail-with-body -X POST "$BASE/rest/v1/space_participants" \
-            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
-            -d "$(jq -nc --arg s "$SPACE_ID" --arg u "$USER_B" '{space_id:$s,user_id:$u,role:"listener"}')" >/tmp/participant-b.json
+          participant_ok=false
+          for attempt in 1 2 3; do
+            set +e
+            participant_status="$(curl -sS -o /tmp/participant-b.json -w '%{http_code}' --max-time 30 -X POST "$BASE/rest/v1/space_participants" \
+              -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" -H 'Content-Type: application/json' \
+              -H 'Prefer: resolution=ignore-duplicates,return=minimal' \
+              -d "$(jq -nc --arg s "$SPACE_ID" --arg u "$USER_B" '{space_id:$s,user_id:$u,role:"listener"}')")"
+            participant_curl_status=$?
+            set -e
+            echo "Space participant attempt=${attempt} curl_exit=${participant_curl_status} HTTP=${participant_status}"
+            if [ "$participant_status" = 201 ] || [ "$participant_status" = 200 ] || [ "$participant_status" = 204 ]; then
+              participant_ok=true
+              break
+            fi
+            if [ "$participant_status" = 502 ] || [ "$participant_status" = 503 ] || [ "$participant_status" = 504 ] || [ "$participant_status" = 000 ]; then
+              echo 'Transient participant write failure; retrying.'
+              cat /tmp/participant-b.json || true
+              sleep $((attempt * 3))
+              continue
+            fi
+            echo 'Non-transient participant write failure.'
+            cat /tmp/participant-b.json || true
+            exit 1
+          done
+          test "$participant_ok" = true
           curl -sS --fail-with-body "$BASE/rest/v1/spaces?id=eq.$SPACE_ID&select=id,host_id,listener_count" \
             -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "$(auth_header "$TOKEN_B")" >/tmp/space-b.json
           jq -e --arg id "$SPACE_ID" --arg host "$USER_A" 'length == 1 and .[0].id == $id and .[0].host_id == $host and .[0].listener_count == 1' /tmp/space-b.json
