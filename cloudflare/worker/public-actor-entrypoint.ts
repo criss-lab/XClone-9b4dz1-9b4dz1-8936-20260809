@@ -1,4 +1,4 @@
-import federation from './federation-entrypoint';
+import federation from './federation-interop-entrypoint';
 
 const ORIGIN = 'https://federation.testagram.site';
 const GATEWAY = 'https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay';
