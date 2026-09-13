@@ -25,6 +25,9 @@ verify_jwt = false
 [functions.federation-actor-refresh]
 verify_jwt = false
 
+[functions.federation-remote-sync]
+verify_jwt = false
+
 [functions.federation-provision-actor]
 verify_jwt = true
 
