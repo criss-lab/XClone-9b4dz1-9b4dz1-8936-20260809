@@ -20,13 +20,32 @@ async function authorized(r: Request) {
   return !!data?.token && t === data.token;
 }
 
-async function send(local: any, inbox: string, activity: any) {
-  const body = JSON.stringify(activity), u = new URL(inbox), date = new Date().toUTCString();
+async function legacyPost(local: any, inbox: string, body: string) {
+  const u = new URL(inbox), date = new Date().toUTCString();
   const digest = `SHA-256=${b64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)))}`;
   const key = await crypto.subtle.importKey('jwk', local.private_key_jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
   const signed = `(request-target): post ${u.pathname}${u.search}\nhost: ${u.host}\ndate: ${date}\ndigest: ${digest}`;
   const sig = b64(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(signed)));
-  return federationFetch(inbox, { method: 'POST', body, headers: { Date: date, Digest: digest, Host: u.host, Accept: 'application/activity+json, application/ld+json', 'Content-Type': 'application/activity+json', Signature: `keyId=\"${local.uri || local.actor_url}#main-key\",algorithm=\"rsa-sha256\",headers=\"(request-target) host date digest\",signature=\"${sig}\"`, 'User-Agent': 'Testagram-Federation/5.3' } });
+  return federationFetch(inbox, { method: 'POST', body, headers: { Date: date, Digest: digest, Host: u.host, Accept: 'application/activity+json, application/ld+json', 'Content-Type': 'application/activity+json', Signature: `keyId=\"${local.uri || local.actor_url}#main-key\",algorithm=\"rsa-sha256\",headers=\"(request-target) host date digest\",signature=\"${sig}\"`, 'User-Agent': 'Testagram-Federation/9.1' } });
+}
+
+async function rfc9421Post(local: any, inbox: string, body: string) {
+  const u = new URL(inbox), created = Math.floor(Date.now() / 1000), keyId = `${local.uri || local.actor_url}#main-key`;
+  const digestValue = b64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)));
+  const contentDigest = `sha-256=:${digestValue}:`;
+  const key = await crypto.subtle.importKey('jwk', local.private_key_jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const signatureParams = `("@method" "@target-uri" "content-digest");created=${created};keyid="${keyId}";alg="rsa-v1_5-sha256"`;
+  const signatureBase = `"@method": POST\n"@target-uri": ${u.toString()}\n"content-digest": ${contentDigest}\n"@signature-params": ${signatureParams}`;
+  const signature = b64(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(signatureBase)));
+  return federationFetch(inbox, { method: 'POST', body, headers: { 'Content-Digest': contentDigest, 'Signature-Input': `sig1=${signatureParams}`, Signature: `sig1=:${signature}:`, Accept: 'application/activity+json, application/ld+json', 'Content-Type': 'application/activity+json', 'User-Agent': 'Testagram-Federation/9.1' } });
+}
+
+async function send(local: any, inbox: string, activity: any) {
+  const body = JSON.stringify(activity);
+  const legacy = await legacyPost(local, inbox, body);
+  if (![400, 401].includes(legacy.status)) return legacy;
+  await legacy.text();
+  return rfc9421Post(local, inbox, body);
 }
 
 function refUri(a: any) { const o = a?.object; return typeof o === 'string' ? o : typeof o?.id === 'string' ? o.id : null; }
@@ -75,7 +94,7 @@ async function recordHealth(domain: string, success: boolean, statusCode: number
 }
 
 Deno.serve(async req => {
-  if (req.method === 'GET') return new Response(JSON.stringify({ ok: true, service: 'testagram-federation-delivery-worker', version: '9.0', queue: true, circuitBreaker: true }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  if (req.method === 'GET') return new Response(JSON.stringify({ ok: true, service: 'testagram-federation-delivery-worker', version: '9.1', queue: true, circuitBreaker: true, httpMessageSignatures: true }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
   if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'POST required' }), { status: 405 });
   try {
     if (!await authorized(req)) return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
@@ -117,6 +136,6 @@ Deno.serve(async req => {
       }
     }
     await admin.from('federation_replays').delete().lt('expires_at',now());
-    return new Response(JSON.stringify({ok:true,processed,selected:(jobs||[]).length,delivered,failed,deferred,circuitBreaker:true}),{headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
+    return new Response(JSON.stringify({ok:true,processed,selected:(jobs||[]).length,delivered,failed,deferred,circuitBreaker:true,httpMessageSignatures:true}),{headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
   } catch(e) { console.error('[federation-delivery-worker]',e); return new Response(JSON.stringify({error:e instanceof Error?e.message:String(e)}),{status:500,headers:{'Content-Type':'application/json'}}); }
 });
