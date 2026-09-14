@@ -115,7 +115,7 @@ revoke all on public.federation_inbox from anon, authenticated;
 grant select on public.federation_actors to anon, authenticated;
 grant insert, update on public.federation_actors to authenticated;
 
-a-- Keep a safe updated_at trigger local to this migration.
+-- Keep a safe updated_at trigger local to this migration.
 create or replace function public.federation_touch_updated_at()
 returns trigger language plpgsql as $$
 begin
@@ -124,7 +124,7 @@ begin
 end;
 $$;
 
- drop trigger if exists federation_actors_touch on public.federation_actors;
+drop trigger if exists federation_actors_touch on public.federation_actors;
 create trigger federation_actors_touch
 before update on public.federation_actors
 for each row execute function public.federation_touch_updated_at();
