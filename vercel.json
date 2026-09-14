@@ -4,14 +4,6 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/.well-known/webfinger", "destination": "/api/federation?route=webfinger" },
-    { "source": "/.well-known/nodeinfo", "destination": "/api/federation?route=nodeinfo" },
-    { "source": "/nodeinfo/2.0", "destination": "/api/federation?route=nodeinfo20" },
-    { "source": "/users/:username/inbox", "destination": "/api/federation?route=inbox&username=:username" },
-    { "source": "/users/:username/outbox", "destination": "/api/federation?route=outbox&username=:username" },
-    { "source": "/users/:username/followers", "destination": "/api/federation?route=followers&username=:username" },
-    { "source": "/users/:username/following", "destination": "/api/federation?route=following&username=:username" },
-    { "source": "/users/:username", "destination": "/api/federation?route=actor&username=:username" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
