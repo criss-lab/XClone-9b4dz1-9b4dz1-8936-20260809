@@ -1,3 +1,12 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.keystore
+*.jks
+
 # Logs
 logs
 *.log
@@ -7,10 +16,22 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Node / build output
 node_modules
 dist
 dist-ssr
+coverage
 *.local
+
+# Android / Gradle
+.gradle
+build
+**/build
+**/.gradle
+android/app/release
+android/app/debug
+android/app/*.apk
+android/app/*.aab
 
 # Editor directories and files
 .vscode/*
