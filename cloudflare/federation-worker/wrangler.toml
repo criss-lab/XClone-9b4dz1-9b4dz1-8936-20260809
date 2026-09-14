@@ -1,0 +1,7 @@
+name = "testagram-federation-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-09-14"
+
+[vars]
+# Replace with the production Vercel origin before deploying the Worker.
+VERCEL_ORIGIN = "https://YOUR-TESTAGRAM-VERCEL-ORIGIN"
