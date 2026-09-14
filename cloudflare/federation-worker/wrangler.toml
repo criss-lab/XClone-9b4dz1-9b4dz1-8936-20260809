@@ -1,0 +1,10 @@
+name = "testagram-federation-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-09-14"
+
+[vars]
+# Set this to the Vercel deployment origin, e.g. https://testagram.vercel.app
+VERCEL_ORIGIN = "https://YOUR-TESTAGRAM-VERCEL-ORIGIN"
+
+# Bind this Worker to the production domain in the Cloudflare dashboard:
+# testagram.site/*
