@@ -1,0 +1,33 @@
+name: Native Federation Backend
+
+on:
+  push:
+    branches: [main, native-federation-backend-wired]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Build and validate federation wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm install
+      - name: Validate native federation files
+        run: |
+          test -f api/federation.ts
+          test -f supabase/migrations/202609140001_federation_core.sql
+          test -f supabase/functions/federation-publish/index.ts
+          test -f supabase/functions/federation-worker/index.ts
+          test -f cloudflare/federation-worker/src/index.ts
+          grep -q "application/activity+json" api/federation.ts
+          grep -q "federation_deliveries" supabase/functions/federation-publish/index.ts
+          grep -q "federation_actor_keys" supabase/functions/federation-worker/index.ts
+          grep -q "x-original-uri" cloudflare/federation-worker/src/index.ts
+      - name: Typecheck and build web app
+        run: npx tsc --noEmit && npm run build
