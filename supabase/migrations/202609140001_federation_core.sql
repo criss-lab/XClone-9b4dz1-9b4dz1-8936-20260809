@@ -1,6 +1,5 @@
 -- Testagram federation core
--- ActivityPub/Mastodon protocol state is intentionally separated from product tables.
--- RLS is enabled everywhere; privileged federation workers use the service role.
+-- Protocol state is separated from product tables. Private keys never live in a public-readable row.
 
 create table if not exists public.federation_actors (
   id uuid primary key default gen_random_uuid(),
@@ -10,16 +9,22 @@ create table if not exists public.federation_actors (
   bio text,
   avatar_url text,
   header_url text,
-  public_key_pem text not null,
-  private_key_pem text not null,
   actor_uri text not null unique,
   inbox_uri text not null unique,
   outbox_uri text not null unique,
   followers_uri text not null unique,
   following_uri text not null unique,
+  public_key_pem text not null,
   enabled boolean not null default true,
   discoverable boolean not null default true,
   locked boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.federation_actor_keys (
+  actor_id uuid primary key references public.federation_actors(id) on delete cascade,
+  private_key_pem text not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -67,9 +72,7 @@ create table if not exists public.federation_deliveries (
   delivered_at timestamptz,
   created_at timestamptz not null default now()
 );
-
-create index if not exists federation_deliveries_queue_idx
-  on public.federation_deliveries(state, next_attempt_at);
+create index if not exists federation_deliveries_queue_idx on public.federation_deliveries(state, next_attempt_at);
 
 create table if not exists public.federation_inbox (
   id uuid primary key default gen_random_uuid(),
@@ -84,47 +87,49 @@ create table if not exists public.federation_inbox (
   received_at timestamptz not null default now(),
   processed_at timestamptz
 );
-
-create index if not exists federation_inbox_unprocessed_idx
-  on public.federation_inbox(processed, received_at);
+create index if not exists federation_inbox_unprocessed_idx on public.federation_inbox(processed, received_at);
 
 alter table public.federation_actors enable row level security;
+alter table public.federation_actor_keys enable row level security;
 alter table public.federation_objects enable row level security;
 alter table public.federation_followers enable row level security;
 alter table public.federation_deliveries enable row level security;
 alter table public.federation_inbox enable row level security;
 
+-- Actors are public protocol documents, but only their owner can provision/update them.
 create policy federation_actors_public_read on public.federation_actors
   for select to anon, authenticated using (enabled = true);
-
+create policy federation_actors_owner_insert on public.federation_actors
+  for insert to authenticated
+  with check ((select auth.uid()) = user_id);
 create policy federation_actors_owner_update on public.federation_actors
   for update to authenticated
   using ((select auth.uid()) = user_id)
   with check ((select auth.uid()) = user_id);
 
-create policy federation_actors_owner_insert on public.federation_actors
-  for insert to authenticated
-  with check ((select auth.uid()) = user_id);
-
-create policy federation_objects_public_read on public.federation_objects
-  for select to anon, authenticated using (local = true);
-
-create policy federation_followers_owner_read on public.federation_followers
-  for select to authenticated
-  using (local_actor_id in (select id from public.federation_actors where user_id = (select auth.uid())));
-
-create policy federation_followers_owner_write on public.federation_followers
-  for all to authenticated
-  using (local_actor_id in (select id from public.federation_actors where user_id = (select auth.uid())))
-  with check (local_actor_id in (select id from public.federation_actors where user_id = (select auth.uid())));
-
--- Delivery and inbox records contain protocol/security material and are worker-only.
+-- Private keys, inbox and delivery queues are worker-only.
+revoke all on public.federation_actor_keys from anon, authenticated;
 revoke all on public.federation_deliveries from anon, authenticated;
 revoke all on public.federation_inbox from anon, authenticated;
-revoke all on public.federation_actors from anon, authenticated;
--- Re-grant only the safe actor operations after the broad revoke.
+
 grant select on public.federation_actors to anon, authenticated;
 grant insert, update on public.federation_actors to authenticated;
 
-after insert or update on public.federation_actors
-for each row execute function public.set_updated_at();
+a-- Keep a safe updated_at trigger local to this migration.
+create or replace function public.federation_touch_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+ drop trigger if exists federation_actors_touch on public.federation_actors;
+create trigger federation_actors_touch
+before update on public.federation_actors
+for each row execute function public.federation_touch_updated_at();
+
+drop trigger if exists federation_actor_keys_touch on public.federation_actor_keys;
+create trigger federation_actor_keys_touch
+before update on public.federation_actor_keys
+for each row execute function public.federation_touch_updated_at();
