@@ -352,7 +352,6 @@ export function ScheduledPostsPage() {
                       onClick={() => deleteScheduledPost(post.id)}
                       disabled={deletingId === post.id}
                       className="shrink-0 p-2 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                      title="Cancel scheduled post"
                     >
                       {deletingId === post.id
                         ? <Loader2 className="w-4 h-4 animate-spin" />

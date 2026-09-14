@@ -107,7 +107,6 @@ export function SpotifyEmbed({ id, subtype }: { id: string; subtype: string }) {
         allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
         loading="lazy"
         className="border-0"
-        title="Spotify player"
       />
     </div>
   );
@@ -128,7 +127,7 @@ export function TwitterEmbed({ id }: { id: string }) {
     <div className="rounded-2xl overflow-hidden border border-border">
       <iframe
         src={`https://platform.twitter.com/embed/Tweet.html?id=${id}&theme=light`}
-        width="100%" height={300} loading="lazy" className="border-0" title="Tweet"
+        width="100%" height={300} loading="lazy" className="border-0"
       />
     </div>
   );
@@ -361,7 +360,6 @@ export function ComposeEmbedPreview({ url, onRemove }: { url: string; onRemove?:
           <button
             onClick={onRemove}
             className="ml-2 p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
-            title="Remove embed preview"
           >
             <X className="w-3.5 h-3.5" />
           </button>

@@ -21,16 +21,13 @@ export function AdMobAd({ type, onAdLoaded }: AdMobAdProps) {
       ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({});
       onAdLoaded?.();
     } catch (_) {}
-  }, [type]);
+  }, [type, onAdLoaded]);
 
-  // Interstitial / rewarded — no-op on web; callers should use RewardedAdBoost instead
   if (type !== 'banner') return null;
 
   return (
     <div className="w-full rounded-xl overflow-hidden border border-border bg-muted/5">
-      <p className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground px-3 pt-2 mb-1">
-        Sponsored
-      </p>
+      <p className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground px-3 pt-2 mb-1">Sponsored</p>
       <ins
         className="adsbygoogle"
         style={{ display: 'block', minHeight: 60 }}
@@ -43,10 +40,9 @@ export function AdMobAd({ type, onAdLoaded }: AdMobAdProps) {
   );
 }
 
-/** Hook kept for call-site compatibility — all methods are no-ops on web */
 export const useAdMob = () => ({
   showInterstitial: async (_id?: string) => false,
-  showRewarded:     async (_id?: string) => null,
-  showBanner:       async (_id?: string, _pos?: BannerAdPosition) => {},
-  hideBanner:       async () => {},
+  showRewarded: async (_id?: string) => null,
+  showBanner: async (_id?: string, _pos?: BannerAdPosition) => {},
+  hideBanner: async () => {},
 });

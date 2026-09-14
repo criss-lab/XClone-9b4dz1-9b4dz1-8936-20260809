@@ -1,0 +1,91 @@
+name: Testagram Mastodon Interoperability Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cloudflare/worker/**'
+      - 'cloudflare/wrangler-federation.jsonc'
+      - 'supabase/functions/fedify-federation/**'
+      - 'supabase/functions/federation-provision-actor/**'
+      - 'vercel.json'
+      - '.github/workflows/mastodon-interop-live.yml'
+
+permissions:
+  contents: read
+
+env:
+  FEDERATION_ORIGIN: https://federation.testagram.site
+  SUPABASE_URL: https://aepbqfrmheihfsauzcby.supabase.co
+
+jobs:
+  public-protocol-gate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate canonical federation host
+        run: |
+          set -euo pipefail
+          grep -Fq "const DOMAIN = 'federation.testagram.site'" cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'federation.testagram.site' cloudflare/wrangler-federation.jsonc
+          if grep -Fq 'https://testagram.site/.well-known' vercel.json; then
+            echo 'ActivityPub discovery must not depend on Vercel /.well-known routing.'
+            exit 1
+          fi
+      - name: WebFinger
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          actors="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?select=username&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          username="$(jq -r '.[0].username // empty' <<<"$actors")"
+          test -n "$username"
+          curl -sS --fail-with-body --max-time 20 --get "$FEDERATION_ORIGIN/.well-known/webfinger" --data-urlencode "resource=acct:${username}@federation.testagram.site" >/tmp/webfinger.json
+          jq -e --arg u "$username" '.subject == ("acct:" + $u + "@federation.testagram.site") and any(.links[]?; .rel == "self" and (.type | contains("activity+json")))' /tmp/webfinger.json >/dev/null
+      - name: Actor and collections
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          actors="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?select=username&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          username="$(jq -r '.[0].username // empty' <<<"$actors")"
+          actor="$FEDERATION_ORIGIN/users/$username"
+          curl -sS --fail-with-body --max-time 20 -H 'Accept: application/activity+json' "$actor" >/tmp/actor.json
+          jq -e --arg actor "$actor" '.type == "Person" and .id == $actor and .inbox == ($actor + "/inbox") and .outbox == ($actor + "/outbox") and .followers == ($actor + "/followers") and .following == ($actor + "/following") and .publicKey.id == ($actor + "#main-key")' /tmp/actor.json >/dev/null
+          for collection in outbox followers following; do
+            curl -sS --fail-with-body --max-time 20 -H 'Accept: application/activity+json' "$actor/$collection" >/tmp/$collection.json
+            jq -e '(.type == "OrderedCollection" or .type == "Collection") and (.totalItems | type == "number")' /tmp/$collection.json >/dev/null
+          done
+      - name: Note dereference
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          post="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/posts?select=id,author_id&visibility=eq.public&order=created_at.desc&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          post_id="$(jq -r '.[0].id // empty' <<<"$post")"
+          author_id="$(jq -r '.[0].author_id // empty' <<<"$post")"
+          test -n "$post_id"; test -n "$author_id"
+          actor="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?select=actor_url&user_id=eq.$author_id&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY" | jq -r '.[0].actor_url // empty')"
+          test -n "$actor"
+          username="${actor##*/}"
+          curl -sS --fail-with-body --max-time 20 "$FEDERATION_ORIGIN/users/$username/notes/$post_id" >/tmp/note.json
+          jq -e '.type == "Note" and (.id | contains("/notes/")) and (.attributedTo | type == "string")' /tmp/note.json >/dev/null
+      - name: Signed inbox negative-path gate
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          actors="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?select=username&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          username="$(jq -r '.[0].username // empty' <<<"$actors")"
+          status="$(curl -sS -o /tmp/inbox-response -w '%{http_code}' --max-time 20 -X POST "$FEDERATION_ORIGIN/users/$username/inbox" -H 'Content-Type: application/activity+json' -d '{"@context":"https://www.w3.org/ns/activitystreams","id":"https://invalid.example/activities/interop-gate","type":"Create","actor":"https://invalid.example/users/attacker","object":{"id":"https://invalid.example/objects/1","type":"Note","content":"invalid"}}')"
+          echo "unsigned inbox status=$status"
+          test "$status" = 401 || test "$status" = 400
+      - name: Report Mastodon matrix status
+        run: |
+          cat <<'EOF'
+          Live public protocol gate passed for:
+            WebFinger -> actor -> outbox/followers/following -> Note dereference -> signed-inbox rejection path
+          A full Mastodon account-to-account matrix requires a real Mastodon account/instance and is intentionally not faked by CI.
+          EOF

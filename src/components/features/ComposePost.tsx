@@ -23,6 +23,7 @@ interface ComposePostProps {
 }
 
 export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
+  const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -124,34 +125,41 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
 
   const handleContentChange = useCallback(async (val: string) => {
     setContent(val);
-    // Link preview detection (first URL) — detect embed type
     const urlMatch = val.match(/https?:\/\/[^\s]+/);
-    if (urlMatch) {
-      const isEmbed = !!detectEmbed(urlMatch[0]);
-      setLinkPreview({ url: urlMatch[0], isEmbed });
-    } else {
-      setLinkPreview(null);
-    }
+    if (urlMatch) setLinkPreview({ url: urlMatch[0], isEmbed: !!detectEmbed(urlMatch[0]) }); else setLinkPreview(null);
     const ta = textareaRef.current;
     const pos = ta?.selectionStart ?? val.length;
     const before = val.slice(0, pos);
-    const atMatch = before.match(/@(\w*)$/);
-    if (!atMatch) { setMentionQuery(null); setMentionResults([]); return; }
-    const q = atMatch[1];
-    setMentionQuery(q);
-    setMentionIdx(0);
-    mentionSearchRef.current = q;
-    if (q.length === 0) { setMentionResults([]); return; }
-    const { data } = await supabase.from('user_profiles').select('id, username, avatar_url').ilike('username', `${q}%`).limit(5);
-    if (mentionSearchRef.current === q) setMentionResults(data ?? []);
-  }, [linkPreview]);
+    const atMatch = before.match(/(^|\s)@([A-Za-z0-9_@.-]*)$/);
+    if (atMatch) {
+      const q = atMatch[2]; setMentionQuery(q); setMentionIdx(0); mentionSearchRef.current = q;
+      if (!q) { setMentionResults([]); return; }
+      try {
+        const { data } = await supabase.functions.invoke('fediverse-autocomplete', { body: { mode: 'mention', q } });
+        if (mentionSearchRef.current === q) setMentionResults(Array.isArray(data) ? data : []);
+      } catch {
+        const localQ = q.split('@')[0];
+        const { data } = await supabase.from('user_profiles').select('id, username, display_name, avatar_url').ilike('username', `${localQ}%`).limit(8);
+        if (mentionSearchRef.current === q) setMentionResults((data || []).map((x: any) => ({ kind: 'local', ...x, name: x.display_name || x.username, handle: `@${x.username}` })));
+      }
+      return;
+    }
+    setMentionQuery(null); setMentionResults([]);
+    const hashMatch = before.match(/(^|\s)#([A-Za-z0-9_]*)$/);
+    if (hashMatch && hashMatch[2]) {
+      try {
+        const { data } = await supabase.functions.invoke('fediverse-autocomplete', { body: { mode: 'hashtag', q: hashMatch[2] } });
+        window.dispatchEvent(new CustomEvent('testagram-hashtag-suggestions', { detail: Array.isArray(data) ? data : [] }));
+      } catch { /* preserve existing hashtag behavior */ }
+    } else window.dispatchEvent(new CustomEvent('testagram-hashtag-suggestions', { detail: [] }));
+  }, []);
 
-  const insertMention = useCallback((username: string) => {
+  const insertMention = useCallback((handle: string) => {
     const ta = textareaRef.current;
     const pos = ta?.selectionStart ?? content.length;
     const before = content.slice(0, pos);
     const after = content.slice(pos);
-    const replaced = before.replace(/@(\w*)$/, `@${username} `);
+    const replaced = before.replace(/(^|\s)@[A-Za-z0-9_@.-]*$/, `$1${handle.startsWith('@') ? handle : `@${handle}`} `);
     setContent(replaced + after);
     setMentionQuery(null);
     setMentionResults([]);
@@ -247,6 +255,9 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
 
   // ── File handlers ─────────────────────────────────────────────────────────
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(e.target.files ?? []);
+    const oversized = incoming.find(file => file.size >= MAX_MEDIA_BYTES);
+    if (oversized) { toast({ title: 'Media too large', description: 'Each media file must be smaller than 20 MB', variant: 'destructive' }); e.target.value = ''; return; }
     if (!e.target.files) return;
     const files = Array.from(e.target.files);
     if (images.length + files.length > 4) { sonnerToast.error('Maximum 4 images per post'); return; }
@@ -269,7 +280,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     const videoElement = document.createElement('video');
     videoElement.src = videoUrl;
     videoElement.onloadedmetadata = () => {
-      const maxDuration = user?.creator_tier !== 'free' ? 3600 : 600;
+      const maxDuration = (user as any)?.creator_tier !== 'free' ? 3600 : 600;
       if (videoElement.duration > maxDuration) {
         sonnerToast.error(`Video duration cannot exceed ${Math.floor(maxDuration / 60)} minutes`);
         URL.revokeObjectURL(videoUrl); return;
@@ -315,7 +326,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
 
   // ── Post handler ──────────────────────────────────────────────────────────
   const handlePost = async () => {
-    if (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData) return;
+    if (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData && !quotedPostId) return;
     // Real-time violation check before posting
     if (content.trim() && !violationCheckedRef.current) {
       const canPost = await checkContentViolation(content);
@@ -364,7 +375,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
         return;
       }
 
-      const postPayload: any = { user_id: user!.id, content: content.trim() || '', community_id: communityId || null, media_urls: [], media_count: 0, is_video: false };
+      const postPayload: any = { user_id: user!.id, quoted_post_id: quotedPostId || null, content: content.trim() || '', community_id: communityId || null, media_urls: [], media_count: 0, is_video: false };
 
       if (videoUrl && video) {
         postPayload.video_url = videoUrl; postPayload.is_video = true; postPayload.image_url = null;
@@ -457,7 +468,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
               icon_emoji: '🏆',
               cta_label: 'View Challenge',
               cta_url: `/challenge/${firstChallenge.id}`,
-            }).catch(() => {});
+            }).then(() => {}, () => {});
           }
         }
       }
@@ -737,31 +748,28 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
                 <Video className="w-5 h-5" />
                 <input type="file" accept="video/*" className="hidden" onChange={handleVideoChange} disabled={loading || images.length > 0 || !!gifUrl} />
               </label>
-              <button onClick={() => setShowGifDialog(true)} disabled={loading || images.length > 0 || !!video} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Add GIF">
+              <button onClick={() => setShowGifDialog(true)} disabled={loading || images.length > 0 || !!video} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <Smile className="w-5 h-5" />
               </button>
-              <button onClick={() => setShowPollDialog(true)} disabled={loading || !!pollData} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Add poll">
+              <button onClick={() => setShowPollDialog(true)} disabled={loading || !!pollData} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <BarChart3 className="w-5 h-5" />
               </button>
-              <button onClick={() => setShowScheduleDialog(true)} disabled={loading || !!scheduledDate} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Schedule post">
+              <button onClick={() => setShowScheduleDialog(true)} disabled={loading || !!scheduledDate} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <Calendar className="w-5 h-5" />
               </button>
-              <button onClick={() => setShowProductDialog(true)} disabled={loading} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Tag products">
+              <button onClick={() => setShowProductDialog(true)} disabled={loading} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0">
                 <ShoppingBag className="w-5 h-5" />
               </button>
               <button onClick={() => setShowThreadMode(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showThreadMode ? 'bg-primary/20 text-primary' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="Thread composer">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showThreadMode ? 'bg-primary/20 text-primary' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Hash className="w-5 h-5" />
               </button>
               <button onClick={() => setShowCaptionGen(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showCaptionGen ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="AI Caption Generator">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showCaptionGen ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Sparkles className="w-5 h-5" />
               </button>
               <button onClick={() => setShowAiWriter(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showAiWriter ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="AI Post Writer">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showAiWriter ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Wand2 className="w-5 h-5" />
               </button>
               <button onClick={() => setPostToFediverse(v => !v)} disabled={loading}
@@ -770,8 +778,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
                 <Globe className="w-5 h-5" />
               </button>
               <button onClick={() => setShowEmbedDialog(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showEmbedDialog ? 'bg-blue-500/20 text-blue-600' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="Embed media (YouTube, Spotify, CodePen…)">
+                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showEmbedDialog ? 'bg-blue-500/20 text-blue-600' : 'hover:bg-primary/10 text-muted-foreground'}`}>
                 <Link2 className="w-5 h-5" />
               </button>
             </div>

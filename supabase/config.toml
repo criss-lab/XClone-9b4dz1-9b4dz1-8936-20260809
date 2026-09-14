@@ -1,0 +1,35 @@
+[functions.media-upload]
+verify_jwt = true
+
+[functions.feed-fast]
+verify_jwt = true
+
+[functions.federation-relay]
+verify_jwt = false
+
+[functions.federation-discovery]
+verify_jwt = false
+
+[functions.federation-inbox]
+verify_jwt = false
+
+[functions.federation-delivery-worker]
+verify_jwt = false
+
+[functions.federation-processing-worker]
+verify_jwt = false
+
+[functions.federation-reconcile-actors]
+verify_jwt = false
+
+[functions.federation-actor-refresh]
+verify_jwt = false
+
+[functions.federation-remote-sync]
+verify_jwt = false
+
+[functions.federation-provision-actor]
+verify_jwt = true
+
+[functions.fedify-federation]
+verify_jwt = false

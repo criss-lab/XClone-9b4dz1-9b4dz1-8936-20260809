@@ -75,7 +75,7 @@ export function StoryAdSlide({ ad, onComplete, onSkip }: StoryAdSlideProps) {
       skipped: false,
       completed: false,
       story_format: true,
-    }).catch(() => {});
+    }).then(() => {}, () => {});
   }, [ad.id, user?.id]);
 
   // Auto-advance progress bar
@@ -109,7 +109,7 @@ export function StoryAdSlide({ ad, onComplete, onSkip }: StoryAdSlideProps) {
             skipped: false,
             watch_seconds: watchSeconds,
             story_format: true,
-          }).catch(() => {});
+          }).then(() => {}, () => {});
         }
         onComplete();
       }
@@ -128,7 +128,7 @@ export function StoryAdSlide({ ad, onComplete, onSkip }: StoryAdSlideProps) {
       completed: false,
       watch_seconds: watchSeconds,
       story_format: true,
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     onSkip();
   }, [canSkip, ad.id, user?.id, onSkip]);
 
@@ -138,7 +138,7 @@ export function StoryAdSlide({ ad, onComplete, onSkip }: StoryAdSlideProps) {
       user_id: user?.id ?? null,
       clicked: true,
       story_format: true,
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     if (ad.target_url) window.open(ad.target_url, '_blank', 'noopener,noreferrer');
   };
 

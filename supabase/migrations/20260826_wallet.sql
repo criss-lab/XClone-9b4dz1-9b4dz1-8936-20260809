@@ -8,7 +8,6 @@ create table if not exists wallets (
   created_at timestamp default now(),
   updated_at timestamp default now()
 );
-
 create table if not exists transactions (
   id uuid primary key default gen_random_uuid(),
   user_id text not null,
@@ -18,6 +17,5 @@ create table if not exists transactions (
   status text default 'pending',
   created_at timestamp default now()
 );
-
 create index if not exists idx_wallet_user on wallets(user_id);
 create index if not exists idx_tx_user on transactions(user_id);

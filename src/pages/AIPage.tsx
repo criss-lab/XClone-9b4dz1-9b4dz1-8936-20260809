@@ -171,7 +171,7 @@ export default function AIPage() {
 
   return (
     <div className="flex flex-col bg-background" style={{ height: '100dvh' }}>
-      <TopBar title="AI Assistant" />
+      <TopBar />
 
       {/* Banner */}
       <div className="px-4 py-3 bg-gradient-to-r from-primary/10 to-purple-500/10 border-b border-border shrink-0">

@@ -13,7 +13,7 @@ import {
   Sparkles, Heart, Volume2, VolumeX, Play, Trash2, AlertTriangle,
   Copy, AtSign, Globe, UserX, BadgeCheck, Crown,
 } from 'lucide-react';
-import { useNotificationSound } from '@/hooks/useNotificationSound';
+import { useNotificationSound, type SoundType } from '@/hooks/useNotificationSound';
 import { applyTheme, getStoredThemeChoice } from '@/components/layout/ThemeToggle';
 import { authService } from '@/lib/auth';
 import { toast } from 'sonner';
@@ -458,7 +458,7 @@ export default function SettingsPage() {
                   {referralLink}
                 </div>
                 <button
-                  onClick={() => navigator.clipboard.writeText(referralLink).then(() => toast.success('Referral link copied!')).catch(() => {})}
+                  onClick={() => navigator.clipboard.writeText(referralLink).then(() => toast.success('Referral link copied!')).then(() => {}, () => {})}
                   className="px-3 py-1.5 bg-primary text-primary-foreground rounded-lg text-xs font-bold hover:opacity-90 transition-opacity flex items-center gap-1.5 shrink-0"
                 >
                   <Copy className="w-3 h-3" /> Copy
@@ -787,7 +787,7 @@ export default function SettingsPage() {
               {SOUND_PREVIEW_ITEMS.map(({ type, label, emoji, desc }) => (
                 <button
                   key={type}
-                  onClick={() => playSound(type)}
+                  onClick={() => playSound(type as SoundType)}
                   className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-background/70 active:scale-[0.98] transition-all group"
                 >
                   <div className="flex items-center gap-3">

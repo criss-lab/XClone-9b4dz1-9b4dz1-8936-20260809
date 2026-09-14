@@ -48,14 +48,14 @@ function PurchaseDialog({ product, onClose }: { product: any; onClose: () => voi
       user_id: product.user_id,
       type: 'payment_sent',
       from_user_id: user.id,
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     // Record creator earning
     await supabase.from('creator_earnings').insert({
       user_id: product.user_id,
       source: 'marketplace',
       amount: total,
       status: 'pending',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     setDone(true);
     setSubmitting(false);
   };
@@ -670,11 +670,11 @@ export default function MarketplacePage() {
           supabase.from('product_wishlists').upsert(
             { user_id: user.id, product_id: id, last_price: product?.price ?? null },
             { onConflict: 'user_id,product_id' }
-          ).catch(() => {});
+          ).then(() => {}, () => {});
         } else {
           // Removing
           supabase.from('product_wishlists').delete()
-            .eq('user_id', user.id).eq('product_id', id).catch(() => {});
+            .eq('user_id', user.id).eq('product_id', id).then(() => {}, () => {});
         }
       }
       return next;
@@ -705,7 +705,7 @@ export default function MarketplacePage() {
   };
 
   const trackView = async (id: string) => {
-    await supabase.rpc('increment', { row_id: id, table_name: 'products', column_name: 'views_count' }).catch(() => {});
+    await supabase.rpc('increment', { row_id: id, table_name: 'products', column_name: 'views_count' }).then(() => {}, () => {});
   };
 
   const resetFilters = () => {
@@ -760,7 +760,7 @@ export default function MarketplacePage() {
 
   return (
     <div className="min-h-screen bg-background pb-20 md:pb-0">
-      <TopBar title="Marketplace" />
+      <TopBar />
       <MktAdBanner />
 
       {/* ── Sticky Search + Filter bar ── */}

@@ -1,0 +1,203 @@
+name: Testagram Canonical Cloudflare Worker
+
+run-name: Testagram Canonical Cloudflare Worker — ${{ github.event_name }} — ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [deploy-cloudflare-production]
+  push:
+    branches:
+      - main
+    paths:
+      - cloudflare/worker/production-entrypoint.ts
+      - cloudflare/worker/paypal.ts
+      - cloudflare/worker/public-actor-entrypoint.ts
+      - cloudflare/worker/federation-entrypoint.ts
+      - cloudflare/worker/federation-interop-entrypoint.ts
+      - cloudflare/worker/federation-interaction-entrypoint.ts
+      - cloudflare/worker/index.ts
+      - cloudflare/wrangler.jsonc
+      - cloudflare/wrangler-federation.jsonc
+      - src/api/federation.ts
+      - .github/workflows/canonical-cloudflare-worker.yml
+      - .github/workflows/paypal-wallet-e2e.yml
+  workflow_run:
+    workflows:
+      - Testagram Cloudflare Backend
+      - Testagram Cloudflare Federation Hardening
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testagram-cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout exact release revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event.client_payload.sha || github.sha }}
+
+      - name: Validate Cloudflare workflow trigger context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_SHA: ${{ github.event.client_payload.sha }}
+        run: |
+          set -euo pipefail
+          echo "event=$EVENT_NAME"
+          echo "event_sha=$EVENT_SHA"
+          echo "workflow_run_head_sha=$WORKFLOW_RUN_SHA"
+          echo "repository_dispatch_sha=$DISPATCH_SHA"
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" != ""
+
+      - name: Validate Cloudflare deployment source
+        run: |
+          set -euo pipefail
+          test -f cloudflare/wrangler.jsonc
+          test -f cloudflare/wrangler-federation.jsonc
+          test -f cloudflare/worker/production-entrypoint.ts
+          grep -Fq '"main": "./worker/production-entrypoint.ts"' cloudflare/wrangler.jsonc
+          grep -Fq '"main": "./worker/production-entrypoint.ts"' cloudflare/wrangler-federation.jsonc
+          grep -Fq '"pattern": "api.testagram.site", "custom_domain": true' cloudflare/wrangler.jsonc
+          grep -Fq '"pattern": "federation.testagram.site", "custom_domain": true' cloudflare/wrangler-federation.jsonc
+          grep -Fq '"binding": "CF_VERSION_METADATA"' cloudflare/wrangler.jsonc
+          grep -Fq '"binding": "CF_VERSION_METADATA"' cloudflare/wrangler-federation.jsonc
+          grep -Fq "if (url.hostname === 'federation.testagram.site')" cloudflare/worker/production-entrypoint.ts
+
+      - name: Validate Cloudflare deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Deploy canonical Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.34.0 deploy --config cloudflare/wrangler.jsonc
+
+      - name: Deploy dedicated Federation Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.34.0 deploy --config cloudflare/wrangler-federation.jsonc
+
+      - name: Verify canonical Worker health and version identity
+        env:
+          WORKER_DIRECT_URL: https://testagram-api.nahashonnyaga794.workers.dev
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$WORKER_DIRECT_URL/api/health?probe=$attempt" || true)"
+            if [ "$status" = 200 ] && jq -e '.ok == true and .databaseReachable == true and .jwksReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and .gateway == true and (.versionId | type == "string" and length > 0)' /tmp/health.json >/dev/null 2>&1; then exit 0; fi
+            sleep 5
+          done
+          cat /tmp/health.json || true
+          exit 1
+
+      - name: Verify API custom-domain health and readiness
+        env:
+          GATEWAY_URL: https://api.testagram.site
+        run: |
+          set -euo pipefail
+          echo 'Checking authoritative resolver visibility for api.testagram.site...'
+          getent hosts api.testagram.site || true
+          for attempt in $(seq 1 12); do
+            dns_ok=0
+            if getent hosts api.testagram.site >/dev/null 2>&1; then dns_ok=1; fi
+            probe="$(date +%s%N)-$attempt"
+            health_status="$(curl -sS -o /tmp/gateway-health.json -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$GATEWAY_URL/api/health?probe=$probe" || true)"
+            ready_status="$(curl -sS -o /tmp/gateway-ready.json -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$GATEWAY_URL/api/ready?probe=$probe" || true)"
+            echo "attempt=$attempt dns_ok=$dns_ok health=$health_status ready=$ready_status"
+            cat /tmp/gateway-health.json || true
+            cat /tmp/gateway-ready.json || true
+            if [ "$dns_ok" = 1 ] && [ "$health_status" = 200 ] && [ "$ready_status" = 200 ] && jq -e '.ok == true and .gateway == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and (.versionId | type == "string" and length > 0)' /tmp/gateway-health.json >/dev/null 2>&1 && jq -e '.ready == true and .gateway == true' /tmp/gateway-ready.json >/dev/null 2>&1; then
+              echo 'PASS: api.testagram.site is resolving and the gateway is healthy/ready.'
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Verify gateway deployment identity convergence
+        env:
+          WORKER_DIRECT_URL: https://testagram-api.nahashonnyaga794.workers.dev
+          GATEWAY_URL: https://api.testagram.site
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            probe="$(date +%s%N)-$attempt"
+            direct_status="$(curl -sS -o /tmp/gateway-identity-direct.json -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$WORKER_DIRECT_URL/api/health?probe=$probe" || true)"
+            custom_status="$(curl -sS -o /tmp/gateway-identity-custom.json -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$GATEWAY_URL/api/health?probe=$probe" || true)"
+            direct_version="$(jq -r '.versionId // empty' /tmp/gateway-identity-direct.json 2>/dev/null || true)"
+            custom_version="$(jq -r '.versionId // empty' /tmp/gateway-identity-custom.json 2>/dev/null || true)"
+            echo "attempt=$attempt direct_status=$direct_status custom_status=$custom_status direct_version=$direct_version custom_version=$custom_version"
+            if [ "$direct_status" = 200 ] && [ "$custom_status" = 200 ] && [ -n "$direct_version" ] && [ "$direct_version" = "$custom_version" ]; then
+              echo "PASS: api.testagram.site and the direct Worker URL resolve to the same Cloudflare Worker version: $direct_version"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Gateway deployment identity did not converge between the custom domain and direct Worker URL.'
+          cat /tmp/gateway-identity-direct.json || true
+          cat /tmp/gateway-identity-custom.json || true
+          exit 1
+
+      - name: Verify gateway authentication boundary
+        env:
+          GATEWAY_URL: https://api.testagram.site
+          WORKER_DIRECT_URL: https://testagram-api.nahashonnyaga794.workers.dev
+        run: |
+          set -euo pipefail
+          for endpoint in "$GATEWAY_URL/api/gateway" "$WORKER_DIRECT_URL/api/gateway"; do
+            passed=0
+            for attempt in $(seq 1 12); do
+              probe="$(date +%s%N)-$attempt"
+              response="$(curl -sS -o /tmp/gateway-auth.json -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$endpoint?probe=$probe" || true)"
+              body="$(cat /tmp/gateway-auth.json 2>/dev/null || true)"
+              echo "endpoint=$endpoint attempt=$attempt status=$response body=$body"
+              if [ "$response" = 401 ] && jq -e '.ok == false and .code == "AUTH_REQUIRED"' /tmp/gateway-auth.json >/dev/null 2>&1; then
+                passed=1
+                break
+              fi
+              sleep 5
+            done
+            if [ "$passed" != 1 ]; then
+              echo "FAIL: gateway authentication boundary was not proven for $endpoint"
+              exit 1
+            fi
+          done
+          echo 'PASS: both custom and direct gateway endpoints enforce AUTH_REQUIRED with HTTP 401.'
+
+      - name: Verify federation custom-domain routing
+        env:
+          FEDERATION_URL: https://federation.testagram.site
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            dns_ok=0
+            if getent hosts federation.testagram.site >/dev/null 2>&1; then dns_ok=1; fi
+            status="$(curl -sS -o /tmp/webfinger.json -w '%{http_code}' --max-time 20 --get --data-urlencode 'resource=acct:__testagram_nonexistent_actor__@federation.testagram.site' "$FEDERATION_URL/.well-known/webfinger" || true)"
+            echo "attempt=$attempt dns_ok=$dns_ok webfinger=$status"
+            cat /tmp/webfinger.json || true
+            if [ "$dns_ok" = 1 ] && [ "$status" = 404 ] && jq -e '.error != null' /tmp/webfinger.json >/dev/null 2>&1; then
+              echo 'PASS: federation.testagram.site resolves and ActivityPub WebFinger routing reaches the dedicated worker.'
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1

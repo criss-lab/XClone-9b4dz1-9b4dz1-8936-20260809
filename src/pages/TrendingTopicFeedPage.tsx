@@ -297,7 +297,6 @@ export default function TrendingTopicFeedPage() {
               onClick={() => fetchPosts()}
               disabled={refreshing}
               className="p-2 rounded-full border border-border hover:bg-muted transition-colors text-muted-foreground"
-              title="Refresh"
             >
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>

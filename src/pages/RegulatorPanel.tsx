@@ -210,7 +210,7 @@ export default function RegulatorPanel() {
     if (!user) return;
     supabase.from('regulator_audit_logs').insert({
       regulator_id: user.id, action_type, target_user_id: target_user_id ?? null, notes,
-    }).then(() => {}).catch(() => {});
+    }).then(() => {}).then(() => {}, () => {});
   }, [user]);
 
   const fetchEmployees = useCallback(async () => {
@@ -277,7 +277,7 @@ export default function RegulatorPanel() {
       subject: `🎉 You've been hired on Testagram!`,
       body: `The platform regulator has assigned you the role of "${hireForm.job_title}" in ${hireForm.department}.${hireForm.notes ? '\n\nNote: ' + hireForm.notes : ''}${revPct > 0 ? `\n\n💰 Revenue share: ${revPct}%` : ''} Welcome to the team!`,
       type: 'update', icon_emoji: '🎉', cta_label: 'Open Team Chat', cta_url: '/team-chat',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`@${selectedHireUser.username} hired!`);
     await logAudit('hire_employee', selectedHireUser.id, 'Hired as ' + hireForm.job_title + ' in ' + hireForm.department);
     setShowHireDialog(false); setSelectedHireUser(null);
@@ -301,7 +301,7 @@ export default function RegulatorPanel() {
         subject: '✅ You are now verified on Testagram!',
         body: 'The platform regulator has granted you a verified badge. Your profile now shows the blue checkmark ✓',
         type: 'update', icon_emoji: '✅',
-      }).catch(() => {});
+      }).then(() => {}, () => {});
       toast.success(`@${username} verified!`);
       await logAudit('grant_verified', empUserId, 'Granted verified badge to @' + username);
     } else {
@@ -341,7 +341,7 @@ export default function RegulatorPanel() {
       subject: `💰 Revenue share updated: ${pct}%`,
       body: `The platform regulator has set your revenue share to ${pct}% of platform earnings.`,
       type: 'update', icon_emoji: '💰',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`Revenue share set to ${pct}% for @${username}`);
     setEditingRevShare(null); setRevShareInput(''); setSavingRevShare(false);
     fetchEmployees();
@@ -382,7 +382,7 @@ export default function RegulatorPanel() {
         subject: `🔒 Feature access updated`,
         body: `${lockedFeatures.length} feature(s) restricted: ${lockedFeatures.map(k => FEATURE_LABELS[k] ?? k).join(', ')}.`,
         type: 'update', icon_emoji: '🔒',
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
     toast.success(`Feature locks saved for @${selectedUnlockUser.username}`);
     setSavingLocks(false);
@@ -423,14 +423,14 @@ export default function RegulatorPanel() {
       await supabase.from('wallet_transactions').insert({
         wallet_id: walletRow.id, user_id: selectedWalletUser.id, type: 'credit', amount,
         description: topUpNote.trim() || `Regulator top-up by @${user.username}`, status: 'completed',
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
     await supabase.from('platform_inbox').insert({
       user_id: selectedWalletUser.id,
       subject: `💰 Wallet top-up: +$${amount.toFixed(2)}`,
       body: `The platform regulator has added $${amount.toFixed(2)} to your wallet.${topUpNote ? '\n\nNote: ' + topUpNote : ''}`,
       type: 'update', icon_emoji: '💰',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`$${amount.toFixed(2)} added to @${selectedWalletUser.username}'s wallet!`);
     setShowTopUp(false); setTopUpAmount(''); setTopUpNote('');
     setToppingUp(false);
@@ -533,7 +533,7 @@ export default function RegulatorPanel() {
       user_id: adUserId, subject: '✅ Your advertisement is approved!',
       body: `Your ad "${adTitle}" has been approved by the platform regulator and is now live.`,
       type: 'update', icon_emoji: '✅',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`Ad approved!`);
     await logAudit('approve_ad', adUserId, 'Ad approved: "' + adTitle.slice(0, 60) + '"');
     fetchAdQueue();
@@ -545,7 +545,7 @@ export default function RegulatorPanel() {
       user_id: adUserId, subject: '❌ Your advertisement was rejected',
       body: `Your ad "${adTitle}" was rejected for not meeting platform content guidelines. Please review our policies and resubmit.`,
       type: 'update', icon_emoji: '❌', cta_label: 'Create New Ad', cta_url: '/create-ad',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success('Ad rejected');
     await logAudit('reject_ad', adUserId, 'Ad rejected: "' + adTitle.slice(0, 60) + '"');
     fetchAdQueue();
@@ -595,7 +595,7 @@ export default function RegulatorPanel() {
       user_id: userId, subject: '✅ Your account restriction has been lifted',
       body: 'The platform regulator has reviewed your case and lifted your account restriction.',
       type: 'update', icon_emoji: '✅',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`@${username}'s ban lifted`);
     await logAudit('lift_ban', userId, 'Ban lifted for @' + username);
     fetchModeration();
@@ -607,7 +607,7 @@ export default function RegulatorPanel() {
       user_id: userId, subject: '🔄 Strike count reset',
       body: 'The platform regulator has reset your strike count to 0, giving you a clean slate.',
       type: 'update', icon_emoji: '🔄',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`Strikes reset for @${username}`);
     await logAudit('reset_strikes', userId, 'Strike count reset to 0 for @' + username);
     fetchModeration();
@@ -630,7 +630,7 @@ export default function RegulatorPanel() {
       user_id: appeal.user_id,
       subject: decision === 'approved' ? '✅ Appeal Approved' : '❌ Appeal Denied',
       body: msgBody, type: 'update', icon_emoji: decision === 'approved' ? '✅' : '❌',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`Appeal ${decision}`);
     setAppealNote(prev => { const n = { ...prev }; delete n[appealId]; return n; });
     fetchModeration();
@@ -658,7 +658,7 @@ export default function RegulatorPanel() {
       user_id: userId, subject: '🚫 Your account has been temporarily restricted',
       body: 'A platform moderator has temporarily restricted your account for 24 hours due to a policy violation.',
       type: 'update', icon_emoji: '🚫',
-    }).catch(() => {});
+    }).then(() => {}, () => {});
     toast.success(`@${username} banned for 24h`);
     await logAudit('manual_ban', userId, 'Manual 24h ban applied to @' + username);
     fetchModeration();

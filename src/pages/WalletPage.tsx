@@ -1388,7 +1388,7 @@ function SpendingAnalyticsTab({ userId, currency }: { userId: string; currency: 
       if (t.type === 'deposit' || t.type === 'earnings') dailyMap[key].in  += Number(t.amount);
       else                                                 dailyMap[key].out += Number(t.amount);
     });
-    const barData        = Object.entries(dailyMap).map(([date, v]) => ({ date, In: parseFloat(v.in.toFixed(2)), Out: parseFloat(v.out.toFixed(2)) }));
+    const barData        = (Object.entries(dailyMap) as [string, { in: number; out: number }][]).map(([date, v]) => ({ date, In: parseFloat(v.in.toFixed(2)), Out: parseFloat(v.out.toFixed(2)) }));
     const typeMap: any = {};
     txns.forEach(t => { const l = t.type.replace(/_/g,' '); typeMap[l] = (typeMap[l] || 0) + Number(t.amount); });
     const pieData        = Object.entries(typeMap).map(([name, value]) => ({ name, value: parseFloat((value as number).toFixed(2)) }));
@@ -2157,8 +2157,8 @@ function TransactionHistoryTab({ userId, currency }: { userId: string; currency:
               className={`flex-shrink-0 flex-1 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${filter === f ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>{f}</button>
           ))}
         </div>
-        <button onClick={printPDF} className="p-2 border border-border rounded-xl hover:bg-muted transition-colors text-muted-foreground shrink-0" title="Print PDF"><Printer className="w-4 h-4" /></button>
-        <button onClick={downloadCSV} className="p-2 border border-border rounded-xl hover:bg-muted transition-colors text-muted-foreground shrink-0" title="Download CSV"><Download className="w-4 h-4" /></button>
+        <button onClick={printPDF} className="p-2 border border-border rounded-xl hover:bg-muted transition-colors text-muted-foreground shrink-0"><Printer className="w-4 h-4" /></button>
+        <button onClick={downloadCSV} className="p-2 border border-border rounded-xl hover:bg-muted transition-colors text-muted-foreground shrink-0"><Download className="w-4 h-4" /></button>
       </div>
       {search && <p className="text-xs text-muted-foreground flex items-center gap-1.5"><Filter className="w-3 h-3" />{filtered.length} result{filtered.length !== 1 ? 's' : ''} for "{search}"</p>}
       {loading ? (
@@ -2551,7 +2551,7 @@ function ActivityHeatmap({ userId }: { userId: string }) {
       map[key].amount += Number(t.amount);
       if (t.type === 'deposit' || t.type === 'earnings') map[key].hasIn = true;
     });
-    const arr = Object.entries(map).map(([date, v]) => ({ date, ...v }));
+    const arr = (Object.entries(map) as [string, { count: number; amount: number; hasIn: boolean }][]).map(([date, v]) => ({ date, ...v }));
     return { cells: arr, maxAmount: Math.max(...arr.map(c => c.amount), 1) };
   }, [txns]);
 
@@ -2901,7 +2901,7 @@ function P2PBalanceChart({ userId, currency }: { userId: string; currency: Curre
     });
     // forward-fill
     let last = 0;
-    const chartData = Object.entries(dayMap).map(([date, bal]) => {
+    const chartData = (Object.entries(dayMap) as [string, number][]).map(([date, bal]) => {
       if (bal !== 0) last = bal;
       else if (last !== 0) bal = last;
       return { date, bal: parseFloat(bal.toFixed(2)) };
@@ -3097,7 +3097,7 @@ function MonthlyHeatmapCalendar({ userId, currency }: { userId: string; currency
     const cells: { day: number | null; data: { inAmt: number; outAmt: number; count: number } | null }[] = [];
     for (let i = 0; i < firstWeekday; i++) cells.push({ day: null, data: null });
     for (let d = 1; d <= daysInMonth; d++) cells.push({ day: d, data: dayMap[d] });
-    const maxAmt = Math.max(...Object.values(dayMap).map(v => v.inAmt + v.outAmt), 1);
+    const maxAmt = Math.max(...(Object.values(dayMap) as { inAmt: number; outAmt: number }[]).map(v => v.inAmt + v.outAmt), 1);
     return { cells, maxAmt };
   }, [txns, year, month]);
 
@@ -3614,7 +3614,7 @@ function ReferralLeaderboard({ userId }: { userId: string }) {
         .limit(500);
       const counts: any = {};
       (allRefs ?? []).forEach((r: any) => { counts[r.invited_by] = (counts[r.invited_by] ?? 0) + 1; });
-      const top10 = Object.entries(counts).sort((a: any, b: any) => b[1] - a[1]).slice(0, 10);
+      const top10 = (Object.entries(counts) as [string, number][]).sort((a, b) => b[1] - a[1]).slice(0, 10);
       if (top10.length === 0) { setLeaders([]); setLoading(false); return; }
       const { data: profiles } = await supabase.from('user_profiles')
         .select('id,username,avatar_url').in('id', top10.map(([id]) => id));

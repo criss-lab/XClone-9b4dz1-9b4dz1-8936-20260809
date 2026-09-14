@@ -1,0 +1,105 @@
+name: Testagram Payment Edge Functions
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/paypal-create-order/**'
+      - 'supabase/functions/paypal-capture-order/**'
+      - 'supabase/functions/mpesa-stk-push/**'
+      - 'supabase/functions/mpesa-callback/**'
+      - '.github/workflows/deploy-payment-functions.yml'
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_PROJECT_REF: aepbqfrmheihfsauzcby
+  SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+concurrency:
+  group: testagram-payment-functions-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-paypal:
+    name: Deploy PayPal Edge Functions
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      PAYPAL_CLIENT_ID: ${{ secrets.PAYPAL_CLIENT_ID }}
+      PAYPAL_CLIENT_SECRET: ${{ secrets.PAYPAL_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Validate PayPal deployment credentials
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo 'Missing SUPABASE_ACCESS_TOKEN.'; exit 1; }
+          test -n "$PAYPAL_CLIENT_ID" || { echo 'Missing PAYPAL_CLIENT_ID.'; exit 1; }
+          test -n "$PAYPAL_CLIENT_SECRET" || { echo 'Missing PAYPAL_CLIENT_SECRET.'; exit 1; }
+          case "$SUPABASE_ACCESS_TOKEN" in sbp_*) ;; *) echo 'SUPABASE_ACCESS_TOKEN must be a Supabase PAT.'; exit 1;; esac
+
+      - name: Install Supabase CLI
+        run: npm install --global supabase@latest
+
+      - name: Link production project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Sync PayPal secrets
+        run: |
+          set -euo pipefail
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" \
+            PAYPAL_CLIENT_ID="$PAYPAL_CLIENT_ID" \
+            PAYPAL_CLIENT_SECRET="$PAYPAL_CLIENT_SECRET" \
+            PAYPAL_ENV="live"
+
+      - name: Deploy PayPal create-order
+        run: supabase functions deploy paypal-create-order --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy PayPal capture-order
+        run: supabase functions deploy paypal-capture-order --project-ref "$SUPABASE_PROJECT_REF"
+
+  deploy-mpesa:
+    name: Deploy M-Pesa Edge Functions
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      MPESA_CONSUMER_KEY: ${{ secrets.MPESA_CONSUMER_KEY }}
+      MPESA_CONSUMER_SECRET: ${{ secrets.MPESA_CONSUMER_SECRET }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Validate M-Pesa OAuth credentials
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo 'Missing SUPABASE_ACCESS_TOKEN.'; exit 1; }
+          test -n "$MPESA_CONSUMER_KEY" || { echo 'Missing MPESA_CONSUMER_KEY in the production environment.'; exit 1; }
+          test -n "$MPESA_CONSUMER_SECRET" || { echo 'Missing MPESA_CONSUMER_SECRET in the production environment.'; exit 1; }
+          case "$SUPABASE_ACCESS_TOKEN" in sbp_*) ;; *) echo 'SUPABASE_ACCESS_TOKEN must be a Supabase PAT.'; exit 1;; esac
+
+      - name: Install Supabase CLI
+        run: npm install --global supabase@latest
+
+      - name: Link production project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Sync M-Pesa OAuth credentials only
+        run: |
+          set -euo pipefail
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" \
+            MPESA_CONSUMER_KEY="$MPESA_CONSUMER_KEY" \
+            MPESA_CONSUMER_SECRET="$MPESA_CONSUMER_SECRET" \
+            MPESA_ENV="live" \
+            MPESA_CALLBACK_URL="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/mpesa-callback"
+
+      - name: Deploy M-Pesa STK push
+        run: supabase functions deploy mpesa-stk-push --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy M-Pesa callback
+        run: supabase functions deploy mpesa-callback --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt

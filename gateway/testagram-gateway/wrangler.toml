@@ -1,0 +1,7 @@
+name = "testagram-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-09-13"
+
+[vars]
+SUPABASE_GATEWAY_URL = "https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay"
+ALLOWED_ORIGINS = "https://testagram.site,https://www.testagram.site"

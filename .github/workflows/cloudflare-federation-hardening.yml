@@ -1,0 +1,147 @@
+name: Testagram Cloudflare Federation Hardening
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/worker/federation-interop-entrypoint.ts'
+      - 'cloudflare/worker/federation-interaction-entrypoint.ts'
+      - 'cloudflare/worker/production-entrypoint.ts'
+      - 'cloudflare/worker/public-actor-entrypoint.ts'
+      - 'cloudflare/wrangler-federation.jsonc'
+      - 'supabase/functions/federation-outbox/index.ts'
+      - 'supabase/functions/federation-inbox/index.ts'
+      - 'supabase/functions/_shared/activitypub-compat.ts'
+      - '.github/workflows/cloudflare-federation-hardening.yml'
+      - 'supabase/migrations/*federation*'
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '4.126.0'
+  FEDERATION_ORIGIN: 'https://federation.testagram.site'
+  SUPABASE_URL: 'https://aepbqfrmheihfsauzcby.supabase.co'
+
+jobs:
+  deploy-and-harden:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Verify exact release identity
+        run: |
+          set -euo pipefail
+          echo "HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse --abbrev-ref HEAD)" = main
+      - name: Validate canonical federation source graph
+        run: |
+          set -euo pipefail
+          test -f cloudflare/worker/federation-interop-entrypoint.ts
+          test -f cloudflare/worker/federation-interaction-entrypoint.ts
+          test -f cloudflare/worker/production-entrypoint.ts
+          test -f cloudflare/worker/public-actor-entrypoint.ts
+          test -f supabase/functions/federation-outbox/index.ts
+          test -f supabase/functions/federation-inbox/index.ts
+          test -f supabase/functions/_shared/activitypub-compat.ts
+          grep -Fq "const DOMAIN = 'federation.testagram.site'" cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'export async function handleFederationInteraction' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'export async function handleFederationInteraction' cloudflare/worker/federation-interaction-entrypoint.ts
+          grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/production-entrypoint.ts
+          grep -Fq "from './federation-interop-entrypoint'" cloudflare/worker/public-actor-entrypoint.ts
+          grep -Fq 'federation.testagram.site' cloudflare/wrangler-federation.jsonc
+          grep -Fq 'alsoKnownAs' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'movedTo' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'followers_synchronization' cloudflare/worker/federation-interop-entrypoint.ts
+          grep -Fq 'receiverScopedFederationRequest' cloudflare/worker/production-entrypoint.ts
+          if grep -Fq 'testagram-api.nahashonnyaga794.workers.dev' cloudflare/worker/federation-interop-entrypoint.ts; then
+            echo 'workers.dev federation origin is forbidden in canonical federation source'
+            exit 1
+          fi
+          echo 'PASS: canonical federation source graph'
+      - name: Compile canonical federation Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$SUPABASE_PUBLISHABLE_KEY"
+          test -n "$SUPABASE_SECRET_KEY"
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler-federation.jsonc --dry-run
+      - name: Deploy canonical federation Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file"' EXIT
+          printf 'SUPABASE_ANON_KEY=%s\nSUPABASE_SECRET_KEY=%s\n' "$SUPABASE_PUBLISHABLE_KEY" "$SUPABASE_SECRET_KEY" > "$secrets_file"
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config cloudflare/wrangler-federation.jsonc --secrets-file "$secrets_file"
+      - name: Verify canonical federation edge
+        run: |
+          set -euo pipefail
+          base="$FEDERATION_ORIGIN"
+          for attempt in $(seq 1 12); do
+            status="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$base/api/health" || true)"
+            cat /tmp/health.json || true
+            if [ "$status" = 200 ]; then break; fi
+            test "$attempt" -eq 12 && exit 1
+            sleep 5
+          done
+          test "$status" = 200
+          jq -e '.ok == true and .service == "testagram-api" and .supabaseProjectRef == "aepbqfrmheihfsauzcby" and .databaseReachable == true and .r2Binding == true' /tmp/health.json >/dev/null
+          curl -sS --fail-with-body --max-time 20 "$base/.well-known/nodeinfo" >/tmp/nodeinfo-link.json
+          jq -e '.links | length > 0' /tmp/nodeinfo-link.json >/dev/null
+          curl -sS --fail-with-body --max-time 20 "$base/nodeinfo/2.1" >/tmp/nodeinfo.json
+          jq -e '.protocols | index("activitypub")' /tmp/nodeinfo.json >/dev/null
+          echo 'PASS: canonical federation Worker deployed and edge health/discovery endpoints are reachable'
+      - name: Verify WebFinger and actor resolution
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_SECRET_KEY"
+          actors="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?select=username&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          username="$(printf '%s' "$actors" | jq -r '.[0].username // empty')"
+          test -n "$username"
+          wf="$(curl -sS --fail-with-body --max-time 20 --get "$FEDERATION_ORIGIN/.well-known/webfinger" --data-urlencode "resource=acct:${username}@federation.testagram.site")"
+          printf '%s' "$wf" | jq -e --arg u "$username" '.subject == ("acct:" + $u + "@federation.testagram.site") and (.links | map(select(.rel == "self" and .type == "application/activity+json")) | length == 1)' >/dev/null
+          actor_url="$(printf '%s' "$wf" | jq -r '.links[] | select(.rel == "self") | .href')"
+          actor_json="$(curl -sS --fail-with-body --max-time 20 "$actor_url")"
+          printf '%s' "$actor_json" | jq -e --arg u "$username" '.type == "Person" and .preferredUsername == $u and (.inbox | endswith("/inbox"))' >/dev/null
+          inbox_url="$(printf '%s' "$actor_json" | jq -r '.inbox')"
+          inbox_status="$(curl -sS -o /tmp/inbox.json -w '%{http_code}' --max-time 20 "$inbox_url" || true)"
+          echo "actor=$actor_url inbox=$inbox_url inbox_get_status=$inbox_status"
+          test "$inbox_status" != 000
+          echo 'PASS: WebFinger, actor resolution, and inbox network reachability'
+      - name: Verify canonical Note object route
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_SECRET_KEY"
+          posts="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/posts?select=id,author_id,visibility&visibility=eq.public&order=created_at.desc&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          post_id="$(printf '%s' "$posts" | jq -r '.[0].id // empty')"
+          author_id="$(printf '%s' "$posts" | jq -r '.[0].author_id // empty')"
+          test -n "$post_id"
+          test -n "$author_id"
+          actors="$(curl -sS --fail-with-body --max-time 20 "$SUPABASE_URL/rest/v1/federation_actors?select=username,user_id&user_id=eq.$author_id&limit=1" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          username="$(printf '%s' "$actors" | jq -r '.[0].username // empty')"
+          test -n "$username"
+          status="$(curl -sS -o /tmp/note.json -w '%{http_code}' --max-time 20 "$FEDERATION_ORIGIN/users/$username/notes/$post_id" || true)"
+          echo "note_status=$status"
+          cat /tmp/note.json || true
+          test "$status" = 200
+          jq -e '.type == "Note" and (.id | contains("/notes/")) and (.attributedTo | type == "string")' /tmp/note.json >/dev/null
+          echo 'PASS: canonical ActivityPub Note object route'

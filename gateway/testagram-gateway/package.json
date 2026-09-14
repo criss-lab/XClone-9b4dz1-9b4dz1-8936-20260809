@@ -1,0 +1,18 @@
+{
+  "name": "testagram-gateway",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy --minify"
+  },
+  "dependencies": {
+    "hono": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240403.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^3.47.0"
+  }
+}

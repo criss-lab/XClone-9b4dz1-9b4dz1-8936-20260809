@@ -1,0 +1,4 @@
+-- Historical migration marker.
+-- This version is already present in the production migration history but
+-- its original local file was missing from the repository. Keep this marker
+-- so Supabase CLI local/remote migration history remains synchronized.

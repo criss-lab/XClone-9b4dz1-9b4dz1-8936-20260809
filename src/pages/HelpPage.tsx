@@ -534,7 +534,7 @@ function HelpAccordionItem({
               <button
                 onClick={() => {
                   const url = `${window.location.origin}/help#${itemId}`;
-                  navigator.clipboard.writeText(url).then(() => toast.success('Link copied!')).catch(() => {});
+                  navigator.clipboard.writeText(url).then(() => toast.success('Link copied!')).then(() => {}, () => {});
                 }}
                 className="text-[10px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
@@ -828,7 +828,7 @@ export default function HelpPage() {
     // esbuild guard: use module-level buildShareData — no inline object literal in component function body
     const shareData = buildShareData(q, firstBullet, url);
     if (navigator.share) {
-      navigator.share(shareData).catch(() => {});
+      navigator.share(shareData).then(() => {}, () => {});
     } else {
       navigator.clipboard.writeText(url)
         .then(() => toast.success('Link copied!'))

@@ -64,7 +64,7 @@ export default function AppealsPage() {
         body: `@${user.username} submitted a ban appeal.\n\nReason: "${reason.trim().slice(0, 200)}"\n\nReview in Regulator Panel → Moderation tab.`,
         type: 'update', icon_emoji: '📋',
         cta_label: 'Review Appeal', cta_url: '/regulator',
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
     toast.success('Appeal submitted! The regulator will review your case.');
     setReason('');

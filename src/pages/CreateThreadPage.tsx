@@ -376,8 +376,8 @@ Requirements:
       if (selectedSeries && (threadData as any)?.id) {
         const { count } = await supabase.from('post_series_items').select('*', { count: 'exact', head: true }).eq('series_id', selectedSeries.id);
         const position = (count ?? 0) + 1;
-        await supabase.from('post_series_items').insert({ series_id: selectedSeries.id, post_id: (threadData as any).id, position }).catch(() => {});
-        await supabase.from('post_series').update({ item_count: position, updated_at: new Date().toISOString() }).eq('id', selectedSeries.id).catch(() => {});
+        await supabase.from('post_series_items').insert({ series_id: selectedSeries.id, post_id: (threadData as any).id, position }).then(() => {}, () => {});
+        await supabase.from('post_series').update({ item_count: position, updated_at: new Date().toISOString() }).eq('id', selectedSeries.id).then(() => {}, () => {});
       }
 
       // Clear draft on success

@@ -11,6 +11,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { formatNumber } from '@/lib/utils';
 import { useSEO } from '@/hooks/useSEO';
 import { toast } from 'sonner';
+import { MixedThreadsSocialFeed } from '@/components/features/MixedThreadsSocialFeed';
 
 interface Thread {
   id: string;
@@ -261,7 +262,7 @@ export default function ThreadsPage() {
 
   return (
     <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <TopBar title="Threads" />
+      <TopBar />
       <ThreadsAdBanner />
 
       {/* Sticky header: tabs + search + sort */}
@@ -350,14 +351,16 @@ export default function ThreadsPage() {
             <Plus className="w-4 h-4 mr-2" />
             Create Thread
           </Button>
-          <Button variant="outline" onClick={() => navigate('/create-thread?template=poll')} className="rounded-full px-4" title="Create poll thread">
+          <Button variant="outline" onClick={() => navigate('/create-thread?template=poll')} className="rounded-full px-4">
             <BarChart3 className="w-4 h-4" />
           </Button>
         </div>
       )}
 
+      <MixedThreadsSocialFeed activeTab={activeTab as 'For You' | 'Following' | 'Trending' | 'Reading List'} searchQuery={searchQuery} />
+
       {/* Loading */}
-      {loading ? (
+      {String(activeTab) === 'Reading List' && (loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
@@ -507,7 +510,7 @@ export default function ThreadsPage() {
             </article>
           ))}
         </div>
-      )}
+      ))}
     </div>
   );
 }

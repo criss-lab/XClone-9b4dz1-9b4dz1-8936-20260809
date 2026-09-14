@@ -1,0 +1,32 @@
+name: Testagram Federation Version Smoke
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/federation-version-smoke.yml'
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify active Worker version serves corrected actor key
+        env:
+          SUPABASE_URL: https://zcjtvykwwplnzyyslnop.supabase.co
+          GATEWAY_URL: https://zcjtvykwwplnzyyslnop.supabase.co/functions/v1/gateway-relay
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          WORKER_VERSION: 6274217b-3c89-47a1-82f4-9623f6743caf
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_ID}-${RANDOM}"; EMAIL="fediverse-smoke-${RUN}@example.invalid"; PASS="TgSmoke-${RUN}-X9!"; USER_ID=""
+          trap 'test -z "$USER_ID" || curl -sS -o /dev/null -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID" -H "apikey: $SUPABASE_SECRET_KEY" || true' EXIT
+          curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/admin/users" -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" >/tmp/user.json
+          USER_ID="$(jq -r '.id' /tmp/user.json)"
+          TOKEN="$(curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p}')" | jq -r '.access_token')"
+          curl -sS -o /tmp/follow.json -w '%{http_code}' --max-time 60 -X POST "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"path":"/follow","body":{"target":"@Mastodon@mastodon.social"}}' >/tmp/status
+          ACTOR="$(curl -sS --fail-with-body "$SUPABASE_URL/rest/v1/federation_actors?user_id=eq.$USER_ID&select=actor_url" -H "apikey: $SUPABASE_SECRET_KEY" | jq -r '.[0].actor_url')"
+          curl -sS --fail-with-body -D /tmp/headers -H "Cloudflare-Workers-Version-Overrides: testagram-api=\"$WORKER_VERSION\"" -H 'Accept: application/activity+json' "$ACTOR" >/tmp/actor.json
+          grep -Fq 'X-Testagram-Federation-Key-Fix: 1' /tmp/headers
+          jq -e --arg key "${ACTOR}#main-key" '.publicKey.id == $key and .publicKey.owner == .id' /tmp/actor.json

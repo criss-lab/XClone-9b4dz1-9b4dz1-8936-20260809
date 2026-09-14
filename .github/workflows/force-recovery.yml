@@ -1,0 +1,44 @@
+name: One-shot Source Recovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Restore canonical source baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore --source=7967f685152b4b6d15bc81b781329e151f1c1d59 -- src/pages/TeamChatPage.tsx
+          git restore --source=09da75ba9316847378c64009a9e841768e62a82d -- src/pages/VideosPage.tsx src/types/app-types.ts
+          git restore --source=8c077922f5d4f41bdb42e892b00b18db76df72b3 -- src/components/features/VideoPlayer.tsx
+          git restore --source=9f80dbf3dbf897faa1661d272d2f24f65c30d3bd -- src/components/features/UserSuggestionsWidget.tsx
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for name in ('TeamChatPage.tsx', 'VideosPage.tsx'):
+              p = Path('src/pages') / name
+              text = p.read_text()
+              text = re.sub(r"import React, \{([^}]*)\} from 'react';", lambda m: "import * as React from 'react';\nimport {" + m.group(1) + "} from 'react';", text, count=1)
+              text = text.replace("import React from 'react';", "import * as React from 'react';")
+              p.write_text(text)
+          p = Path('src/types/app-types.ts')
+          text = p.read_text()
+          if 'is_creator?: boolean;' not in text:
+              text = text.replace('  creator_tier?: string;\n', '  creator_tier?: string;\n  is_creator?: boolean;\n  verified?: boolean;\n', 1)
+          p.write_text(text)
+          PY
+      - name: Verify recovered source
+        run: |
+          test "$(wc -l < src/pages/TeamChatPage.tsx)" -ge 100
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm run typecheck
+          npm run build

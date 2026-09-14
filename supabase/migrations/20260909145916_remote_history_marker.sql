@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909145916_add_federation_delivery_enqueue_trigger is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

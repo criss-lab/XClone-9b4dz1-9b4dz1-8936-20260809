@@ -5,14 +5,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatNumber(num: number): string {
-  if (num >= 1000000) {
-    return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+export function formatNumber(num: number | null | undefined): string {
+  const value = Number(num ?? 0);
+  if (!Number.isFinite(value)) return '0';
+  if (value >= 1000000) {
+    return (value / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
   }
-  if (num >= 1000) {
-    return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  if (value >= 1000) {
+    return (value / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
   }
-  return num.toString();
+  return String(value);
 }
 
 export function parseContent(content: string): string {
@@ -75,20 +77,16 @@ export function parseContent(content: string): string {
 
   let parsed = htmlParts.join('');
 
-  // Linkify hashtags — skip occurrences already inside HTML attributes (href/id/class)
-  // Two-step: protect attributes, then replace bare #word tokens in text
   parsed = parsed.replace(/(<[^>]+>)|#(\w+)/g, (m, tag, hash) => {
-    if (tag) return tag; // keep HTML tags unchanged
+    if (tag) return tag;
     return `<a href="/hashtag/${hash}" class="text-primary hover:underline">#${hash}</a>`;
   });
 
-  // Linkify @mentions — same protection pattern
   parsed = parsed.replace(/(<[^>]+>)|@(\w+)/g, (m, tag, mention) => {
     if (tag) return tag;
     return `<a href="/profile/${mention}" class="text-primary hover:underline">@${mention}</a>`;
   });
 
-  // Linkify bare URLs — skip ones already inside href attributes
   parsed = parsed.replace(/(<[^>]+>)|(https?:\/\/[^\s<"]+)/g, (m, tag, url) => {
     if (tag) return tag;
     return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline break-all">${url}</a>`;

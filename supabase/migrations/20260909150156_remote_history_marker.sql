@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909150156_add_federation_worker_lease_rpc is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

@@ -1,0 +1,27 @@
+name: Testagram Gateway CI
+
+on:
+  push:
+    branches: [main, feat/testagram-gateway-worker]
+    paths:
+      - 'gateway/testagram-gateway/**'
+      - '.github/workflows/testagram-gateway-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'gateway/testagram-gateway/**'
+      - '.github/workflows/testagram-gateway-ci.yml'
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway/testagram-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run typecheck

@@ -1,0 +1,37 @@
+name: Testagram Vercel Serverless CI
+
+on:
+  push:
+    branches: [main, feat/vercel-serverless-federation]
+    paths:
+      - 'api/**'
+      - 'vercel.json'
+      - 'package.json'
+      - '.github/workflows/vercel-serverless-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'vercel.json'
+      - 'package.json'
+      - '.github/workflows/vercel-serverless-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: Typecheck application and serverless functions
+        run: npm run typecheck
+      - name: Build Vite application
+        run: npm run build
+      - name: Validate Vercel configuration
+        run: |
+          node -e "const fs=require('fs'); const v=JSON.parse(fs.readFileSync('vercel.json','utf8')); const legacy=v.functions?.['api/**/*.ts']; if(legacy?.runtime) throw new Error('Legacy Vercel runtime declaration must not be present; Vercel CLI rejects nodejs22.x here'); if(!fs.existsSync('api')) throw new Error('Serverless API directory is missing'); console.log('Vercel serverless configuration valid - runtime is inferred by Vercel and no legacy runtime override is present')"

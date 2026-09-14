@@ -77,7 +77,7 @@ export function UserAdCard({ ad }: UserAdCardProps) {
       ad_id: ad.id,
       user_id: user?.id ?? null,
       clicked: false,
-    }).catch(() => {});
+    }).then(() => {}, () => {});
   }, [ad.id, user?.id]);
 
   // Detect vertical video (9:16 aspect ratio) for Story format
@@ -129,7 +129,7 @@ export function UserAdCard({ ad }: UserAdCardProps) {
   const openStoryFormat = useCallback(() => {
     setShowStoryFormat(true);
     startStoryProgress();
-    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
   }, [ad.id, user?.id, startStoryProgress]);
 
   useEffect(() => {
@@ -141,8 +141,8 @@ export function UserAdCard({ ad }: UserAdCardProps) {
       ad_id: ad.id,
       user_id: user?.id ?? null,
       clicked: true,
-    }).catch(() => {});
-    supabase.rpc('track_ad_view', { ad_id_param: ad.id, user_id_param: user?.id ?? null }).catch(() => {});
+    }).then(() => {}, () => {});
+    supabase.rpc('track_ad_view', { ad_id_param: ad.id, user_id_param: user?.id ?? null }).then(() => {}, () => {});
     if (ad.target_url) window.open(ad.target_url, '_blank', 'noopener,noreferrer');
   };
 
@@ -151,15 +151,15 @@ export function UserAdCard({ ad }: UserAdCardProps) {
     setLiked(next);
     if (next) {
       // Track like as an engagement impression
-      supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+      supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
     }
   };
 
   const handleShare = () => {
     setShareCount(c => c + 1);
-    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+    supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
     if (ad.target_url) {
-      navigator.clipboard.writeText(ad.target_url).catch(() => {});
+      navigator.clipboard.writeText(ad.target_url).then(() => {}, () => {});
     }
   };
 
@@ -298,7 +298,6 @@ export function UserAdCard({ ad }: UserAdCardProps) {
           <button
             onClick={() => setDismissed(true)}
             className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-muted text-muted-foreground transition-colors"
-            title="Hide ad"
           >
             <X className="w-4 h-4" />
           </button>
@@ -425,7 +424,7 @@ export function UserAdCard({ ad }: UserAdCardProps) {
         </button>
         <button
           onClick={() => {
-            supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).catch(() => {});
+            supabase.from('ad_impressions').insert({ ad_id: ad.id, user_id: user?.id ?? null, clicked: true }).then(() => {}, () => {});
           }}
           className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold text-muted-foreground hover:bg-muted/60 transition-colors"
         >

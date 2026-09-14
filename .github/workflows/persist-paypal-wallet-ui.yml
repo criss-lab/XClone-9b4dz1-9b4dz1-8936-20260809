@@ -1,0 +1,54 @@
+name: Persist PayPal Wallet UI
+
+on:
+  push:
+    paths:
+      - 'tools/apply_paypal_wallet.py'
+      - 'src/components/features/WalletCard.tsx'
+      - 'src/components/features/PayPalWalletPanel.tsx'
+      - 'src/pages/ProfilePage.tsx'
+      - 'src/components/features/WalletDashboard.tsx'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paypal-wallet-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  persist-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install
+        run: npm install --legacy-peer-deps --no-audit --no-fund --package-lock=false
+      - name: Normalize generated install files
+        run: |
+          rm -f package-lock.json
+          git restore --worktree -- node_modules/_preload-fix/package.json 2>/dev/null || true
+      - name: Apply persistent PayPal wallet patch
+        run: python3 tools/apply_paypal_wallet.py
+      - name: Web build
+        run: npm run build
+      - name: Commit patched source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet -- src/pages/ProfilePage.tsx src/components/features/WalletDashboard.tsx; then
+            echo 'No source patch required.'
+            exit 0
+          fi
+          git add src/pages/ProfilePage.tsx src/components/features/WalletDashboard.tsx
+          git commit -m 'feat(wallet): mount PayPal wallet in profile and wallet dashboard'
+          git push

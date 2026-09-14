@@ -112,7 +112,6 @@ export function CreatePollDialog({ onClose, onPollCreated }: CreatePollDialogPro
                     <button
                       onClick={() => removeOption(index)}
                       className="p-2.5 hover:bg-red-100 dark:hover:bg-red-900/20 rounded-xl text-red-600 transition-colors"
-                      title="Remove option"
                     >
                       <Trash2 className="w-5 h-5" />
                     </button>

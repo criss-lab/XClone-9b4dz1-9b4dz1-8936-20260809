@@ -1,0 +1,6 @@
+-- Historical migration marker.
+-- Version 20260912130641 was already applied directly to production before its
+-- source was committed to this repository. Keep this immutable marker so the
+-- migration gate can reconcile production history without attempting to replay
+-- the already-applied DDL.
+-- The canonical production schema is authoritative for this version.

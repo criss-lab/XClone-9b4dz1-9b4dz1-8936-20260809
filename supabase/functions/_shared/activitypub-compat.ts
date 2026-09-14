@@ -1,0 +1,99 @@
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+
+type J = Record<string, unknown>;
+const text = (v: unknown) => typeof v === "string" ? v : "";
+const uri = (v: unknown) => typeof v === "string" ? v : v && typeof v === "object" ? text((v as J).id) : "";
+const obj = (v: unknown): J => v && typeof v === "object" ? v as J : {};
+const CTX = ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1", "https://w3id.org/fep/044f"];
+
+async function persistActor(db: SupabaseClient, actorUri: string, hint?: unknown) {
+  if (!actorUri.startsWith("https://")) return;
+  const a = obj(hint), u = new URL(actorUri), end = obj(a.endpoints);
+  const rich = await db.from("federation_remote_actors").upsert({ actor_url: actorUri, acct: text(a.preferredUsername) ? `${text(a.preferredUsername)}@${u.hostname}` : null, username: text(a.preferredUsername) || null, domain: u.hostname, inbox_url: uri(a.inbox) || null, shared_inbox_url: uri(end.sharedInbox) || null, actor: Object.keys(a).length ? a : null, fetched_at: new Date().toISOString(), updated_at: new Date().toISOString() }, { onConflict: "actor_url" });
+  if (rich.error && !/column|relation|does not exist/i.test(rich.error.message)) throw rich.error;
+  const existing = await db.from("federated_actors").select("id").eq("uri", actorUri).maybeSingle();
+  if (existing.error) throw existing.error;
+  const values = { uri: actorUri, preferred_username: text(a.preferredUsername) || null, display_name: text(a.name) || text(a.preferredUsername) || null, summary: text(a.summary) || null, avatar_url: uri(a.icon) || null, header_url: uri(a.image) || null, actor_type: text(a.type) || "Person", inbox_url: uri(a.inbox) || null, shared_inbox_url: uri(end.sharedInbox) || null, outbox_url: uri(a.outbox) || null, followers_url: uri(a.followers) || null, following_url: uri(a.following) || null, public_key_id: text(obj(a.publicKey).id) || null, public_key_pem: text(obj(a.publicKey).publicKeyPem) || null, raw_actor: Object.keys(a).length ? a : {}, fetched_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const r = existing.data ? await db.from("federated_actors").update(values).eq("id", existing.data.id) : await db.from("federated_actors").insert(values);
+  if (r.error) throw r.error;
+}
+
+async function persistObject(db: SupabaseClient, value: unknown, actorUri: string) {
+  const o = obj(value), id = uri(value);
+  if (!id.startsWith("https://")) return;
+  const r = await db.from("federated_objects").upsert({ uri: id, object_type: text(o.type) || "Object", actor_uri: actorUri, url: uri(o.url) || id, content: text(o.content) || null, summary: text(o.summary) || null, published_at: text(o.published) || null, updated_at: text(o.updated) || null, sensitive: Boolean(o.sensitive), in_reply_to_uri: uri(o.inReplyTo) || null, quote_uri: uri(o.quote) || null, language_code: text(o.language) || null, attachments: Array.isArray(o.attachment) ? o.attachment : [], tags: Array.isArray(o.tag) ? o.tag : [], raw_object: o }, { onConflict: "uri" });
+  if (r.error) throw r.error;
+}
+
+async function localUserForActor(db: SupabaseClient, actorUri: string) { const r = await db.from("federation_actors").select("user_id").eq("actor_url", actorUri).maybeSingle(); if (r.error) throw r.error; return text(r.data?.user_id) || null; }
+async function localUserForObject(db: SupabaseClient, objectUri: string) { const r = await db.from("federated_objects").select("actor_uri").eq("uri", objectUri).maybeSingle(); if (r.error) throw r.error; if (r.data?.actor_uri) return localUserForActor(db, text(r.data.actor_uri)); const m = objectUri.match(/\/users\/([^/]+)\/notes\/([^/?#]+)/); if (!m) return null; const a = await db.from("federation_actors").select("user_id").eq("username", decodeURIComponent(m[1])).maybeSingle(); if (a.error) throw a.error; return text(a.data?.user_id) || null; }
+async function relationship(db: SupabaseClient, userId: string, remote: string, kind: "following" | "follower" | "blocked" | "muted", state: "pending" | "accepted" | "rejected" | "active" | "removed") { const r = await db.from("federated_relationships").upsert({ local_user_id: userId, remote_actor_uri: remote, relationship: kind, state, updated_at: new Date().toISOString() }, { onConflict: "local_user_id,remote_actor_uri,relationship" }); if (r.error) throw r.error; }
+async function queue(activity: J, inbox: string, db: SupabaseClient) { const now = new Date().toISOString(); const a = await db.from("federated_activities").upsert({ uri: activity.id, activity_type: activity.type, actor_uri: activity.actor, object_uri: uri(activity.object) || null, target_uri: uri(activity.target) || null, raw_activity: activity, received_at: now, processed_at: now, processing_state: "processed", processing_attempts: 0 }, { onConflict: "uri" }).select("id").single(); if (a.error) throw a.error; const d = await db.from("federation_deliveries").upsert({ activity_id: a.data.id, target_inbox: inbox, instance_domain: new URL(inbox).hostname, status: "pending", attempt_count: 0, next_attempt_at: now, activity_payload: activity }, { onConflict: "activity_id,target_inbox" }); if (d.error) throw d.error; }
+async function remote(db: SupabaseClient, actorUri: string) { const r = await db.from("federation_remote_actors").select("inbox_url,shared_inbox_url").eq("actor_url", actorUri).maybeSingle(); if (r.error) throw r.error; return r.data; }
+async function notify(db: SupabaseClient, recipient: string, actor: string, kind: string, postId?: string, data: J = {}) { if (recipient === actor) return; const actorRow = await db.from("federated_actors").select("id").eq("uri", actor).maybeSingle(); if (actorRow.error) throw actorRow.error; if (!actorRow.data?.id) return; const r = await db.from("notifications").insert({ recipient_id: recipient, actor_id: actorRow.data.id, kind, post_id: postId || null, data }); if (r.error && !/column|relation|does not exist/i.test(r.error.message)) throw r.error; }
+
+async function recordInboundInteraction(db: SupabaseClient, activity: J, remoteActor: string, type: "like" | "repost") {
+  const objectUrl = uri(activity.object), localUserId = objectUrl ? await localUserForObject(db, objectUrl) : null;
+  if (!localUserId || !text(activity.id)) return;
+  const existing = await db.from("federation_remote_interactions").select("id").eq("activity_uri", text(activity.id)).maybeSingle();
+  if (existing.error) throw existing.error;
+  if (existing.data) return;
+  const r = await db.from("federation_remote_interactions").insert({ id: crypto.randomUUID(), local_user_id: localUserId, object_url: objectUrl, remote_actor_url: remoteActor, activity_uri: text(activity.id), interaction_type: type, target_inbox: "", status: "active", payload: activity, expires_at: new Date(Date.now() + 31536000000).toISOString() });
+  if (r.error) throw r.error;
+}
+
+async function handleFollow(db: SupabaseClient, activity: J, remoteActor: string) { const target = uri(activity.object), userId = target ? await localUserForActor(db, target) : null; if (!userId) return; await relationship(db, userId, remoteActor, "follower", "accepted"); await notify(db, userId, remoteActor, "follow"); const actor = await db.from("federation_actors").select("actor_url,manually_approves_followers").eq("user_id", userId).maybeSingle(); if (actor.error) throw actor.error; if (actor.data?.manually_approves_followers === true) return; const r = await remote(db, remoteActor), inbox = r?.shared_inbox_url || r?.inbox_url; if (!inbox) return; const accept = { "@context": CTX, id: `${actor.data.actor_url}/activities/${crypto.randomUUID()}`, type: "Accept", actor: actor.data.actor_url, object: activity, to: [remoteActor] }; await queue(accept, inbox, db); }
+
+async function handleResponse(db: SupabaseClient, activity: J, state: "accepted" | "rejected") {
+  const f = obj(activity.object), requestId = uri(activity.object), localActor = uri(f.actor), remoteActor = uri(f.object);
+  if (text(f.type) === "Follow" && localActor && remoteActor) { const uid = await localUserForActor(db, localActor); if (uid) { const exact = await db.from("federation_remote_interactions").select("id").eq("local_user_id", uid).eq("activity_uri", requestId).eq("interaction_type", "follow").maybeSingle(); if (exact.error) throw exact.error; if (exact.data) await relationship(db, uid, remoteActor, "following", state); } }
+  if (text(f.type) === "QuoteRequest" && requestId) { const q = await db.from("federation_remote_interactions").select("id,local_user_id,payload,remote_actor_url").eq("activity_uri", requestId).eq("interaction_type", "quote").maybeSingle(); if (q.error) throw q.error; if (q.data) { if (state === "rejected") { await db.from("federation_remote_interactions").update({ status: "rejected", updated_at: new Date().toISOString() }).eq("id", q.data.id); return; } const result = uri(activity.result); const payload = obj(q.data.payload), quote = obj(payload.quotePost); if (!result) return; quote.quoteAuthorization = result; const uid = text(q.data.local_user_id); await db.from("federation_remote_interactions").update({ status: "accepted", payload: { ...payload, quotePost: quote, quoteAuthorization: result }, updated_at: new Date().toISOString() }).eq("id", q.data.id); const local = await db.from("federation_actors").select("actor_url").eq("user_id", uid).maybeSingle(); if (local.error) throw local.error; if (local.data) { const update = { "@context": CTX, id: `${local.data.actor_url}/activities/${crypto.randomUUID()}`, type: "Update", actor: local.data.actor_url, object: quote }; const followers = await db.from("federated_relationships").select("remote_actor_uri").eq("local_user_id", uid).eq("relationship", "follower").in("state", ["accepted", "active"]); if (followers.error) throw followers.error; for (const row of followers.data || []) { const ra = await remote(db, text(row.remote_actor_uri)), inbox = ra?.shared_inbox_url || ra?.inbox_url; if (inbox) await queue(update, inbox, db); } } } }
+}
+
+async function handleUndo(db: SupabaseClient, activity: J, remoteActor: string) {
+  const f = obj(activity.object), type = text(f.type), originalId = text(f.id);
+  if (type === "Follow") { const target = uri(f.object), uid = target ? await localUserForActor(db, target) : null; if (uid) await relationship(db, uid, remoteActor, "follower", "removed"); return; }
+  if (type === "Block") { const target = uri(f.object), uid = target ? await localUserForActor(db, target) : null; if (uid) await relationship(db, uid, remoteActor, "blocked", "removed"); return; }
+  if (type === "Like" || type === "Announce") { if (!originalId) return; const r = await db.from("federation_remote_interactions").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("activity_uri", originalId).eq("remote_actor_url", remoteActor); if (r.error) throw r.error; }
+}
+async function handleBlock(db: SupabaseClient, activity: J, remoteActor: string) { const target = uri(activity.object), userId = target ? await localUserForActor(db, target) : null; if (!userId) return; await relationship(db, userId, remoteActor, "blocked", "active"); await notify(db, userId, remoteActor, "block"); }
+
+async function handleDelete(db: SupabaseClient, activity: J, remoteActor: string) {
+  const target = uri(activity.object) || text(activity.object); if (!target) return;
+  const q = await db.from("federation_remote_interactions").select("id").eq("interaction_type", "quote").contains("payload", JSON.stringify({ quoteAuthorization: target })).maybeSingle();
+  if (!q.error && q.data) { await db.from("federation_remote_interactions").update({ status: "revoked", updated_at: new Date().toISOString() }).eq("id", q.data.id); return; }
+  const r = await db.from("federated_objects").select("actor_uri,raw_object").eq("uri", target).maybeSingle(); if (r.error) throw r.error; if (!r.data || (text(r.data.actor_uri) && text(r.data.actor_uri) !== remoteActor)) return;
+  const raw = obj(r.data.raw_object); raw.deleted = true; raw.deletedAt = new Date().toISOString(); const u = await db.from("federated_objects").update({ raw_object: raw, updated_at: new Date().toISOString() }).eq("uri", target); if (u.error) throw u.error;
+}
+
+async function handleUpdate(db: SupabaseClient, activity: J, remoteActor: string) {
+  const value = activity.object, id = uri(value); if (!id) return;
+  const o = obj(value), owner = uri(o.attributedTo) || uri(o.actor) || text(o.attributedTo); if (owner && owner !== remoteActor) throw Error("Update actor does not own the updated object");
+  if (id === remoteActor && ["Person", "Application", "Service", "Organization"].includes(text(o.type))) { await persistActor(db, remoteActor, value); return; }
+  await persistObject(db, value, remoteActor);
+}
+
+async function notifyActivity(db: SupabaseClient, type: string, activity: J, remoteActor: string) {
+  if (type === "Like" || type === "Announce") { await recordInboundInteraction(db, activity, remoteActor, type === "Like" ? "like" : "repost"); const uid = await localUserForObject(db, uri(activity.object)); if (uid) await notify(db, uid, remoteActor, type === "Like" ? "like" : "repost", uri(activity.object)); }
+  if (type === "Create") { const o = obj(activity.object), reply = uri(o.inReplyTo); if (reply) { const uid = await localUserForObject(db, reply); if (uid) await notify(db, uid, remoteActor, "reply", reply); } for (const tag of Array.isArray(o.tag) ? o.tag : []) if (text(obj(tag).type) === "Mention") { const uid = await localUserForActor(db, uri(obj(tag).href)); if (uid) await notify(db, uid, remoteActor, "mention", undefined, { activityId: text(activity.id) }); } }
+  if (type === "QuoteRequest") { const uid = await localUserForObject(db, uri(activity.object)); if (uid) await notify(db, uid, remoteActor, "quote_request", undefined, { activityId: text(activity.id) }); }
+}
+
+export async function processActivityCompat(db: SupabaseClient, activity: J, actorUri: string) {
+  const type = text(activity.type); if (!type) throw Error("ActivityPub activity type is required");
+  const embedded = uri(activity.actor); if (embedded && embedded !== actorUri) throw Error("Activity actor verification mismatch");
+  await persistActor(db, embedded || actorUri, embedded ? activity.actor : undefined);
+  if (["Create", "Announce"].includes(type) && uri(activity.object)) await persistObject(db, activity.object, actorUri);
+  switch (type) {
+    case "Follow": await handleFollow(db, activity, actorUri); break;
+    case "Block": await handleBlock(db, activity, actorUri); break;
+    case "Undo": await handleUndo(db, activity, actorUri); break;
+    case "Accept": await handleResponse(db, activity, "accepted"); break;
+    case "Reject": await handleResponse(db, activity, "rejected"); break;
+    case "Delete": await handleDelete(db, activity, actorUri); break;
+    case "Move": { const old = uri(activity.object), target = text(activity.target); if (old && target && target.startsWith("https://")) { const r = await db.from("federated_relationships").select("local_user_id").eq("remote_actor_uri", old).eq("relationship", "following").in("state", ["pending", "accepted", "active"]); if (r.error) throw r.error; for (const x of r.data || []) { await relationship(db, text(x.local_user_id), old, "following", "removed"); await relationship(db, text(x.local_user_id), target, "following", "accepted"); } } break; }
+    case "Like": case "Announce": case "Create": case "QuoteRequest": await notifyActivity(db, type, activity, actorUri); break;
+    case "Update": await handleUpdate(db, activity, actorUri); break;
+    default: break;
+  }
+}

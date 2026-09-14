@@ -1,0 +1,34 @@
+name: Testagram Federation WebFinger Diagnostic
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/federation-webfinger-diagnostic.yml'
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prove actor WebFinger mapping
+        env:
+          SUPABASE_URL: https://zcjtvykwwplnzyyslnop.supabase.co
+          GATEWAY_URL: https://zcjtvykwwplnzyyslnop.supabase.co/functions/v1/gateway-relay
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_ID}-${RANDOM}"; EMAIL="fedi-webfinger-${RUN}@example.invalid"; PASS="TgWeb-${RUN}-X9!"; USER_ID=""
+          trap 'test -z "$USER_ID" || curl -sS -o /dev/null -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID" -H "apikey: $SUPABASE_SECRET_KEY" || true' EXIT
+          curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/admin/users" -H "apikey: $SUPABASE_SECRET_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p,email_confirm:true}')" >/tmp/user.json
+          USER_ID="$(jq -r '.id' /tmp/user.json)"
+          TOKEN="$(curl -sS --fail-with-body -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$EMAIL" --arg p "$PASS" '{email:$e,password:$p}')" | jq -r '.access_token')"
+          curl -sS -o /tmp/follow.json -w '%{http_code}' --max-time 60 -X POST "$GATEWAY_URL" -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"path":"/follow","body":{"target":"@Mastodon@mastodon.social"}}' >/tmp/status
+          ACTOR="$(curl -sS --fail-with-body "$SUPABASE_URL/rest/v1/federation_actors?user_id=eq.$USER_ID&select=actor_url" -H "apikey: $SUPABASE_SECRET_KEY" | jq -r '.[0].actor_url')"
+          USERNAME="$(basename "$ACTOR")"
+          curl -sS --fail-with-body "https://testagram-api.nahashonnyaga794.workers.dev/.well-known/webfinger?resource=acct:${USERNAME}@testagram-api.nahashonnyaga794.workers.dev" >/tmp/webfinger.json
+          jq -e --arg actor "$ACTOR" '.subject and (.links | any(.rel == "self" and .href == $actor and (.type | contains("activity+json"))))' --arg actor "$ACTOR" /tmp/webfinger.json
+          curl -sS --fail-with-body -H 'Accept: application/activity+json' "$ACTOR" >/tmp/actor.json
+          jq -e --arg actor "$ACTOR" --arg key "${ACTOR}#main-key" '.id == $actor and .publicKey.id == $key and .publicKey.owner == .id' /tmp/actor.json
+          cat /tmp/status; cat /tmp/follow.json

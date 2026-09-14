@@ -1,320 +1,52 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { TopBar } from '@/components/layout/TopBar';
-import { PostCard } from '@/components/features/PostCard';
-import { Button } from '@/components/ui/button';
-import { supabase } from '@/lib/supabase';
-import { Post } from '@/types/app-types';
-import { useAuth } from '@/hooks/useAuth';
-import {
-  Loader2, TrendingUp, Check, Users, Radio, Headphones,
-  BadgeCheck, ChevronRight, Hash, Flame,
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Hash, Loader2, TrendingUp, Users, Check, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/hooks/useAuth';
+import { Button } from '@/components/ui/button';
+import { PostCard } from '@/components/features/PostCard';
+import { InteractiveFederatedPostCard } from '@/components/features/InteractiveFederatedPostCard';
+import { unifiedHashtagFeed, followHashtag, unfollowHashtag, isFollowingHashtag } from '@/api/social';
 import { formatNumber } from '@/lib/utils';
 import { useSEO, buildHashtagLD, buildOgImageUrl } from '@/hooks/useSEO';
 
-import { PageAdBanner } from '@/components/features/AdSenseAd';
-function HashtagAdBanner() { return <PageAdBanner />; }
+function cleanTag(value = '') { return value.replace(/^#/, '').trim().toLowerCase(); }
 
 export default function HashtagPage() {
-  const { tag } = useParams();
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [hashtag, setHashtag] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [sortMode, setSortMode] = useState<'recent' | 'top'>('recent');
-  const [topPosts, setTopPosts] = useState<Post[]>([]);
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [followLoading, setFollowLoading] = useState(false);
-  const [followerCount, setFollowerCount] = useState(0);
+  const { tag: routeTag } = useParams<{ tag: string }>();
+  const tag = useMemo(() => cleanTag(routeTag), [routeTag]);
+  const { user } = useAuth(); const navigate = useNavigate();
+  const [hashtag, setHashtag] = useState<any>(null); const [items, setItems] = useState<any[]>([]); const [loading, setLoading] = useState(true);
+  const [following, setFollowing] = useState(false); const [followBusy, setFollowBusy] = useState(false); const [mode, setMode] = useState<'recent' | 'top'>('recent');
 
-  // ── Related suggestions ────────────────────────────────────────────────────
-  const [relatedSpaces, setRelatedSpaces] = useState<any[]>([]);
-  const [relatedCommunities, setRelatedCommunities] = useState<any[]>([]);
+  useSEO({ title:`#${tag} — Testagram`, description:`Browse native and federated posts using #${tag}. Follow the hashtag to keep it in your home feed.`, image:buildOgImageUrl({tag}), url:`/hashtag/${tag}`, type:'website', keywords:`${tag}, hashtag, Testagram, Fediverse`, structuredData:buildHashtagLD(tag,hashtag?.usage_count ?? items.length) });
 
-  useSEO({
-    title: hashtag
-      ? `#${tag} — ${formatNumber(hashtag.usage_count ?? posts.length)} posts on Testagram`
-      : tag ? `#${tag} on Testagram` : 'Hashtag',
-    description: hashtag
-      ? `Browse ${hashtag.usage_count?.toLocaleString() ?? '0'} posts tagged with #${tag} on Testagram. Join the conversation and follow this hashtag to see it in your feed.`
-      : `Posts tagged with #${tag} on Testagram.`,
-    image: tag ? buildOgImageUrl({ tag }) : undefined,
-    url: `/hashtag/${tag}`,
-    type: 'website',
-    keywords: `${tag}, #${tag}, testagram, trending, social media, hashtag, posts`,
-    structuredData: hashtag ? buildHashtagLD(tag ?? '', hashtag.usage_count ?? 0) : undefined,
-  });
-
-  useEffect(() => {
-    if (tag) {
-      fetchHashtagAndPosts();
-      if (user) checkFollowStatus();
-      fetchRelatedSuggestions(tag);
-    }
-  }, [tag, user]);
-
-  const fetchRelatedSuggestions = useCallback(async (tagName: string) => {
-    // Related live spaces: search title for the hashtag keyword
-    const { data: spaces } = await supabase
-      .from('spaces')
-      .select('id, title, listener_count, category, host:user_profiles!spaces_host_id_fkey(username, avatar_url, verified)')
-      .eq('is_live', true)
-      .ilike('title', `%${tagName}%`)
-      .limit(3);
-
-    if (spaces && spaces.length > 0) {
-      setRelatedSpaces(spaces);
-    } else {
-      // Fallback: popular live spaces
-      const { data: popular } = await supabase
-        .from('spaces')
-        .select('id, title, listener_count, category, host:user_profiles!spaces_host_id_fkey(username, avatar_url, verified)')
-        .eq('is_live', true)
-        .order('listener_count', { ascending: false })
-        .limit(3);
-      setRelatedSpaces(popular ?? []);
-    }
-
-    // Related communities: search name for the hashtag keyword
-    const { data: comms } = await supabase
-      .from('communities')
-      .select('id, name, display_name, description, icon_url, member_count')
-      .or(`name.ilike.%${tagName}%,display_name.ilike.%${tagName}%,description.ilike.%${tagName}%`)
-      .order('member_count', { ascending: false })
-      .limit(3);
-
-    if (comms && comms.length > 0) {
-      setRelatedCommunities(comms);
-    } else {
-      // Fallback: top communities
-      const { data: popular } = await supabase
-        .from('communities')
-        .select('id, name, display_name, description, icon_url, member_count')
-        .order('member_count', { ascending: false })
-        .limit(3);
-      setRelatedCommunities(popular ?? []);
-    }
-  }, []);
-
-  const fetchTopPosts = async (hashtagId: string) => {
-    const { data } = await supabase
-      .from('post_hashtags')
-      .select('post_id, posts(*, user_profiles(*))')
-      .eq('hashtag_id', hashtagId);
-    if (!data) return;
-    const allPosts = data.map((item: any) => item.posts).filter(Boolean);
-    const sorted = [...allPosts].sort((a, b) => {
-      const scoreA = (a.likes_count || 0) + (a.reposts_count || 0) + (a.replies_count || 0);
-      const scoreB = (b.likes_count || 0) + (b.reposts_count || 0) + (b.replies_count || 0);
-      return scoreB - scoreA;
-    });
-    setTopPosts(sorted);
-  };
-
-  const fetchHashtagAndPosts = async () => {
+  const load = useCallback(async () => {
+    if (!tag) return; setLoading(true);
     try {
-      const { data: hashtagData, error: hashtagError } = await supabase
-        .from('hashtags')
-        .select('*')
-        .eq('tag', tag?.toLowerCase())
-        .single();
-      if (hashtagError) throw hashtagError;
-      setHashtag(hashtagData);
+      const [tagResult, feed] = await Promise.all([supabase.from('hashtags').select('*').eq('tag',tag).maybeSingle(), unifiedHashtagFeed(tag,80)]);
+      if (tagResult.error) throw tagResult.error;
+      const nativeIds = feed.filter((x:any)=>x?.kind==='post' && x?.id).map((x:any)=>x.id);
+      let nativeById = new Map<string,any>();
+      if (nativeIds.length) {
+        const {data,error}=await supabase.from('posts').select('*').in('id',nativeIds).is('deleted_at',null);
+        if(error) throw error; nativeById=new Map((data??[]).map((p:any)=>[p.id,p]));
+      }
+      setHashtag(tagResult.data);
+      setItems(feed.map((x:any)=>x?.kind==='post' ? (nativeById.get(x.id) ?? x) : x));
+      if(user && tagResult.data?.id) setFollowing(await isFollowingHashtag(tagResult.data.id)); else setFollowing(false);
+    } catch(error:any){ console.error('[hashtag]',error); toast.error(error?.message||'Unable to load hashtag'); setItems([]); }
+    finally{ setLoading(false); }
+  },[tag,user?.id]);
+  useEffect(()=>{void load();},[load]);
 
-      const { count: fCount } = await supabase.from('hashtag_follows').select('*', { count: 'exact', head: true }).eq('hashtag_id', hashtagData.id);
-      setFollowerCount(fCount ?? 0);
-
-      const { data: postsData, error: postsError } = await supabase
-        .from('post_hashtags')
-        .select('post_id, posts(*, user_profiles(*))')
-        .eq('hashtag_id', hashtagData.id)
-        .order('created_at', { ascending: false });
-      if (postsError) throw postsError;
-      const formattedPosts = (postsData || []).map((item: any) => item.posts).filter(Boolean);
-      setPosts(formattedPosts);
-      fetchTopPosts(hashtagData.id);
-    } catch (error) {
-      console.error('Error fetching hashtag data:', error);
-      toast.error('Failed to load hashtag');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const checkFollowStatus = async () => {
-    if (!user || !hashtag) return;
-    const { data } = await supabase
-      .from('hashtag_follows').select('id')
-      .eq('user_id', user.id).eq('hashtag_id', hashtag.id).maybeSingle();
-    setIsFollowing(!!data);
-  };
-
-  const handleFollow = async () => {
-    if (!user) { navigate('/auth'); return; }
-    if (!hashtag) return;
-    setFollowLoading(true);
-    if (isFollowing) {
-      await supabase.from('hashtag_follows').delete().eq('user_id', user.id).eq('hashtag_id', hashtag.id);
-      setIsFollowing(false);
-      setFollowerCount(c => Math.max(0, c - 1));
-      toast.success(`Unfollowed #${tag}`);
-    } else {
-      await supabase.from('hashtag_follows').insert({ user_id: user.id, hashtag_id: hashtag.id });
-      setIsFollowing(true);
-      setFollowerCount(c => c + 1);
-      toast.success(`Following #${tag} — posts will appear in your feed`);
-    }
-    setFollowLoading(false);
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (!hashtag) {
-    return (
-      <div className="min-h-screen bg-background">
-        <TopBar title={`#${tag}`} showBack />
-        <HashtagAdBanner />
-        <div className="text-center py-12 text-muted-foreground"><p>Hashtag not found</p></div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <TopBar title={`#${tag}`} showBack />
-      <HashtagAdBanner />
-
-      {/* Hashtag Header */}
-      <div className="border-b border-border p-6 bg-gradient-to-br from-primary/10 to-primary/5">
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <div className="flex items-center space-x-2 mb-2">
-              <TrendingUp className="w-6 h-6 text-primary" />
-              <h1 className="text-3xl font-bold">#{tag}</h1>
-            </div>
-            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-              <span><strong className="text-foreground">{formatNumber(hashtag.usage_count)}</strong> posts</span>
-              <span className="flex items-center gap-1">
-                <Users className="w-3.5 h-3.5" />
-                <strong className="text-foreground">{formatNumber(followerCount)}</strong> followers
-              </span>
-            </div>
-          </div>
-          {user && (
-            <Button onClick={handleFollow} variant={isFollowing ? 'outline' : 'default'} className="rounded-full px-6" disabled={followLoading}>
-              {followLoading
-                ? <Loader2 className="w-4 h-4 animate-spin" />
-                : isFollowing
-                  ? <><Check className="w-4 h-4 mr-2" />Following</>
-                  : 'Follow'}
-            </Button>
-          )}
-        </div>
-
-        {isFollowing && (
-          <div className="mt-4 p-3 bg-primary/10 border border-primary/20 rounded-lg">
-            <p className="text-sm text-foreground">✓ You're following this hashtag. Posts with #{tag} will appear in your feed.</p>
-          </div>
-        )}
-
-        {/* ── Live Spaces related to this hashtag ── */}
-        {relatedSpaces.length > 0 && (
-          <div className="mt-5 pt-4 border-t border-border">
-            <div className="flex items-center gap-2 mb-2.5">
-              <Radio className="w-3.5 h-3.5 text-red-500" />
-              <span className="text-xs font-bold text-red-500">Live Spaces</span>
-              <span className="text-[10px] text-muted-foreground">discussing #{tag}</span>
-              <button onClick={() => navigate('/spaces')} className="ml-auto flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground">
-                All <ChevronRight className="w-3 h-3" />
-              </button>
-            </div>
-            <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
-              {relatedSpaces.map(space => (
-                <button key={space.id} onClick={() => navigate('/spaces')}
-                  className="flex items-center gap-2 px-3 py-2 bg-red-500/5 border border-red-500/20 rounded-xl hover:bg-red-500/10 transition-colors shrink-0 min-w-0 max-w-[200px]">
-                  <div className="w-8 h-8 rounded-full overflow-hidden bg-muted shrink-0">
-                    {space.host?.avatar_url
-                      ? <img src={space.host.avatar_url} className="w-full h-full object-cover" alt="" />
-                      : <div className="w-full h-full flex items-center justify-center text-[10px] font-bold">{space.host?.username?.[0]?.toUpperCase()}</div>}
-                  </div>
-                  <div className="min-w-0 text-left">
-                    <p className="text-xs font-bold line-clamp-1 leading-tight">{space.title}</p>
-                    <div className="flex items-center gap-1 text-[10px] text-red-500 font-semibold">
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
-                      {formatNumber(space.listener_count ?? 0)} live
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ── Related Communities ── */}
-        {relatedCommunities.length > 0 && (
-          <div className="mt-4 pt-3 border-t border-border">
-            <div className="flex items-center gap-2 mb-2.5">
-              <Hash className="w-3.5 h-3.5 text-primary" />
-              <span className="text-xs font-bold text-primary">Communities</span>
-              <span className="text-[10px] text-muted-foreground">about #{tag}</span>
-              <button onClick={() => navigate('/communities')} className="ml-auto flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground">
-                All <ChevronRight className="w-3 h-3" />
-              </button>
-            </div>
-            <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
-              {relatedCommunities.map(comm => (
-                <button key={comm.id} onClick={() => navigate(`/c/${comm.name}`)}
-                  className="flex items-center gap-2.5 px-3 py-2 bg-primary/5 border border-primary/20 rounded-xl hover:bg-primary/10 transition-colors shrink-0 min-w-0 max-w-[200px]">
-                  <div className="w-8 h-8 rounded-lg overflow-hidden bg-primary/10 shrink-0 flex items-center justify-center">
-                    {comm.icon_url
-                      ? <img src={comm.icon_url} className="w-full h-full object-cover" alt="" />
-                      : <span className="text-sm font-bold text-primary">{comm.display_name?.[0]}</span>}
-                  </div>
-                  <div className="min-w-0 text-left">
-                    <p className="text-xs font-bold line-clamp-1 leading-tight">{comm.display_name}</p>
-                    <p className="text-[10px] text-muted-foreground">{formatNumber(comm.member_count ?? 0)} members</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Sort tabs */}
-      <div className="border-b border-border flex">
-        <button onClick={() => setSortMode('recent')}
-          className={`flex-1 py-3 text-sm font-semibold border-b-2 transition-colors ${sortMode === 'recent' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/40'}`}>
-          Recent
-        </button>
-        <button onClick={() => setSortMode('top')}
-          className={`flex-1 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center justify-center gap-1.5 ${sortMode === 'top' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/40'}`}>
-          <TrendingUp className="w-4 h-4" /> Top Posts
-        </button>
-      </div>
-
-      {/* Posts */}
-      <div>
-        {(sortMode === 'recent' ? posts : topPosts).length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">
-            <Flame className="w-12 h-12 mx-auto mb-3 opacity-20" />
-            <p>No posts found with this hashtag</p>
-          </div>
-        ) : (
-          (sortMode === 'recent' ? posts : topPosts).map(post => (
-            <PostCard key={post.id} post={post} onUpdate={fetchHashtagAndPosts} />
-          ))
-        )}
-      </div>
-    </div>
-  );
+  const toggleFollow=async()=>{ if(!user){navigate('/auth');return;} if(!hashtag?.id){toast.error('This hashtag is not indexed yet');return;} setFollowBusy(true); try{ if(following){await unfollowHashtag(hashtag.id);setFollowing(false);toast.success(`Unfollowed #${tag}`);}else{await followHashtag(hashtag.id);setFollowing(true);toast.success(`Following #${tag}`);} }catch(error:any){toast.error(error?.message||'Hashtag follow failed');}finally{setFollowBusy(false);} };
+  const sorted=useMemo(()=>mode==='recent'?items:[...items].sort((a,b)=>{const score=(x:any)=>Number(x.likes_count??x.like_count??0)+Number(x.boosts_count??x.reposts_count??0)+Number(x.replies_count??x.reply_count??0);return score(b)-score(a)||Date.parse(String(b.created_at??b.published_at??0))-Date.parse(String(a.created_at??a.published_at??0));}),[items,mode]);
+  if(loading)return <div className="min-h-screen flex items-center justify-center"><Loader2 className="w-7 h-7 animate-spin text-primary"/></div>;
+  return <div className="min-h-screen bg-background pb-20"><header className="sticky top-0 z-30 h-14 border-b border-border bg-background/90 backdrop-blur flex items-center px-3"><button onClick={()=>navigate(-1)} className="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="Back"><ArrowLeft className="w-5 h-5"/></button><div className="ml-2 flex-1 font-bold truncate">#{tag}</div></header>
+    <section className="p-5 border-b border-border bg-gradient-to-br from-primary/10 to-background"><div className="flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><Hash className="w-6 h-6 text-primary"/><h1 className="text-3xl font-black">#{tag}</h1></div><div className="mt-2 flex gap-4 text-sm text-muted-foreground"><span><strong className="text-foreground">{formatNumber(hashtag?.usage_count??items.length)}</strong> posts</span>{hashtag&&<span className="inline-flex items-center gap-1"><Users className="w-4 h-4"/>{formatNumber(hashtag.follower_count??0)} followers</span>}</div></div>{user&&hashtag&&<Button onClick={toggleFollow} disabled={followBusy} variant={following?'outline':'default'} className="rounded-full shrink-0">{followBusy?<Loader2 className="w-4 h-4 animate-spin"/>:following?<><Check className="w-4 h-4 mr-1"/>Following</>:'Follow'}</Button>}</div>{following&&<p className="mt-4 text-sm text-primary">Posts from this hashtag are eligible for your home feed.</p>}</section>
+    <div className="border-b border-border flex"><button onClick={()=>setMode('recent')} className={`flex-1 py-3 text-sm font-semibold border-b-2 ${mode==='recent'?'border-primary':'border-transparent text-muted-foreground'}`}>Recent</button><button onClick={()=>setMode('top')} className={`flex-1 py-3 text-sm font-semibold border-b-2 inline-flex justify-center gap-1 ${mode==='top'?'border-primary':'border-transparent text-muted-foreground'}`}><TrendingUp className="w-4 h-4"/>Top</button></div>
+    {sorted.length===0?<div className="py-16 text-center text-muted-foreground"><Hash className="w-10 h-10 mx-auto mb-3 opacity-30"/><p>No posts found for #{tag} yet.</p></div>:<div>{sorted.map((item:any,index:number)=>{const native=item?.kind==='post'||item?.source==='testagram';if(native)return <PostCard key={`native-${item.id}-${index}`} post={item} onUpdate={load}/>;const remote=item?.uri||item?.url||item?.id;return <InteractiveFederatedPostCard key={`remote-${remote}-${index}`} post={item}/>;})}</div>}
+  </div>;
 }

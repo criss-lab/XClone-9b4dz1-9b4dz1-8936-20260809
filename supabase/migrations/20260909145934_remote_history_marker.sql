@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909145934_enable_federation_scheduler is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

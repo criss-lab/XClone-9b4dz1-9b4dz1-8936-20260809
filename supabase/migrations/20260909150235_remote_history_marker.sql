@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909150235_harden_federation_worker_permissions is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

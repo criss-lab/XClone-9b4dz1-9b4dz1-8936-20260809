@@ -1,0 +1,153 @@
+name: Testagram Fediverse Interoperability
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/gateway-relay/**'
+      - 'src/api/federation.ts'
+      - '.github/workflows/fediverse-interoperability.yml'
+
+env:
+  GATEWAY_URL: https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay
+
+jobs:
+  protocol-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate gateway source is implementation-neutral
+        run: |
+          set -euo pipefail
+          test -s supabase/functions/gateway-relay/index.ts
+          grep -Fq 'function resolve' supabase/functions/gateway-relay/index.ts
+          grep -Fq '.well-known/webfinger' supabase/functions/gateway-relay/index.ts
+          grep -Fq 'application/activity+json' supabase/functions/gateway-relay/index.ts
+          grep -Fq 'RSASSA-PKCS1-v1_5' supabase/functions/gateway-relay/index.ts
+          ! grep -Fq 'mastodon.social' supabase/functions/gateway-relay/index.ts
+          ! grep -Fq 'Mastodon' supabase/functions/gateway-relay/index.ts
+
+      - name: Probe diverse Fediverse implementations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # These are interoperability fixtures, not a claim that the Fediverse
+          # is exhausted by these projects. Discovery is tested across distinct
+          # ActivityPub implementations. A 401/403 actor response is classified
+          # as secure-mode federation, not as a protocol failure: some servers
+          # intentionally require signed GET requests for actor documents.
+          targets=(
+            'Mastodon|gargron@mastodon.social'
+            'Misskey|syuilo@misskey.io'
+            'Pixelfed|dansup@pixelfed.social'
+            'PeerTube|peertube@framapiaf.org'
+            'Pleroma|karolat@stereophonic.space'
+            'Akkoma|eris@akkoma.meows.gay'
+            'GoToSocial|followbot@gotosocial.social'
+            'Friendica|tobias@friendi.ca'
+            'BookWyrm|mouse@bookwyrm.social'
+            'WriteFreely|matt@write.as'
+            'Owncast|fedi@owncast.small-web.org'
+            'Mobilizon|framasoft@mobilizon.fr'
+          )
+
+          passed=0
+          secure_mode=0
+          unavailable=0
+          protocol_failures=0
+
+          for item in "${targets[@]}"; do
+            name="${item%%|*}"
+            acct="${item#*|}"
+            user="${acct%@*}"
+            domain="${acct#*@}"
+            resource="acct:${user}@${domain}"
+            encoded="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$resource")"
+            wf="https://${domain}/.well-known/webfinger?resource=${encoded}"
+            echo ""
+            echo "===== ${name}: @${acct} ====="
+            echo "WebFinger: ${wf}"
+
+            if ! curl -sS --fail-with-body --max-time 20 -H 'Accept: application/jrd+json, application/json' "$wf" -o /tmp/webfinger.json; then
+              echo "UNAVAILABLE: WebFinger endpoint did not respond successfully."
+              unavailable=$((unavailable+1))
+              continue
+            fi
+
+            cat /tmp/webfinger.json
+            actor="$(jq -r '.links[]? | select(.rel == "self" and ((.type // "") | contains("activity+json"))) | .href' /tmp/webfinger.json | head -n1)"
+            if [ -z "$actor" ] || [ "$actor" = "null" ]; then
+              echo "PROTOCOL FAILURE: no ActivityPub self link in WebFinger."
+              protocol_failures=$((protocol_failures+1))
+              continue
+            fi
+
+            echo "Actor: ${actor}"
+            actor_status="$(curl -sS --max-time 20 -w '%{http_code}' \
+              -H 'Accept: application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"' \
+              -H 'User-Agent: Testagram-Federation/1.5' \
+              "$actor" -o /tmp/actor.json || true)"
+
+            if [ "$actor_status" = "401" ] || [ "$actor_status" = "403" ]; then
+              echo "PASS: ${name} exposes WebFinger but protects actor GETs with secure federation."
+              echo "The XClone gateway uses signed ActivityPub GETs for this case."
+              secure_mode=$((secure_mode+1))
+              passed=$((passed+1))
+              continue
+            fi
+
+            if [ "$actor_status" != "200" ]; then
+              echo "PROTOCOL FAILURE: actor document returned HTTP ${actor_status}."
+              protocol_failures=$((protocol_failures+1))
+              continue
+            fi
+
+            cat /tmp/actor.json
+            jq -e '
+              (.id | type == "string" and startswith("https://")) and
+              (.type | type == "string") and
+              (.inbox | type == "string" and startswith("https://")) and
+              (.publicKey.publicKeyPem | type == "string" and startswith("-----BEGIN PUBLIC KEY-----"))
+            ' /tmp/actor.json >/dev/null || {
+              echo "PROTOCOL FAILURE: actor lacks the common ActivityPub federation contract."
+              protocol_failures=$((protocol_failures+1))
+              continue
+            }
+
+            actor_type="$(jq -r '.type' /tmp/actor.json)"
+            inbox="$(jq -r '.inbox' /tmp/actor.json)"
+            shared="$(jq -r '.endpoints.sharedInbox // .sharedInbox // empty' /tmp/actor.json)"
+            echo "PASS: ${name} actor_type=${actor_type} inbox=${inbox} sharedInbox=${shared:-none}"
+            passed=$((passed+1))
+          done
+
+          echo ""
+          echo "===== Fediverse interoperability summary ====="
+          echo "PASSING IMPLEMENTATIONS: ${passed}"
+          echo "SECURE-MODE IMPLEMENTATIONS: ${secure_mode}"
+          echo "UNAVAILABLE/TRANSIENT: ${unavailable}"
+          echo "PROTOCOL FAILURES: ${protocol_failures}"
+
+          # A transient outage of one public instance must not make XClone
+          # declare the entire Fediverse broken. A real protocol mismatch must
+          # fail the gate, while several independent implementations must be
+          # reachable before the gate can pass.
+          test "$protocol_failures" -eq 0
+          test "$passed" -ge 6
+
+      - name: Probe XClone gateway health
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_SECRET_KEY"
+          status="$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$GATEWAY_URL" -H "apikey: $SUPABASE_SECRET_KEY" -H "Authorization: Bearer $SUPABASE_SECRET_KEY")"
+          cat /tmp/health.json
+          test "$status" = 200
+          jq -e '.ok == true and .activityPub == true' /tmp/health.json

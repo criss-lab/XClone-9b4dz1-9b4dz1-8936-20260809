@@ -1,0 +1,155 @@
+name: Testagram Supabase Production Migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: 'Immutable release commit to migrate and verify'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_PROJECT_REF: aepbqfrmheihfsauzcby
+  SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+  SUPABASE_POOLER_HOST: aws-0-eu-central-1.pooler.supabase.com
+  RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
+
+jobs:
+  migrate-production:
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: testagram-supabase-production-migrations-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Verify migration release identity
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$RELEASE_SHA"
+          echo "Migration release commit=$actual"
+
+      - name: Install Supabase CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'User-Agent': 'Testagram-CI',
+          }
+          api = 'https://api.github.com/repos/supabase/cli/releases/latest'
+          request = urllib.request.Request(api, headers=headers)
+          with urllib.request.urlopen(request) as response:
+              release = json.load(response)
+          assets = release.get('assets', [])
+          asset = next((item for item in assets if item.get('name') == 'supabase_linux_amd64.tar.gz'), None)
+          if asset is None:
+              names = ', '.join(item.get('name', '') for item in assets)
+              raise SystemExit(f'Could not find Supabase Linux amd64 asset in {release.get("tag_name")}: {names}')
+          download = urllib.request.Request(asset['browser_download_url'], headers=headers)
+          with urllib.request.urlopen(download) as response, open('/tmp/supabase.tar.gz', 'wb') as output:
+              output.write(response.read())
+          PY
+          tar -xzf /tmp/supabase.tar.gz -C /tmp
+          test -x /tmp/supabase
+          install -m 0755 /tmp/supabase /usr/local/bin/supabase
+          supabase --version
+
+      - name: Validate migration credentials
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_DB_PASSWORD" || { echo 'Missing SUPABASE_DB_PASSWORD.'; exit 1; }
+          python3 - <<'PY'
+          import os
+          from urllib.parse import quote
+          password = os.environ['SUPABASE_DB_PASSWORD']
+          print('Supabase database password is present.')
+          print('Password requires RFC3986 encoding:', quote(password, safe='') != password)
+          PY
+
+      - name: Build production session-pooler database URL
+        run: |
+          set -euo pipefail
+          encoded_password="$(python3 -c 'import os; from urllib.parse import quote; print(quote(os.environ["SUPABASE_DB_PASSWORD"], safe=""))')"
+          echo "SUPABASE_DB_URL=postgresql://postgres.${SUPABASE_PROJECT_REF}:${encoded_password}@${SUPABASE_POOLER_HOST}:5432/postgres" >> "$GITHUB_ENV"
+          echo 'Supabase session-pooler database URL prepared without exposing the password.'
+
+      - name: Verify production database connectivity
+        run: |
+          set -euo pipefail
+          supabase migration list --db-url "$SUPABASE_DB_URL"
+
+      - name: Verify migration workspace is clean
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain -- supabase/migrations)"
+          echo 'Checked-out migration files are the pending source of truth; remote synchronization will not overwrite them.'
+
+      - name: Reject duplicate migration version sources
+        run: |
+          set -euo pipefail
+          versions="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sed -E 's/^([0-9]{8,14})_.*/\1/' | sort)"
+          duplicates="$(printf '%s\n' "$versions" | uniq -d)"
+          if [ -n "$duplicates" ]; then
+            echo 'Duplicate Supabase migration version prefixes detected. Each version must have exactly one local source file.'
+            while IFS= read -r version; do
+              [ -n "$version" ] || continue
+              echo "Version $version:"
+              find supabase/migrations -maxdepth 1 -type f -name "${version}_*.sql" -print | sort
+            done <<< "$duplicates"
+            exit 1
+          fi
+          echo 'Migration version prefixes are unique.'
+
+      - name: Reconcile stale remote-only migration history
+        run: |
+          set -euo pipefail
+          history="$(supabase migration list --db-url "$SUPABASE_DB_URL")"
+          local_versions="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sed -nE 's/^([0-9]{8,14})_.*/\1/p' | sort -n)"
+          latest_local="$(printf '%s\n' "$local_versions" | tail -n 1)"
+          test -n "$latest_local" || { echo 'No local Supabase migrations found.'; exit 1; }
+          remote_versions="$(printf '%s\n' "$history" | sed -nE 's/.*`([0-9]{8,14})`[[:space:]]*\|.*/\1/p' | sort -nu)"
+          remote_only=""
+          while IFS= read -r version; do
+            [ -n "$version" ] || continue
+            if find supabase/migrations -maxdepth 1 -type f -name "${version}_*.sql" -print -quit | grep -q .; then continue; fi
+            if [ "$version" -gt "$latest_local" ]; then
+              remote_only="${remote_only}${remote_only:+$'\n'}$version"
+              continue
+            fi
+            echo "Stale remote-only migration $version detected; repairing history as reverted."
+            supabase migration repair "$version" --status reverted --db-url "$SUPABASE_DB_URL"
+          done <<< "$remote_versions"
+          if [ -n "$remote_only" ]; then
+            echo 'Production contains migration versions newer than this release; refusing to rewrite their history.'
+            printf '%s\n' "$remote_only"
+            exit 1
+          fi
+
+      - name: Verify reconciled production migration history
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
+
+      - name: Preview pending production migrations
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run --include-all
+
+      - name: Apply pending production migrations
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all
+
+      - name: Verify production migration history
+        run: |
+          set -euo pipefail
+          supabase migration list --db-url "$SUPABASE_DB_URL"
+          echo 'Production migration gate completed.'

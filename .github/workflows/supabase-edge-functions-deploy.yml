@@ -1,0 +1,105 @@
+name: Testagram Supabase Edge Functions Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
+      - '.github/workflows/supabase-edge-functions-deploy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testagram-supabase-edge-functions
+  cancel-in-progress: false
+
+env:
+  SUPABASE_PROJECT_REF: aepbqfrmheihfsauzcby
+
+jobs:
+  deploy-edge-functions:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate deployment credentials
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo 'Missing SUPABASE_ACCESS_TOKEN.'; exit 1; }
+          case "$SUPABASE_ACCESS_TOKEN" in sbp_*) echo 'Supabase personal access token format detected.' ;; *) echo 'SUPABASE_ACCESS_TOKEN is not a Supabase personal access token.'; exit 1 ;; esac
+      - name: Verify target project access
+        run: |
+          set -euo pipefail
+          status_code="$(curl -sS -o "$RUNNER_TEMP/supabase-project.json" -w '%{http_code}' -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H 'Accept: application/json' "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF")"
+          test "$status_code" = 200 || { echo "Supabase project access failed with HTTP $status_code."; cat "$RUNNER_TEMP/supabase-project.json" || true; exit 1; }
+      - name: Install Supabase CLI
+        run: npm install --global supabase@latest
+      - name: Deploy required Edge Functions
+        run: |
+          set -euo pipefail
+          functions=(gateway-relay federation-transport federation-inbox federation-delivery-worker federation-processing-worker federation-reconcile-actors federation-actor-refresh search-everything feed-fast post-create media-upload federation-discovery federation-remote-sync)
+          for fn in "${functions[@]}"; do echo "Deploying $fn"; supabase functions deploy "$fn" --use-api --project-ref "$SUPABASE_PROJECT_REF"; done
+      - name: Verify deployed federation inbox endpoint
+        run: |
+          set -euo pipefail
+          url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/federation-inbox"
+          status="$(curl -sS -o "$RUNNER_TEMP/federation-inbox-health.json" -w '%{http_code}' --max-time 20 "$url")"
+          echo "federation-inbox GET status: $status"; cat "$RUNNER_TEMP/federation-inbox-health.json"
+          test "$status" = 405
+          jq -e '.error == "POST required"' "$RUNNER_TEMP/federation-inbox-health.json" >/dev/null
+      - name: Verify worker authentication gates
+        run: |
+          set -euo pipefail
+          for fn in federation-delivery-worker federation-processing-worker federation-reconcile-actors federation-actor-refresh; do
+            url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/$fn"
+            status="$(curl -sS -o "$RUNNER_TEMP/$fn-auth.json" -w '%{http_code}' --max-time 20 -X POST -H 'Content-Type: application/json' "$url")"
+            echo "$fn unauthenticated POST status: $status"; cat "$RUNNER_TEMP/$fn-auth.json"
+            test "$status" = 403 -o "$status" = 401
+            jq -e '.error != null' "$RUNNER_TEMP/$fn-auth.json" >/dev/null
+          done
+      - name: Verify deployed federation delivery worker endpoint
+        run: |
+          set -euo pipefail
+          url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/federation-delivery-worker"
+          status="$(curl -sS -o "$RUNNER_TEMP/federation-worker-health.json" -w '%{http_code}' --max-time 20 "$url")"
+          echo "federation-delivery-worker GET status: $status"; cat "$RUNNER_TEMP/federation-worker-health.json"
+          test "$status" = 200
+          jq -e '.ok == true and .service == "testagram-federation-delivery-worker"' "$RUNNER_TEMP/federation-worker-health.json" >/dev/null
+      - name: Verify deployed federation actor refresh endpoint
+        run: |
+          set -euo pipefail
+          url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/federation-actor-refresh"
+          status="$(curl -sS -o "$RUNNER_TEMP/federation-actor-refresh-health.json" -w '%{http_code}' --max-time 20 "$url")"
+          echo "federation-actor-refresh GET status: $status"; cat "$RUNNER_TEMP/federation-actor-refresh-health.json"
+          test "$status" = 200
+          jq -e '.ok == true and .service == "testagram-federation-actor-refresh"' "$RUNNER_TEMP/federation-actor-refresh-health.json" >/dev/null
+      - name: Verify deployed federation processing worker endpoint
+        run: |
+          set -euo pipefail
+          url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/federation-processing-worker"
+          status="$(curl -sS -o "$RUNNER_TEMP/federation-processing-health.json" -w '%{http_code}' --max-time 20 "$url")"
+          echo "federation-processing-worker GET status: $status"; cat "$RUNNER_TEMP/federation-processing-health.json"
+          test "$status" = 200
+          jq -e '.ok == true and .service == "testagram-federation-processing-worker"' "$RUNNER_TEMP/federation-processing-health.json" >/dev/null
+      - name: Verify deployed federation discovery endpoint
+        run: |
+          set -euo pipefail
+          url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/federation-discovery"
+          status="$(curl -sS -o "$RUNNER_TEMP/federation-discovery-health.json" -w '%{http_code}' --max-time 20 "$url")"
+          echo "federation-discovery GET status: $status"; cat "$RUNNER_TEMP/federation-discovery-health.json"
+          test "$status" = 200
+          jq -e '.ok == true and .service == "testagram-federation-discovery"' "$RUNNER_TEMP/federation-discovery-health.json" >/dev/null
+      - name: Verify remote materialization endpoint
+        run: |
+          set -euo pipefail
+          url="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/federation-remote-sync"
+          status="$(curl -sS -o "$RUNNER_TEMP/federation-remote-sync-health.json" -w '%{http_code}' --max-time 20 "$url")"
+          echo "federation-remote-sync GET status: $status"; cat "$RUNNER_TEMP/federation-remote-sync-health.json"
+          test "$status" = 200
+          jq -e '.ok == true and .service == "testagram-federation-remote-sync"' "$RUNNER_TEMP/federation-remote-sync-health.json" >/dev/null

@@ -1,0 +1,3 @@
+-- Remote history marker.
+-- Migration 20260909145926_add_federation_queue_worker_rpc is already applied in production.
+-- Original source is absent from this checkout; do not re-run it.

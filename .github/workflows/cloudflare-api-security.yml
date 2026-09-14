@@ -1,0 +1,134 @@
+name: Testagram Cloudflare API Security
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Testagram Canonical Cloudflare Worker
+    types: [completed]
+
+permissions:
+  contents: read
+
+env:
+  ZONE_NAME: testagram.site
+  API_HOST: api.testagram.site
+  FEDERATION_HOST: federation.testagram.site
+  API_PATH_PREFIX: /api/
+
+jobs:
+  provision-api-exception:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate Cloudflare zone-security credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing GitHub environment secret: CLOUDFLARE_API_TOKEN'; exit 1; }
+      - name: Resolve Cloudflare zone
+        id: zone
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          zones="$(curl -fsS --max-time 20 "https://api.cloudflare.com/client/v4/zones?name=${ZONE_NAME}&status=active" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')"
+          echo "$zones" | jq -e '.success == true and (.result | length) >= 1' >/dev/null
+          zone_id="$(echo "$zones" | jq -r '.result[0].id')"
+          test -n "$zone_id" && test "$zone_id" != null
+          echo "zone_id=${zone_id}" >> "$GITHUB_OUTPUT"
+      - name: Inspect Bot Fight Mode before applying federation exception
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ${{ steps.zone.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/bot-management.json -w '%{http_code}' --max-time 20 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/bot_management" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')"
+          echo "Bot Management API HTTP status: ${status}"
+          cat /tmp/bot-management.json
+          test "$status" = 200
+          jq -e '.success == true' /tmp/bot-management.json >/dev/null
+      - name: Disable Bot Fight Mode when federation host is challenge-blocked
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ${{ steps.zone.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -D /tmp/federation-probe.headers -o /tmp/federation-probe.body -w '%{http_code}' --max-time 20 'https://federation.testagram.site/api/health' || true)"
+          echo "Pre-security federation probe HTTP status: ${status}"
+          grep -i '^cf-mitigated:' /tmp/federation-probe.headers || true
+          cat /tmp/federation-probe.body || true
+          if [ "$status" = 403 ] && grep -qi '^cf-mitigated:[[:space:]]*challenge' /tmp/federation-probe.headers; then
+            fight_mode="$(jq -r '.result.fight_mode // false' /tmp/bot-management.json)"
+            if [ "$fight_mode" = true ]; then
+              update_status="$(curl -sS -o /tmp/bot-management-update.json -w '%{http_code}' --max-time 20 -X PUT "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/bot_management" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' --data '{"fight_mode":false}')"
+              test "$update_status" = 200
+              jq -e '.success == true and (.result.fight_mode == false)' /tmp/bot-management-update.json >/dev/null
+            fi
+          fi
+      - name: Provision or locate zone custom-rule entrypoint
+        id: ruleset
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ${{ steps.zone.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          url="https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/rulesets/phases/http_request_firewall_custom/entrypoint"
+          status="$(curl -sS -o /tmp/entrypoint.json -w '%{http_code}' --max-time 20 "$url" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')"
+          if [ "$status" = 200 ]; then
+            ruleset_id="$(jq -r '.result.id // empty' /tmp/entrypoint.json)"
+            test -n "$ruleset_id"
+          elif [ "$status" = 404 ]; then
+            create_status="$(curl -sS -o /tmp/created-ruleset.json -w '%{http_code}' --max-time 20 -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/rulesets" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' --data '{"name":"Testagram production federation security exceptions","description":"Scoped exceptions for Testagram API and federation hosts","kind":"zone","phase":"http_request_firewall_custom"}')"
+            test "$create_status" = 200
+            ruleset_id="$(jq -r '.result.id // empty' /tmp/created-ruleset.json)"
+            test -n "$ruleset_id"
+          else
+            echo 'Cannot read/create Cloudflare custom-rule entrypoint.'
+            exit 1
+          fi
+          echo "ruleset_id=${ruleset_id}" >> "$GITHUB_OUTPUT"
+      - name: Install idempotent API and federation edge exceptions
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ${{ steps.zone.outputs.zone_id }}
+          RULESET_ID: ${{ steps.ruleset.outputs.ruleset_id }}
+        run: |
+          set -euo pipefail
+          expression='((http.host eq "api.testagram.site" and starts_with(http.request.uri.path, "/api/")) or (http.host eq "federation.testagram.site"))'
+          rules="$(curl -fsS --max-time 20 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/rulesets/${RULESET_ID}" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')"
+          if echo "$rules" | jq -e --arg expr "$expression" '.result.rules[]? | select(.action == "skip" and .expression == $expr and ((.action_parameters.phases // []) | index("http_request_sbfm")) and ((.action_parameters.phases // []) | index("http_request_firewall_managed")) and ((.action_parameters.phases // []) | index("http_ratelimit")) and ((.action_parameters.products // []) | index("securityLevel")) and ((.action_parameters.products // []) | index("bic")))' >/dev/null; then
+            echo 'Scoped API/federation edge exception already exists; no mutation required.'
+            exit 0
+          fi
+          federation_rule_id="$(echo "$rules" | jq -r '.result.rules[]? | select(.action == "skip" and ((.expression // "") | test("federation\\.testagram\\.site|fedi\\.testagram\\.site"))) | .id' | head -n 1)"
+          payload="$(jq -nc --arg id "$federation_rule_id" --arg expr "$expression" 'if $id != "" and $id != "null" then {id:$id,action:"skip",action_parameters:{phases:["http_request_sbfm","http_request_firewall_managed","http_ratelimit"],products:["securityLevel","bic"]},expression:$expr,description:"Allow Testagram API and ActivityPub federation traffic without challenge interference",enabled:true,logging:{enabled:true}} else {action:"skip",action_parameters:{phases:["http_request_sbfm","http_request_firewall_managed","http_ratelimit"],products:["securityLevel","bic"]},expression:$expr,description:"Allow Testagram API and ActivityPub federation traffic without challenge interference",enabled:true,logging:{enabled:true}} end')"
+          if [ -n "$federation_rule_id" ] && [ "$federation_rule_id" != null ]; then
+            status="$(curl -sS -o /tmp/update-rule.json -w '%{http_code}' --max-time 20 -X PATCH "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/rulesets/${RULESET_ID}/rules/${federation_rule_id}" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' --data "$payload")"
+            test "$status" = 200
+            jq -e '.success == true' /tmp/update-rule.json >/dev/null
+          else
+            status="$(curl -sS -o /tmp/add-rule.json -w '%{http_code}' --max-time 20 -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/rulesets/${RULESET_ID}/rules" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' --data "$payload")"
+            test "$status" = 200
+            jq -e '.success == true' /tmp/add-rule.json >/dev/null
+          fi
+      - name: Verify API and federation hosts are healthy
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            api_status="$(curl -sS -o /tmp/api-health.json -w '%{http_code}' --max-time 20 'https://api.testagram.site/api/health' || true)"
+            federation_status="$(curl -sS -o /tmp/federation-health.json -w '%{http_code}' --max-time 20 'https://federation.testagram.site/api/health' || true)"
+            echo "Attempt ${attempt}: API=${api_status} FEDERATION=${federation_status}"
+            echo '--- API health ---'; cat /tmp/api-health.json || true; echo
+            echo '--- Federation health ---'; cat /tmp/federation-health.json || true; echo
+            if [ "$api_status" = 200 ] && [ "$federation_status" = 200 ]; then
+              jq -e '.ok == true and .service == "testagram-api" and .gateway == true and .federation == true and .federationDomain == "federation.testagram.site" and .databaseReachable == true and .jwksReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/api-health.json >/dev/null || { echo 'API health assertion failed.'; exit 1; }
+              jq -e '.ok == true and .service == "testagram-api" and .databaseReachable == true and .r2Binding == true and .supabaseProjectRef == "aepbqfrmheihfsauzcby"' /tmp/federation-health.json >/dev/null || { echo 'Federation health assertion failed.'; exit 1; }
+              echo 'API and federation health gates are green.'
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1

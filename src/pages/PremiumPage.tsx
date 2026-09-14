@@ -123,7 +123,7 @@ export default function PremiumPage() {
       if (error) throw error;
 
       // Grant premium badge in profile
-      await supabase.from('user_profiles').update({ creator_tier: 'premium' }).eq('id', user.id).catch(() => {});
+      await supabase.from('user_profiles').update({ creator_tier: 'premium' }).eq('id', user.id).then(() => {}, () => {});
 
       // Platform inbox welcome
       await supabase.from('platform_inbox').insert({
@@ -134,7 +134,7 @@ export default function PremiumPage() {
         icon_emoji: '👑',
         cta_label: 'Explore Premium',
         cta_url: '/premium',
-      }).catch(() => {});
+      }).then(() => {}, () => {});
 
       await refresh();
       toast.success(`Premium activated! Ads are now disabled.`);
@@ -162,7 +162,7 @@ export default function PremiumPage() {
         icon_emoji: '📅',
         cta_label: 'Re-subscribe',
         cta_url: '/premium',
-      }).catch(() => {});
+      }).then(() => {}, () => {});
 
       await refresh();
       toast.success('Subscription cancelled. Benefits continue until expiry.');

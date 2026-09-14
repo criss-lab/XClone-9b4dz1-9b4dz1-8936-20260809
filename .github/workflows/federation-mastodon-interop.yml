@@ -1,0 +1,70 @@
+name: Testagram Mastodon Federation Interop Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      local_username:
+        description: 'Testagram username whose ActivityPub actor should be probed'
+        required: true
+        type: string
+      remote_actor:
+        description: 'Mastodon-compatible actor URL, e.g. https://mastodon.social/users/mastodon'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      LOCAL_USERNAME: ${{ inputs.local_username }}
+      REMOTE_ACTOR: ${{ inputs.remote_actor }}
+      FEDERATION_URL: https://federation.testagram.site
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$LOCAL_USERNAME" =~ ^[A-Za-z0-9_.-]+$ ]]
+          [[ "$REMOTE_ACTOR" =~ ^https://[^/]+/[^[:space:]]+$ ]]
+      - name: Probe Testagram WebFinger
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/local-webfinger.json -w '%{http_code}' --get --data-urlencode "resource=acct:${LOCAL_USERNAME}@federation.testagram.site" "$FEDERATION_URL/.well-known/webfinger")"
+          echo "Local WebFinger HTTP $status"
+          cat /tmp/local-webfinger.json
+          test "$status" = 200
+          jq -e --arg actor "$FEDERATION_URL/users/$LOCAL_USERNAME" '.links[] | select(.rel == "self" and .href == $actor)' /tmp/local-webfinger.json >/dev/null
+      - name: Probe Testagram actor
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/local-actor.json -w '%{http_code}' -H 'Accept: application/activity+json, application/ld+json' "$FEDERATION_URL/users/$LOCAL_USERNAME")"
+          echo "Local actor HTTP $status"
+          cat /tmp/local-actor.json
+          test "$status" = 200
+          jq -e '.type == "Person" and (.publicKey.publicKeyPem | length > 100) and (.inbox | startswith("https://federation.testagram.site/users/")) and (.outbox | startswith("https://federation.testagram.site/users/"))' /tmp/local-actor.json >/dev/null
+      - name: Probe remote Mastodon actor
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -L -o /tmp/remote-actor.json -w '%{http_code}' --max-time 30 -H 'Accept: application/activity+json, application/ld+json' "$REMOTE_ACTOR")"
+          echo "Remote actor HTTP $status"
+          cat /tmp/remote-actor.json
+          test "$status" = 200
+          jq -e '.id == $ENV.REMOTE_ACTOR and (.publicKey.publicKeyPem | length > 100) and (.inbox | startswith("https://"))' /tmp/remote-actor.json >/dev/null
+      - name: Probe remote inbox reachability
+        run: |
+          set -euo pipefail
+          inbox="$(jq -r '.endpoints.sharedInbox // .inbox // empty' /tmp/remote-actor.json)"
+          test -n "$inbox"
+          status="$(curl -sS -o /tmp/remote-inbox-response.txt -w '%{http_code}' --max-time 20 -X POST -H 'Content-Type: application/activity+json' --data '{"type":"TestagramInteropProbe"}' "$inbox" || true)"
+          echo "Remote inbox probe HTTP $status"
+          cat /tmp/remote-inbox-response.txt || true
+          case "$status" in 400|401|403|404|405|406|415|422) echo 'PASS: remote inbox is reachable and rejected the intentionally unsigned probe as expected.' ;; 2??) echo 'PASS: remote inbox accepted the transport probe.' ;; *) echo "FAIL: remote inbox did not produce an expected HTTP response: $status"; exit 1 ;; esac
+      - name: Report interoperability boundary
+        run: |
+          echo 'PASS: Testagram WebFinger and actor documents are externally reachable.'
+          echo 'PASS: Testagram exposes an HTTPS ActivityPub inbox/outbox and a public RSA key.'
+          echo 'PASS: A real Mastodon-compatible actor document and inbox were reachable.'
+          echo 'NOTE: This probe deliberately does not impersonate a Mastodon account or send a forged Follow.'
+          echo 'A true two-account Follow/Create/Like/Undo E2E remains gated on a controlled remote Mastodon test account.'
