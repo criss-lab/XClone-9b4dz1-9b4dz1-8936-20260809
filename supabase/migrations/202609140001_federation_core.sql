@@ -36,7 +36,7 @@ create table if not exists public.federation_objects (
   actor_uri text not null,
   object_type text not null,
   local boolean not null default true,
-  local_post_id uuid,
+  local_post_id text,
   payload jsonb not null default '{}'::jsonb,
   published_at timestamptz,
   updated_at timestamptz,
@@ -96,7 +96,6 @@ alter table public.federation_followers enable row level security;
 alter table public.federation_deliveries enable row level security;
 alter table public.federation_inbox enable row level security;
 
--- Actors are public protocol documents, but only their owner can provision/update them.
 create policy federation_actors_public_read on public.federation_actors
   for select to anon, authenticated using (enabled = true);
 create policy federation_actors_owner_insert on public.federation_actors
@@ -107,7 +106,6 @@ create policy federation_actors_owner_update on public.federation_actors
   using ((select auth.uid()) = user_id)
   with check ((select auth.uid()) = user_id);
 
--- Private keys, inbox and delivery queues are worker-only.
 revoke all on public.federation_actor_keys from anon, authenticated;
 revoke all on public.federation_deliveries from anon, authenticated;
 revoke all on public.federation_inbox from anon, authenticated;
@@ -115,7 +113,6 @@ revoke all on public.federation_inbox from anon, authenticated;
 grant select on public.federation_actors to anon, authenticated;
 grant insert, update on public.federation_actors to authenticated;
 
--- Keep a safe updated_at trigger local to this migration.
 create or replace function public.federation_touch_updated_at()
 returns trigger language plpgsql as $$
 begin
@@ -125,11 +122,9 @@ end;
 $$;
 
 drop trigger if exists federation_actors_touch on public.federation_actors;
-create trigger federation_actors_touch
-before update on public.federation_actors
+create trigger federation_actors_touch before update on public.federation_actors
 for each row execute function public.federation_touch_updated_at();
 
 drop trigger if exists federation_actor_keys_touch on public.federation_actor_keys;
-create trigger federation_actor_keys_touch
-before update on public.federation_actor_keys
+create trigger federation_actor_keys_touch before update on public.federation_actor_keys
 for each row execute function public.federation_touch_updated_at();
