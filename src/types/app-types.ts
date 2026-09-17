@@ -3,6 +3,10 @@ export interface AuthUser {
   email: string;
   username: string;
   avatar?: string;
+  /** Optional profile metadata populated by the auth/profile mapper. */
+  creator_tier?: string;
+  is_creator?: boolean;
+  verified?: boolean;
 }
 
 export interface UserProfile {
@@ -12,7 +16,7 @@ export interface UserProfile {
   avatar_url?: string;
   bio?: string;
   verified: boolean;
-  followers_count: number;
+  follower_count: number;
   following_count: number;
   created_at: string;
 }
@@ -38,9 +42,8 @@ export interface Post {
   edited_at?: string;
   edit_history?: any[];
   user_profiles: UserProfile;
-  // boost metadata (joined from boosted_posts)
   is_boosted?: boolean;
-  boost_type?: string; // 'rewarded_ad' | 'paid'
+  boost_type?: string;
 }
 
 export interface TrendingTopic {

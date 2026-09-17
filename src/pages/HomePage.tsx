@@ -97,6 +97,8 @@ export default function HomePage() {
   // Cursor for pagination — tracks oldest post created_at seen
   const [feedCursor, setFeedCursor] = useState<string | null>(null);
   const [feedHasMore, setFeedHasMore] = useState(true);
+  const [federatedCursor, setFederatedCursor] = useState<string | null>(null);
+  const [federatedHasMore, setFederatedHasMore] = useState(true);
   const [sponsoredPosts, setSponsoredPosts] = useState<any[]>([]);
   const [userAds, setUserAds] = useState<any[]>([]);
   // blocked user ids — plain array (esbuild guard: no Set<string> state)
@@ -149,7 +151,7 @@ export default function HomePage() {
         // We replicate the core query here to avoid mutating activeTab state
         let query = supabase
           .from('posts')
-          .select('*, user_profiles(*)')
+          .select('*, profiles(*)')
           .is('community_id', null)
           .range(0, PAGE_SIZE - 1);
         if (tabId === 'following' && user) {
@@ -157,7 +159,7 @@ export default function HomePage() {
             .from('follows').select('following_id').eq('follower_id', user.id);
           const ids = (followingData ?? []).map((f: any) => f.following_id);
           if (ids.length === 0) return;
-          query = supabase.from('posts').select('*, user_profiles(*)')
+          query = supabase.from('posts').select('*, profiles(*)')
             .is('community_id', null).in('user_id', ids)
             .order('created_at', { ascending: false }).range(0, PAGE_SIZE - 1);
         } else if (tabId === 'popular') {
@@ -207,7 +209,7 @@ export default function HomePage() {
     const since24h = new Date(Date.now() - 24 * 3600000).toISOString();
     const { data } = await supabase
       .from('posts')
-      .select('id, content, image_url, video_url, is_video, views_count, likes_count, user_profiles(id, username, avatar_url, verified)')
+      .select('id, content, image_url, video_url, is_video, views_count, likes_count, profiles(id, username, avatar_url, verified_tier)')
       .is('community_id', null)
       .gte('created_at', since24h)
       .order('views_count', { ascending: false })
@@ -345,7 +347,7 @@ export default function HomePage() {
         const postIds = recs.map((r: any) => r.recommended_post_id);
         const { data: posts } = await supabase
           .from('posts')
-          .select('*, user_profiles(*)')
+          .select('*, profiles(*)')
           .in('id', postIds)
           .is('community_id', null);
         if (posts && posts.length > 0) {
@@ -380,7 +382,7 @@ export default function HomePage() {
           const pids = [...new Set((phs ?? []).map((ph: any) => ph.post_id))] as string[];
           if (pids.length > 0) {
             const { data: intPosts } = await supabase
-              .from('posts').select('*, user_profiles(*)')
+              .from('posts').select('*, profiles(*)')
               .in('id', pids.slice(0, 10))
               .is('community_id', null)
               .neq('user_id', user.id);
@@ -403,7 +405,7 @@ export default function HomePage() {
       const followIds = (followingData ?? []).map((f: any) => f.following_id);
       if (followIds.length > 0) {
         const { data: followPosts } = await supabase
-          .from('posts').select('*, user_profiles(*)')
+          .from('posts').select('*, profiles(*)')
           .in('user_id', followIds)
           .is('community_id', null)
           .order('likes_count', { ascending: false })
@@ -427,7 +429,7 @@ export default function HomePage() {
       if (followIds.length === 0) return;
       const { data: products } = await supabase
         .from('products')
-        .select('*, user_profiles(id, username, avatar_url, verified)')
+        .select('*, profiles(id, username, avatar_url, verified_tier)')
         .in('user_id', followIds)
         .eq('is_active', true)
         .order('created_at', { ascending: false })
@@ -527,38 +529,57 @@ export default function HomePage() {
   };
 
   // ── Federated timeline via Gateway ──────────────────────────────────────────
-  const fetchFederatedPosts = async (): Promise<any[]> => {
+  const normalizeFederatedPosts = (posts: any[]): any[] => posts.map((p: any) => ({
+    ...p,
+    id: p.id ?? p.uri ?? p.url ?? `fed-${p.created_at ?? ''}-${p.content?.slice(0, 8) ?? ''}`,
+    content: p.content ?? p.text ?? '',
+    created_at: p.created_at ?? p.published ?? new Date().toISOString(),
+    actor: p.actor ?? p.account ?? {},
+  }));
+
+  const fetchFederatedPage = async (before?: string | null): Promise<{ posts: any[]; nextCursor: string | null; hasMore: boolean }> => {
     try {
-      const res: any = await federation.getHomeTimeline({ limit: 30 });
-      const posts = Array.isArray(res) ? res : res?.posts ?? res?.data ?? [];
-      const normalized = posts.map((p: any) => ({
-        ...p,
-        id: p.id ?? p.uri ?? p.url ?? `fed-${p.created_at ?? ''}-${p.content?.slice(0,8) ?? ''}`,
-        content: p.content ?? p.text ?? '',
-        created_at: p.created_at ?? p.published ?? new Date().toISOString(),
-        actor: p.actor ?? p.account ?? {},
-      }));
-      cacheFederatedPosts(normalized).catch(() => {});
-      return normalized;
+      const page = await federation.getFederatedTimelinePage({ limit: 12, before: before ?? undefined });
+      const posts = normalizeFederatedPosts(page.items ?? []);
+      cacheFederatedPosts(posts).catch(() => {});
+      return { posts, nextCursor: page.pagination?.nextCursor ?? null, hasMore: page.pagination?.hasMore ?? posts.length >= 12 };
     } catch (err) {
-      console.warn('[feed] Gateway unreachable, using remote_posts cache:', err);
+      console.warn('[feed] federated page unavailable:', err);
+      if (before) return { posts: [], nextCursor: null, hasMore: false };
       try {
-        const { data } = await supabase
-          .from('remote_posts')
-          .select('*, remote_accounts(username, domain, display_name, avatar_url)')
-          .order('published_at', { ascending: false })
-          .limit(30);
-        return (data ?? []).map((p: any) => ({
-          ...p,
-          id: p.id,
-          content: p.content ?? '',
-          created_at: p.published_at ?? p.created_at,
-          actor: p.remote_accounts ?? {},
-        }));
-      } catch {
-        return [];
-      }
+        const { data } = await supabase.from('remote_posts').select('*, remote_accounts(username, domain, display_name, avatar_url)').order('published_at', { ascending: false }).limit(12);
+        const posts = (data ?? []).map((p: any) => ({ ...p, id: p.id, content: p.content ?? '', created_at: p.published_at ?? p.created_at, actor: p.remote_accounts ?? {} }));
+        return { posts, nextCursor: null, hasMore: false };
+      } catch { return { posts: [], nextCursor: null, hasMore: false }; }
     }
+  };
+
+  const fetchFederatedPosts = async (): Promise<any[]> => (await fetchFederatedPage(null)).posts;
+
+  const mixHomeDiscovery = (localItems: FeedItem[], federatedPosts: any[], pageNum: number): FeedItem[] => {
+    const result = [...localItems];
+    const seedBase = `${user?.id ?? 'anonymous'}:${pageNum}:${result.length}:${federatedPosts.length}`;
+    let seed = 2166136261;
+    for (let i = 0; i < seedBase.length; i++) seed = Math.imul(seed ^ seedBase.charCodeAt(i), 16777619);
+    const random = () => { seed += 0x6D2B79F5; let t = seed; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    const fed = [...federatedPosts].sort(() => random() - 0.5).map((post: any) => ({ type: 'fedpost' as const, data: post }));
+    const fedTarget = Math.min(fed.length, Math.max(1, Math.round(Math.min(0.16, 0.08 + random() * 0.08) * Math.max(result.length, 1))));
+    const usedPositions: number[] = [];
+    for (let i = 0; i < fedTarget; i++) {
+      if (!fed[i]) break;
+      const min = Math.min(4, Math.max(1, result.length));
+      const max = Math.max(min, result.length - 1);
+      let pos = min + Math.floor(random() * (max - min + 1));
+      while (usedPositions.includes(pos) && pos < max) pos++;
+      usedPositions.push(pos); result.splice(Math.min(pos, result.length), 0, fed[i]);
+    }
+    const shouldSuggest = pageNum == 0 ? result.length >= 4 : random() < 0.35;
+    if (shouldSuggest && result.length >= 4) {
+      const min = 3, max = Math.max(min, result.length - 2);
+      const pos = min + Math.floor(random() * (max - min + 1));
+      result.splice(pos, 0, { type: 'user-suggestions', data: null });
+    }
+    return result;
   };
 
   // ── Local posts feed ────────────────────────────────────────────────────────
@@ -566,13 +587,13 @@ export default function HomePage() {
     try {
       let postsQuery = supabase
         .from('posts')
-        .select('*, user_profiles(*)')
+        .select('*, profiles(*)')
         .is('community_id', null)
         .range(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE - 1);
 
       let threadsQuery = supabase
         .from('threads')
-        .select('*, user_profiles(*)')
+        .select('*, profiles(*)')
         .eq('is_published', true)
         .order('created_at', { ascending: false })
         .range(pageNum * 5, (pageNum + 1) * 5 - 1);
@@ -605,7 +626,7 @@ export default function HomePage() {
         const pagedIds = allIds.slice(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE);
         if (!pagedIds.length) return [];
         postsQuery = supabase
-          .from('posts').select('*, user_profiles(*)').is('community_id', null)
+          .from('posts').select('*, profiles(*)').is('community_id', null)
           .in('id', pagedIds).order('likes_count', { ascending: false });
       } else {
         postsQuery = postsQuery.order('created_at', { ascending: false });
@@ -686,19 +707,12 @@ export default function HomePage() {
       const withExtras: FeedItem[] = [];
       let sponsoredIdx = 0;
       let userAdIdx = 0;
-      let suggestionInserted = false;
       let recoIdx = 0;
       let productSpotlightInserted = false;
       let seriesWidgetInserted = false;
 
       for (let i = 0; i < combined.length; i++) {
         withExtras.push({ type: combined[i].type, data: combined[i].data } as FeedItem);
-
-        // Who to follow — after 3rd item on first page
-        if (i === 2 && pageNum === 0 && !suggestionInserted) {
-          withExtras.push({ type: 'user-suggestions', data: null });
-          suggestionInserted = true;
-        }
 
         // Personalized recommendation injection (frequency modulated by discoverMix slider)
         // discoverMix 0 = inject rarely (every 12), 100 = inject often (every 4)
@@ -736,7 +750,7 @@ export default function HomePage() {
 
   const fetchInitialFeed = async (skipCache = false) => {
     // ── Serve from prefetch cache when available (tab switch) ──────────────
-    if (!skipCache && activeTab !== 'federated') {
+    if (!skipCache && activeTab !== 'federated' && activeTab !== 'foryou') {
       const cached = getCachedFeed(activeTab);
       if (cached && cached.length > 0) {
         setFeedItems(cached);
@@ -765,6 +779,8 @@ export default function HomePage() {
     setPage(0);
     setFeedCursor(null);
     setFeedHasMore(true);
+    setFederatedCursor(null);
+    setFederatedHasMore(true);
 
     if (activeTab === 'federated') {
       const fedPosts = await fetchFederatedPosts();
@@ -806,13 +822,23 @@ export default function HomePage() {
       // Set cursor from last local post
       const lastPost = filtered.filter((i: any) => i.type === 'post').slice(-1)[0];
       if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
+    } else if (activeTab === 'foryou') {
+      const [localItems, federatedPage] = await Promise.all([fetchFeed(0), fetchFederatedPage(null)]);
+      const mixed = mixHomeDiscovery(localItems, federatedPage.posts, 0);
+      setFeedItems(mixed);
+      const localPosts = localItems.filter((i: any) => i.type === 'post');
+      const lastPost = localPosts.slice(-1)[0];
+      if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
+      setFederatedCursor(federatedPage.nextCursor);
+      setFederatedHasMore(federatedPage.hasMore);
+      setFeedHasMore(localPosts.length >= PAGE_SIZE || federatedPage.hasMore || federatedPage.posts.length > 0);
+      if (mixed.length > 0) setCachedFeed(activeTab, mixed);
     } else {
       const items = await fetchFeed(0);
       setFeedItems(items);
       const lastPost = items.filter((i: any) => i.type === 'post').slice(-1)[0];
       if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
       setFeedHasMore(items.filter((i: any) => i.type === 'post').length >= PAGE_SIZE);
-      // Populate prefetch cache for instant tab-switch on next visit
       if (items.length > 0) setCachedFeed(activeTab, items);
     }
     setLoading(false);
@@ -839,7 +865,7 @@ export default function HomePage() {
       if (postIds.length === 0) { setHashtagFeedItems([]); setHashtagFeedLoading(false); return; }
       const { data: posts } = await supabase
         .from('posts')
-        .select('*, user_profiles(*)')
+        .select('*, profiles(*)')
         .in('id', postIds.slice(0, 50))
         .is('community_id', null)
         .order('created_at', { ascending: false });
@@ -933,27 +959,39 @@ export default function HomePage() {
   };
 
   const loadMoreFeed = async (): Promise<boolean> => {
-    if (activeTab === 'federated' || !feedHasMore) return false;
+    if (!feedHasMore) return false;
     const nextPage = page + 1;
+    if (activeTab === 'federated') {
+      const fedPage = await fetchFederatedPage(federatedCursor);
+      const incoming = fedPage.posts.map((post: any) => ({ type: 'fedpost' as const, data: post }));
+      if (incoming.length > 0) setFeedItems(prev => { const ids = new Set(prev.filter(i => i.type === 'fedpost').map(i => (i.data as any).id)); return [...prev, ...incoming.filter(i => !ids.has((i.data as any).id))]; });
+      setFederatedCursor(fedPage.nextCursor); setFederatedHasMore(fedPage.hasMore); setFeedHasMore(fedPage.hasMore); setPage(nextPage); return fedPage.hasMore;
+    }
+    if (activeTab === 'foryou') {
+      const [localItems, federatedPage] = await Promise.all([fetchFeed(nextPage), fetchFederatedPage(federatedCursor)]);
+      const mixed = mixHomeDiscovery(localItems, federatedPage.posts, nextPage);
+      const incomingLocalPosts = localItems.filter((i: any) => i.type === 'post');
+      const incomingFedPosts = mixed.filter((i: any) => i.type === 'fedpost');
+      if (mixed.length > 0) setFeedItems(prev => {
+        const localIds = new Set(prev.filter(i => i.type === 'post').map(i => (i.data as any).id));
+        const fedIds = new Set(prev.filter(i => i.type === 'fedpost').map(i => (i.data as any).id));
+        return [...prev, ...mixed.filter(i => i.type === 'post' ? !localIds.has((i.data as any).id) : i.type === 'fedpost' ? !fedIds.has((i.data as any).id) : true)];
+      });
+      if (incomingLocalPosts.length > 0) setFeedCursor((incomingLocalPosts.slice(-1)[0].data as any).created_at ?? null);
+      setFederatedCursor(federatedPage.nextCursor); setFederatedHasMore(federatedPage.hasMore);
+      const hasMore = incomingLocalPosts.length >= PAGE_SIZE || federatedPage.hasMore || incomingFedPosts.length > 0;
+      setPage(nextPage); setFeedHasMore(hasMore); return hasMore;
+    }
     const newItems = await fetchFeed(nextPage);
     const newPosts = newItems.filter((i: any) => i.type === 'post');
     if (newPosts.length > 0) {
-      setFeedItems(prev => {
-        // Deduplicate by post id
-        const existingIds = new Set(prev.filter((i: any) => i.type === 'post').map((i: any) => (i.data as any).id));
-        const deduped = newItems.filter((i: any) => i.type !== 'post' || !existingIds.has((i.data as any).id));
-        return [...prev, ...deduped];
-      });
-      setPage(nextPage);
-      const lastPost = newPosts.slice(-1)[0];
-      if (lastPost) setFeedCursor((lastPost.data as any).created_at ?? null);
-      const hasMore = newPosts.length >= PAGE_SIZE;
-      setFeedHasMore(hasMore);
-      return hasMore;
+      setFeedItems(prev => { const ids = new Set(prev.filter((i: any) => i.type === 'post').map((i: any) => (i.data as any).id)); return [...prev, ...newItems.filter((i: any) => i.type !== 'post' || !ids.has((i.data as any).id))]; });
+      setPage(nextPage); setFeedCursor((newPosts.slice(-1)[0].data as any).created_at ?? null);
+      const hasMore = newPosts.length >= PAGE_SIZE; setFeedHasMore(hasMore); return hasMore;
     }
-    setFeedHasMore(false);
-    return false;
+    setFeedHasMore(false); return false;
   };
+
 
   const { lastElementRef, loading: loadingMore } = useInfiniteScroll(loadMoreFeed);
 
@@ -1614,7 +1652,7 @@ function InlineSuggestions() {
       // Try user_suggestions table first
       const { data: sugData } = await supabase
         .from('user_suggestions')
-        .select('suggested_user_id, score, reason, user_profiles!user_suggestions_suggested_user_id_fkey(id, username, avatar_url, followers_count, verified)')
+        .select('suggested_user_id, score, reason, user_profiles!user_suggestions_suggested_user_id_fkey(id, username, avatar_url, follower_count, verified)')
         .eq('user_id', user.id)
         .order('score', { ascending: false })
         .limit(5);
@@ -1631,10 +1669,10 @@ function InlineSuggestions() {
 
       // Fallback: popular users not yet followed
       const { data } = await supabase
-        .from('user_profiles')
-        .select('id, username, avatar_url, followers_count, verified')
+        .from('profiles')
+        .select('id, username, avatar_url, follower_count, verified')
         .neq('id', user.id)
-        .order('followers_count', { ascending: false })
+        .order('follower_count', { ascending: false })
         .limit(10);
 
       if (data) setSuggestions(data.filter((u: any) => !followed.includes(u.id)).slice(0, 3));
@@ -1674,7 +1712,7 @@ function InlineSuggestions() {
               <div className="min-w-0">
                 <p className="font-semibold text-sm truncate">{sug.username}</p>
                 <p className="text-xs text-muted-foreground">
-                  {formatNumber(sug.followers_count ?? 0)} followers
+                  {formatNumber(sug.follower_count ?? 0)} followers
                 </p>
               </div>
             </button>

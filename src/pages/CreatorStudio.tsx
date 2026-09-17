@@ -18,6 +18,7 @@ import { formatNumber } from '@/lib/utils';
 import { toast } from 'sonner';
 
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { CreatorStudioWorkbench } from '@/components/features/CreatorStudioWorkbench';
 function CreatorStudioAdBanner() { return <PageAdBanner />; }
 
 export default function CreatorStudio() {
@@ -231,8 +232,8 @@ export default function CreatorStudio() {
         { name: 'Images', value: imgs, color: '#3b82f6' },
         { name: 'Text',   value: txt, color: '#8b5cf6' },
       ].filter(t => t.value > 0));
-      const { data: profile } = await supabase.from('user_profiles').select('followers_count').eq('id', user.id).maybeSingle();
-      const currentFollowers = profile?.followers_count ?? 0;
+      const { data: profile } = await supabase.from('profiles').select('follower_count').eq('id', user.id).maybeSingle();
+      const currentFollowers = profile?.follower_count ?? 0;
       const growthData: any[] = [];
       for (let i = 6; i >= 0; i--) {
         const d = new Date(Date.now() - i * 86400000);
@@ -391,7 +392,7 @@ export default function CreatorStudio() {
   const fetchCreatorStats = async () => {
     if (!user) return;
     try {
-      const { data: profile } = await supabase.from('user_profiles').select('*').eq('id', user.id).single();
+      const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       const { data: posts } = await supabase.from('posts').select('views_count, likes_count, is_video, created_at').eq('user_id', user.id);
       const totalViews = posts?.reduce((s, p) => s + (p.views_count || 0), 0) || 0;
       const totalLikes = posts?.reduce((s, p) => s + (p.likes_count || 0), 0) || 0;
@@ -404,7 +405,7 @@ export default function CreatorStudio() {
       for (let i = 6; i >= 0; i--) { const d = new Date(now - i * 86400000).toISOString().split('T')[0]; days[d] = 0; }
       (posts || []).forEach(p => { const d = p.created_at?.split('T')[0]; if (d && days[d] !== undefined) days[d] += p.views_count || 0; });
       setWeeklyViews(Object.entries(days).map(([date, views]) => ({ date: (date as string).slice(5), views })));
-      setStats({ total_followers: profile?.followers_count || 0, total_posts: posts?.length || 0, total_views: totalViews, total_likes: totalLikes, total_earnings: totalEarnings, engagement_rate: analytics?.engagement_rate || 0, video_views: videoViews, article_views: 0 });
+      setStats({ total_followers: profile?.follower_count || 0, total_posts: posts?.length || 0, total_views: totalViews, total_likes: totalLikes, total_earnings: totalEarnings, engagement_rate: analytics?.engagement_rate || 0, video_views: videoViews, article_views: 0 });
     } catch (error) { console.error('Error fetching creator stats:', error); }
     finally { setLoading(false); }
   };
@@ -543,7 +544,7 @@ export default function CreatorStudio() {
 
   const enableCreatorMode = async () => {
     if (!user) return;
-    const { error } = await supabase.from('user_profiles').update({ is_creator: true, can_monetize: true }).eq('id', user.id);
+    const { error } = await supabase.from('profiles').update({ is_creator: true, can_monetize: true }).eq('id', user.id);
     if (error) { toast.error(error.message); return; }
     toast.success('Creator mode enabled!');
     fetchCreatorStats();
@@ -589,6 +590,7 @@ export default function CreatorStudio() {
     <div className="min-h-screen bg-background pb-20 md:pb-0">
       <TopBar title="Creator Studio" showBack />
       <CreatorStudioAdBanner />
+      <CreatorStudioWorkbench stats={stats} recentPosts={recentPosts} />
 
       <div className="p-4 space-y-6">
         {/* Studio tabs */}

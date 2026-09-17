@@ -18,6 +18,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { formatNumber } from '@/lib/utils';
 import { Post } from '@/types/app-types';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { AdvertiserSurface } from '@/components/features/AdvertiserSurface';
 import { AreaChart, Area, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 function ProfileAdBanner() { return <PageAdBanner />; }
@@ -152,11 +153,7 @@ function SocialLinksEditor({
     const cleanTw = tw.trim().replace(/^@/, '') || null;
     const cleanIg = ig.trim().replace(/^@/, '') || null;
     const cleanLi = li.trim() || null;
-    const { error } = await supabase.from('user_profiles').update({
-      twitter_handle: cleanTw,
-      instagram_handle: cleanIg,
-      linkedin_url: cleanLi,
-    }).eq('id', userId);
+    const { error } = await supabase.from('profiles').update({ social_links: { twitter: cleanTw, instagram: cleanIg, linkedin: cleanLi } }).eq('id', userId);
     setSaving(false);
     if (error) { toast.error('Failed to save social links'); return; }
     toast.success('Social links updated!');
@@ -422,7 +419,7 @@ export default function ProfilePage() {
         body: `@${currentUser.username} gifted you 1 month of Premium! Enjoy an ad-free experience until ${expiresAt.toLocaleDateString()}.`,
         type: 'update', icon_emoji: '👑', cta_label: 'View Premium Benefits', cta_url: '/premium',
       }).catch(() => {});
-      await supabase.from('notifications').insert({ user_id: profile.id, type: 'tip', from_user_id: currentUser.id }).catch(() => {});
+      await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'tip', actor_id: currentUser.id  }).catch(() => {});
       toast.success(`🎁 Premium gifted to @${profile.username} for 1 month!`);
       setShowGiftPremiumDialog(false);
     } catch (err: any) {
@@ -440,12 +437,12 @@ export default function ProfilePage() {
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + 1);
     const { error } = await supabase.from('creator_subscriptions').upsert({
-      creator_id: profile.id, subscriber_id: currentUser.id, tier, price, status: 'active',
+      creator_id: profile.id, subscriber_id: currentUser.id, tier, amount: price, status: 'active',
       expires_at: expiresAt.toISOString(),
     }, { onConflict: 'creator_id,subscriber_id' });
     if (error) { toast.error('Subscription failed'); setSubscribing(false); return; }
-    await supabase.from('creator_earnings').insert({ user_id: profile.id, source: 'subscription', amount: price, status: 'paid' }).catch(() => {});
-    await supabase.from('notifications').insert({ user_id: profile.id, type: 'follow', from_user_id: currentUser.id }).catch(() => {});
+    await supabase.from('creator_earnings').insert({ user_id: profile.id, source: 'subscription', amount_cents: Math.round(price * 100), currency: 'USD', status: 'paid' }).then(() => {}).catch(() => {});
+    await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'follow', actor_id: currentUser.id  }).catch(() => {});
     toast.success(`Subscribed to @${profile.username} on ${tier} tier!`);
     setActiveSubscription({ tier, price, status: 'active' });
     setShowSubscribeDialog(false);
@@ -511,20 +508,20 @@ export default function ProfilePage() {
   };
 
   const fetchTipGoal = async (userId: string) => {
-    const { data: mon } = await supabase.from('user_monetization').select('monthly_tip_goal').eq('user_id', userId).maybeSingle();
-    setTipGoal(mon?.monthly_tip_goal ?? null);
+    const { data: mon } = await supabase.from('user_monetization').select('total_earnings').eq('user_id', userId).maybeSingle();
+    setTipGoal(null);
     const startOfMonth = new Date();
     startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
-    const { data: monthTips } = await supabase.from('tips').select('from_user_id, amount').eq('to_user_id', userId).gte('created_at', startOfMonth.toISOString()).order('amount', { ascending: false });
-    const total = (monthTips ?? []).reduce((s: number, t: any) => s + Number(t.amount), 0);
+    const { data: monthTips } = await supabase.from('tips').select('sender_id, amount_cents').eq('recipient_id', userId).gte('created_at', startOfMonth.toISOString()).order('amount_cents', { ascending: false });
+    const total = (monthTips ?? []).reduce((s: number, t: any) => s + Number(t.amount_cents ?? 0) / 100, 0);
     setCurrentMonthTips(total);
     // Use parallel arrays instead of index-sig objects (esbuild guard)
     const tipperIds: string[] = [];
     const tipperAmts: number[] = [];
     for (const t of (monthTips ?? [])) {
-      const idx = tipperIds.indexOf(t.from_user_id);
-      if (idx >= 0) tipperAmts[idx] += Number(t.amount);
-      else { tipperIds.push(t.from_user_id); tipperAmts.push(Number(t.amount)); }
+      const idx = tipperIds.indexOf(t.sender_id);
+      if (idx >= 0) tipperAmts[idx] += Number(t.amount_cents ?? 0) / 100;
+      else { tipperIds.push(t.sender_id); tipperAmts.push(Number(t.amount_cents ?? 0) / 100); }
     }
     const sorted = [...tipperAmts].sort((a, b) => b - a).slice(0, 3);
     setTopTippers(sorted.map((amount, i) => ({ rank: i + 1, amount })));
@@ -534,8 +531,7 @@ export default function ProfilePage() {
     if (!currentUser || !profile) return;
     const goal = Number(goalInput);
     if (!goal || goal <= 0) return;
-    const { error } = await supabase.from('user_monetization').upsert({ user_id: profile.id, monthly_tip_goal: goal }, { onConflict: 'user_id' });
-    if (error) { toast.error('Failed to save goal'); return; }
+    toast.info('Tip goals are not part of the canonical monetization schema yet.'); return;
     setTipGoal(goal);
     setEditingGoal(false);
     toast.success('Tip goal saved! 🎯');
@@ -543,17 +539,17 @@ export default function ProfilePage() {
 
   const fetchTipHistory = async (userId: string) => {
     setLoadingTips(true);
-    const { data: tips } = await supabase.from('tips').select('*').or(`from_user_id.eq.${userId},to_user_id.eq.${userId}`).order('created_at', { ascending: false }).limit(50);
+    const { data: tips } = await supabase.from('tips').select('*').or(`sender_id.eq.${userId},recipient_id.eq.${userId}`).order('created_at', { ascending: false }).limit(50);
     if (!tips || tips.length === 0) { setTipHistory([]); setLoadingTips(false); return; }
-    const allUids = tips.flatMap((t: any) => [t.from_user_id, t.to_user_id]) as string[];
+    const allUids = tips.flatMap((t: any) => [t.sender_id, t.recipient_id]) as string[];
     const uids = allUids.filter((u: string, i: number) => allUids.indexOf(u) === i);
-    const { data: profileRows } = await supabase.from('user_profiles').select('id, username, avatar_url').in('id', uids);
+    const { data: profileRows } = await supabase.from('profiles').select('id, username, avatar_url').in('id', uids);
     // Use parallel arrays instead of index-sig objects (esbuild guard)
     const pIds: string[] = [];
     const pData: any[] = [];
     for (const p of (profileRows ?? [])) { pIds.push(p.id); pData.push(p); }
     const getP = (uid: string) => pData[pIds.indexOf(uid)];
-    setTipHistory(tips.map((t: any) => ({ ...t, sender: getP(t.from_user_id), recipient: getP(t.to_user_id) })));
+    setTipHistory(tips.map((t: any) => ({ ...t, sender: getP(t.sender_id), recipient: getP(t.recipient_id) })));
     setLoadingTips(false);
   };
 
@@ -568,7 +564,7 @@ export default function ProfilePage() {
 
   useSEO({
     title: profile ? `@${profile.username} on Testagram` : 'Profile',
-    description: profile ? (profile.bio?.slice(0, 155) || `Follow @${profile.username} on Testagram — ${profile.followers_count?.toLocaleString() ?? 0} followers`) : 'View profile on Testagram',
+    description: profile ? (profile.bio?.slice(0, 155) || `Follow @${profile.username} on Testagram — ${profile.follower_count?.toLocaleString() ?? 0} followers`) : 'View profile on Testagram',
     image: profile ? buildOgImageUrl({ username: profile.username }) : undefined,
     url: profile ? `/profile/${profile.username}` : undefined,
     type: 'profile',
@@ -701,9 +697,9 @@ export default function ProfilePage() {
     const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: currentUser.id, p_amount: amount });
     if (deductErr) { toast.error('Could not deduct from wallet'); setSendingTip(false); return; }
     await supabase.rpc('add_to_wallet', { p_user_id: profile.id, p_amount: amount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: currentUser.id, to_user_id: profile.id, amount, message: `Tip from @${currentUser.username}` }).catch(() => {});
-    await supabase.from('creator_earnings').insert({ user_id: profile.id, source: 'tips', amount, status: 'paid' }).catch(() => {});
-    await supabase.from('notifications').insert({ user_id: profile.id, type: 'tip', from_user_id: currentUser.id }).catch(() => {});
+    await supabase.from('tips').insert({ sender_id: currentUser.id, recipient_id: profile.id, amount_cents: Math.round(amount * 100), currency: 'USD', provider: 'internal', status: 'completed' }).then(() => {}).catch(() => {});
+    await supabase.from('creator_earnings').insert({ user_id: profile.id, source: 'tips', amount_cents: Math.round(amount * 100), currency: 'USD', status: 'paid' }).then(() => {}).catch(() => {});
+    await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'tip', actor_id: currentUser.id  }).catch(() => {});
     toast.success(`$${amount.toFixed(2)} tip sent to @${profile.username}!`);
     setTipSent(true); setShowTipDialog(false); setTipAmount(null); setCustomTipAmount(''); setSendingTip(false);
     setTimeout(() => setTipSent(false), 3000);
@@ -739,9 +735,17 @@ export default function ProfilePage() {
 
   const fetchProfile = async () => {
     try {
-      const { data: profileData, error: profileError } = await supabase.from('user_profiles').select('*').eq('username', username).single();
-      if (profileError) throw profileError;
-      setProfile(profileData);
+      const initialProfileQuery = username ? await supabase.from('profiles').select('*').eq('username', username).maybeSingle() : { data: null, error: null };
+      let profileData = initialProfileQuery.data;
+      if (!profileData && currentUser) {
+        const ownProfileQuery = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+        profileData = ownProfileQuery.data;
+      }
+      if (!profileData) throw initialProfileQuery.error ?? new Error('Canonical profile not found');
+      const socialLinks = (profileData.social_links ?? {}) as { twitter?: string | null; instagram?: string | null; linkedin?: string | null };
+      const { data: monetization } = await supabase.from('user_monetization').select('total_earnings').eq('user_id', profileData.id).maybeSingle();
+      const normalizedProfile = { ...profileData, twitter_handle: socialLinks.twitter ?? null, instagram_handle: socialLinks.instagram ?? null, linkedin_url: socialLinks.linkedin ?? null, cover_image: profileData.cover_url ?? null, verified: profileData.verified_tier !== 'none', total_earnings: monetization?.total_earnings ?? 0 };
+      setProfile(normalizedProfile);
       // Update meta tags inline (no IIFE in render — this is async data loading)
       const title = `@${profileData.username} on Testagram`;
       const desc = profileData.bio?.slice(0, 200) || `Follow @${profileData.username} on Testagram`;
@@ -813,7 +817,7 @@ export default function ProfilePage() {
   };
 
   const fetchPosts = async (userId: string) => {
-    const { data } = await supabase.from('posts').select('*, user_profiles (*)').eq('user_id', userId).order('created_at', { ascending: false });
+    const { data } = await supabase.from('posts').select('*, profiles!posts_user_id_fkey(*)').eq('user_id', userId).order('created_at', { ascending: false });
     const postList = data || [];
     setPosts(postList);
     // Fire milestone alerts asynchronously — won't block UI
@@ -824,32 +828,32 @@ export default function ProfilePage() {
     setThreads(data || []);
   };
   const fetchReplies = async (userId: string) => {
-    const { data } = await supabase.from('replies').select('*, posts(*, user_profiles(*))').eq('user_id', userId).order('created_at', { ascending: false });
+    const { data } = await supabase.from('replies').select('*, posts(*, profiles!posts_user_id_fkey(*))').eq('user_id', userId).order('created_at', { ascending: false });
     setReplies(data || []);
   };
   const fetchMedia = async (userId: string) => {
-    const { data } = await supabase.from('posts').select('*, user_profiles (*)').eq('user_id', userId).or('image_url.not.is.null,video_url.not.is.null,media_urls.neq.[]').order('created_at', { ascending: false });
+    const { data } = await supabase.from('posts').select('*, profiles!posts_user_id_fkey(*)').eq('user_id', userId).or('image_url.not.is.null,video_url.not.is.null,media_urls.neq.[]').order('created_at', { ascending: false });
     setMedia(data || []);
   };
   const fetchLikedPosts = async (userId: string) => {
-    const { data } = await supabase.from('likes').select('posts(*, user_profiles(*))').eq('user_id', userId).order('created_at', { ascending: false });
+    const { data } = await supabase.from('post_likes').select('posts(*, profiles!posts_user_id_fkey(*))').eq('user_id', userId).order('created_at', { ascending: false });
     setLikedPosts((data || []).map((item: any) => item.posts).filter(Boolean));
   };
   const fetchFollowers = async (userId: string) => {
-    const { data } = await supabase.from('follows').select('follower:user_profiles!follows_follower_id_fkey(*)').eq('following_id', userId);
+    const { data } = await supabase.from('follows').select('follower:profiles!follows_follower_id_fkey(*)').eq('following_id', userId);
     setFollowers((data || []).map((item: any) => item.follower).filter(Boolean));
   };
   const fetchProfileStats = async (userId: string) => {
     const { data: reward } = await supabase.from('daily_rewards').select('streak_day').eq('user_id', userId).maybeSingle();
     setStreakDay(reward?.streak_day ?? 0);
-    const { data: pd } = await supabase.from('user_profiles').select('followers_count').eq('id', userId).maybeSingle();
+    const { data: pd } = await supabase.from('profiles').select('follower_count').eq('id', userId).maybeSingle();
     if (pd) {
-      const { count } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).gt('followers_count', pd.followers_count ?? 0);
+      const { count } = await supabase.from('profiles').select('*', { count: 'exact', head: true }).gt('follower_count', pd.follower_count ?? 0);
       setFollowerRank((count ?? 0) + 1);
     }
   };
   const fetchFollowing = async (userId: string) => {
-    const { data } = await supabase.from('follows').select('following:user_profiles!follows_following_id_fkey(*)').eq('follower_id', userId);
+    const { data } = await supabase.from('follows').select('following:profiles!follows_following_id_fkey(*)').eq('follower_id', userId);
     setFollowing((data || []).map((item: any) => item.following).filter(Boolean));
   };
   const checkFollowStatus = async () => {
@@ -863,7 +867,7 @@ export default function ProfilePage() {
       await supabase.from('follows').delete().eq('follower_id', currentUser.id).eq('following_id', profile.id);
     } else {
       await supabase.from('follows').insert({ follower_id: currentUser.id, following_id: profile.id });
-      await supabase.from('notifications').insert({ user_id: profile.id, type: 'follow', from_user_id: currentUser.id });
+      await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'follow', actor_id: currentUser.id  });
       await sendActivityNotification({ recipientUserId: profile.id, title: 'New Follower', body: `${currentUser.username} started following you`, data: { route: `/profile/${currentUser.username}`, type: 'follow', fromUserId: currentUser.id } });
     }
     setIsFollowing(!isFollowing);
@@ -880,6 +884,8 @@ export default function ProfilePage() {
   if (loading) return <ProfileSkeleton />;
 
   if (!profile) return null;
+  const profileFeatureSettings = { analytics: true, monetization: true, podcasts: true, series: true, achievements: true, highlights: true, 'social-links': true, tips: true, ...(profile.profile_features ?? {}) };
+  const featureEnabled = (key: string) => profileFeatureSettings[key as keyof typeof profileFeatureSettings] !== false;
   const videoPosts = posts.filter(p => p.is_video && p.video_url);
   // ── goalAchieved: MUST be declared before JSX — was missing, causing blank screen ──
   const goalAchieved = tipGoal !== null && tipGoal > 0 && currentMonthTips >= tipGoal;
@@ -888,18 +894,18 @@ export default function ProfilePage() {
   const profileStrikesColor = profileStrikes === 0 ? 'text-green-600' : profileStrikes === 1 ? 'text-orange-500' : 'text-red-600';
   const profileStrikesBorderBg = profileStrikes === 0 ? 'border-green-500/20 bg-green-500/5' : profileStrikes === 1 ? 'border-orange-500/20 bg-orange-500/5' : 'border-red-500/20 bg-red-500/5';
   const profileVideoPosts = posts.filter(p => p.is_video);
-  const profileTipsReceived = tipHistory.filter(t => t.to_user_id === profile?.id);
+  const profileTipsReceived = tipHistory.filter(t => t.recipient_id === profile?.id);
   const profileAchievementsAll = [
     { id: 'first_post',    emoji: '✍️', label: 'First Post',    unlocked: posts.length >= 1 },
     { id: 'verified',      emoji: '✅', label: 'Verified',       unlocked: !!profile?.verified },
     { id: 'video_creator', emoji: '🎬', label: 'Video Creator',  unlocked: profileVideoPosts.length >= 1 },
-    { id: 'followers_100', emoji: '👥', label: '100 Followers',  unlocked: (profile?.followers_count ?? 0) >= 100 },
-    { id: 'followers_1k',  emoji: '⭐', label: '1K Followers',   unlocked: (profile?.followers_count ?? 0) >= 1000 },
+    { id: 'followers_100', emoji: '👥', label: '100 Followers',  unlocked: (profile?.follower_count ?? 0) >= 100 },
+    { id: 'followers_1k',  emoji: '⭐', label: '1K Followers',   unlocked: (profile?.follower_count ?? 0) >= 1000 },
     { id: 'first_dollar',  emoji: '💰', label: 'First Dollar',   unlocked: Number(profile?.total_earnings ?? 0) >= 1 },
     { id: 'streak_7',      emoji: '🔥', label: '7-Day Streak',   unlocked: streakDay >= 7 },
     { id: 'tip_received',  emoji: '💝', label: 'Tip Received',   unlocked: profileTipsReceived.length >= 1 },
     { id: 'posts_10',      emoji: '📝', label: '10 Posts',       unlocked: posts.length >= 10 },
-    { id: 'followers_10k', emoji: '🌟', label: '10K Followers',  unlocked: (profile?.followers_count ?? 0) >= 10000 },
+    { id: 'followers_10k', emoji: '🌟', label: '10K Followers',  unlocked: (profile?.follower_count ?? 0) >= 10000 },
   ];
   const profileAchievementsUnlocked = profileAchievementsAll.filter(a => a.unlocked);
   // Pre-computed podcast/series stats (no IIFE in render)
@@ -908,9 +914,13 @@ export default function ProfilePage() {
   const podTotalSecs = profilePodcasts.reduce((s: number, p: any) => s + (p.duration ?? 0), 0);
   // Pre-computed highlight viewer story — esbuild guard: no IIFE in render
   const viewerHighlightStory = viewingHighlight ? (highlightStories[highlightStoryIdx] ?? null) : null;
-  const tabs = isOwnProfile
+  const tabs = (isOwnProfile
     ? ['Posts', 'Threads', 'Replies', 'Media', 'Videos', 'Podcasts', 'Series', 'Likes', 'Tips', 'Gifts', 'Followers', 'Following', 'Analytics']
-    : ['Posts', 'Threads', 'Replies', 'Media', 'Videos', 'Podcasts', 'Series', 'Likes', 'Tips', 'Gifts', 'Followers', 'Following'];
+    : ['Posts', 'Threads', 'Replies', 'Media', 'Videos', 'Podcasts', 'Series', 'Likes', 'Tips', 'Gifts', 'Followers', 'Following'])
+    .filter(tab => tab !== 'Podcasts' || featureEnabled('podcasts'))
+    .filter(tab => tab !== 'Series' || featureEnabled('series'))
+    .filter(tab => tab !== 'Tips' || featureEnabled('tips'))
+    .filter(tab => tab !== 'Analytics' || featureEnabled('analytics'));
 
   // ── Creator Tip Goal Progress Ring — visible on all profiles to all visitors —————
   // Fetched fresh from user_monetization + tips; goalAchieved triggers celebration badge
@@ -942,6 +952,7 @@ export default function ProfilePage() {
       </div>
       <TopBar title={profile.username} showBack />
       <ProfileAdBanner />
+        {isOwnProfile && <AdvertiserSurface variant="profile" />}
 
       <div className="border-b border-border">
         {profile.cover_image && (
@@ -969,10 +980,13 @@ export default function ProfilePage() {
                   : <div className="w-full h-full flex items-center justify-center text-4xl font-bold">{profile.username[0].toUpperCase()}</div>}
               </div>
             </button>
-            <div className="flex gap-2 mt-2 flex-wrap items-center">
+            <div className="flex flex-wrap items-center gap-2.5 mt-4 max-w-full">
               {isOwnProfile ? (
                 <>
                   <button onClick={() => setShowEditDialog(true)} className="px-4 py-2 border border-border rounded-full font-semibold hover:bg-muted transition-colors">Edit profile</button>
+                  <button onClick={() => navigate('/profile-features')} className="inline-flex items-center gap-1.5 px-3.5 py-2 border border-primary/20 bg-primary/5 text-primary rounded-full font-semibold text-sm hover:bg-primary/10 transition-colors">
+          <Sparkles className="w-3.5 h-3.5" />More features
+        </button>
                   <button onClick={handleShareProfile} className="p-2 border border-border rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground">
                     {profileShared ? <Check className="w-4 h-4 text-green-500" /> : <Share2 className="w-4 h-4" />}
                   </button>
@@ -1058,7 +1072,7 @@ export default function ProfilePage() {
           {profile.bio && <p className="mb-3 break-words">{profile.bio}</p>}
 
           {/* Achievements */}
-          {profileAchievementsUnlocked.length > 0 && (
+          {featureEnabled('achievements') && profileAchievementsUnlocked.length > 0 && (
             <div className="mb-3">
               <div className="flex items-center gap-2 mb-1.5">
                 <span className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Achievements</span>
@@ -1076,7 +1090,7 @@ export default function ProfilePage() {
           )}
 
           {/* Tip Goal */}
-          {(tipGoal !== null || isOwnProfile) && (
+          {featureEnabled('tips') && (tipGoal !== null || isOwnProfile) && (
             <div className="mb-3 space-y-2">
               {!editingGoal ? (
                 <div className={`rounded-2xl border p-3 transition-all ${goalAchieved ? 'border-yellow-400/60 bg-gradient-to-br from-yellow-500/15 to-amber-400/10 animate-pulse' : 'border-yellow-500/20 bg-yellow-500/5'}`}>
@@ -1168,10 +1182,10 @@ export default function ProfilePage() {
 
           {/* Story Highlights */}
           {/* StoryHighlights component */}
-          {profile && (
+          {featureEnabled('highlights') && profile && (
             <StoryHighlights profileUserId={profile.id} isOwnProfile={isOwnProfile} />
           )}
-          {(highlights.length > 0 || isOwnProfile) && (
+          {featureEnabled('highlights') && (highlights.length > 0 || isOwnProfile) && (
             <div className="flex items-start gap-4 py-3 overflow-x-auto scrollbar-hide">
               {isOwnProfile && (
                 <button onClick={() => { fetchAvailableStories(profile.id); setShowCreateHighlight(true); }} className="flex flex-col items-center gap-1.5 shrink-0 group">
@@ -1238,7 +1252,7 @@ export default function ProfilePage() {
           </div>
 
           {/* ── Social Links Row ── */}
-          {(profile.twitter_handle || profile.instagram_handle || profile.linkedin_url || isOwnProfile) && (
+          {featureEnabled('social-links') && (profile.twitter_handle || profile.instagram_handle || profile.linkedin_url || isOwnProfile) && (
             <div className="mb-3 space-y-2">
               {(profile.twitter_handle || profile.instagram_handle || profile.linkedin_url) && (
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1298,7 +1312,7 @@ export default function ProfilePage() {
               <span className="font-bold">{formatNumber(profile.following_count)}</span> <span className="text-muted-foreground">Following</span>
             </button>
             <button onClick={() => setActiveTab('Followers')} className="hover:underline">
-              <span className="font-bold">{formatNumber(profile.followers_count)}</span> <span className="text-muted-foreground">Followers</span>
+              <span className="font-bold">{formatNumber(profile.follower_count)}</span> <span className="text-muted-foreground">Followers</span>
             </button>
           </div>
 
@@ -1437,8 +1451,8 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {isOwnProfile && <div className="px-4 mt-4"><RevenueAnalyticsWidget /></div>}
-      {isOwnProfile && profile && <div className="px-4 mt-4"><CreatorMonetizationHub userId={profile.id} /></div>}
+      {featureEnabled('analytics') && isOwnProfile && <div className="px-4 mt-4"><RevenueAnalyticsWidget /></div>}
+      {featureEnabled('monetization') && isOwnProfile && profile && <div className="px-4 mt-4"><CreatorMonetizationHub userId={profile.id} /></div>}
       {!isOwnProfile && profile && currentUser && (
         <div className="px-4 mt-4 space-y-3">
           <SubscriptionTiersDisplay creatorId={profile.id} viewerId={currentUser.id} creatorUsername={profile.username ?? 'creator'} />
@@ -1588,7 +1602,7 @@ export default function ProfilePage() {
           </div>
         )}
 
-        {activeTab === 'Podcasts' && (
+        {featureEnabled('podcasts') && activeTab === 'Podcasts' && (
           loadingPodcasts ? (
             <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-primary" /></div>
           ) : (
@@ -1719,7 +1733,7 @@ export default function ProfilePage() {
           )
         )}
 
-        {activeTab === 'Tips' && (
+        {featureEnabled('tips') && activeTab === 'Tips' && (
           loadingTips ? <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
           : tipHistory.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
@@ -1753,7 +1767,7 @@ export default function ProfilePage() {
           )
         )}
 
-        {activeTab === 'Series' && (
+        {featureEnabled('series') && activeTab === 'Series' && (
           loadingProfileSeries ? (
             <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-primary" /></div>
           ) : profileSeries.length === 0 ? (
@@ -1947,7 +1961,7 @@ export default function ProfilePage() {
                     <Users className="w-4 h-4 text-primary" />
                     <span className="text-sm">Followers</span>
                   </div>
-                  <span className="font-bold text-base">{(profile.followers_count ?? 0).toLocaleString()}</span>
+                  <span className="font-bold text-base">{(profile.follower_count ?? 0).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">

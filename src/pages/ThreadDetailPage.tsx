@@ -253,9 +253,14 @@ export default function ThreadDetailPage() {
     });
 
     if (error) {
+      const { data: currentThread } = await supabase
+        .from('threads')
+        .select('views_count')
+        .eq('id', id)
+        .maybeSingle();
       await supabase
         .from('threads')
-        .update({ views_count: supabase.raw('views_count + 1') })
+        .update({ views_count: Number(currentThread?.views_count ?? 0) + 1 })
         .eq('id', id);
     }
   };
@@ -300,7 +305,7 @@ export default function ThreadDetailPage() {
         .from('threads')
         .select(`
           *,
-          user_profiles (
+          profiles (
             id,
             username,
             avatar_url,
@@ -340,7 +345,7 @@ export default function ThreadDetailPage() {
               post_id,
               posts (
                 *,
-                user_profiles (*)
+                profiles (*)
               )
             `)
             .in('hashtag_id', hashtagIds)
@@ -370,7 +375,7 @@ export default function ThreadDetailPage() {
       .from('thread_replies')
       .select(`
         *,
-        user_profiles (
+        profiles (
           username,
           avatar_url,
           verified

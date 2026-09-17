@@ -2,47 +2,141 @@ import { supabase } from './supabase';
 import { User } from '@supabase/supabase-js';
 import { AuthUser } from '@/types/app-types';
 
-export function mapSupabaseUser(user: User): AuthUser {
-  return {
+function normalizeKenyaPhone(input: string) {
+  const raw = input.trim().replace(/\s+/g, '');
+  const digits = raw.replace(/\D/g, '');
+  if (/^\+254[17]\d{8}$/.test(raw)) return raw;
+  if (/^0[17]\d{8}$/.test(raw)) return `+254${raw.slice(1)}`;
+  if (/^254[17]\d{8}$/.test(digits)) return `+${digits}`;
+  if (/^[17]\d{8}$/.test(digits)) return `+254${digits}`;
+  throw new Error('Enter a valid Kenyan phone number, e.g. 0712345678');
+}
+
+function profileCandidate(user: User) {
+  const phone = user.phone || '';
+  const email = user.email || phone || '';
+  const raw = user.user_metadata?.username || user.user_metadata?.preferred_username || user.user_metadata?.user_name || user.user_metadata?.full_name || (phone ? `user_${phone.slice(-9)}` : email.split('@')[0]) || 'user';
+  let username = raw.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
+  if (username.length < 3) username = `user_${user.id.replace(/-/g, '').slice(0, 10)}`;
+  const displayName = user.user_metadata?.full_name || user.user_metadata?.name || username;
+  const rawAvatar = user.user_metadata?.avatar_url || user.user_metadata?.picture || null;
+  const avatar = rawAvatar && rawAvatar.includes('/storage/v1/object/public/tv49-profile-media/avatars/') ? rawAvatar : null;
+  return { username, displayName, avatar };
+}
+
+/**
+ * Last-mile safety net for account provisioning. The database trigger is the
+ * primary path; this authenticated client-side upsert makes signup resilient
+ * if a trigger was temporarily missing or an older account predates it.
+ */
+export async function ensureCanonicalProfile(user: User): Promise<void> {
+  const candidate = profileCandidate(user);
+  const { data: existing, error: readError } = await supabase
+    .from('profiles')
+    .select('id, username')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (readError) {
+    console.warn('[Auth] Profile provisioning read failed:', readError.message);
+    return;
+  }
+  if (existing?.username) return;
+
+  const { error } = await supabase.from('profiles').upsert({
     id: user.id,
-    email: user.email!,
-    username: user.user_metadata?.username || user.user_metadata?.full_name || user.email!.split('@')[0],
-    avatar: user.user_metadata?.avatar_url || user.user_metadata?.picture,
-  };
+    username: candidate.username,
+    display_name: candidate.displayName,
+    avatar_url: candidate.avatar,
+  }, { onConflict: 'id' });
+
+  if (error) {
+    // Username collision: use an ID-derived suffix and retry once.
+    const fallbackUsername = `${candidate.username.slice(0, 15)}_${user.id.replace(/-/g, '').slice(0, 8)}`;
+    const retry = await supabase.from('profiles').upsert({
+      id: user.id,
+      username: fallbackUsername,
+      display_name: candidate.displayName,
+      avatar_url: candidate.avatar,
+    }, { onConflict: 'id' });
+    if (retry.error) console.warn('[Auth] Canonical profile provisioning failed:', retry.error.message);
+  }
+}
+
+export function mapSupabaseUser(user: User): AuthUser {
+  const phone = user.phone || undefined;
+  const email = user.email || phone || '';
+  const username = user.user_metadata?.username || user.user_metadata?.full_name || (phone ? `user_${phone.slice(-9)}` : email.split('@')[0]);
+  return { id: user.id, email, username, avatar: user.user_metadata?.avatar_url || user.user_metadata?.picture };
+}
+
+export async function mapSupabaseUserWithCanonicalProfile(user: User): Promise<AuthUser> {
+  const mapped = mapSupabaseUser(user);
+  try {
+    await ensureCanonicalProfile(user);
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('id, username, avatar_url, verified_tier')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (error) {
+      console.warn('[Auth] Canonical profile lookup failed; using auth fallback:', error.message);
+      return mapped;
+    }
+    if (!profile?.username) {
+      console.warn('[Auth] Authenticated user has no canonical profile username:', user.id);
+      return mapped;
+    }
+    return {
+      ...mapped,
+      username: profile.username,
+      avatar: profile.avatar_url || mapped.avatar,
+      verified: !!profile.verified_tier && profile.verified_tier !== 'none',
+    };
+  } catch (error) {
+    console.warn('[Auth] Canonical profile resolver failed; using auth fallback:', error);
+    return mapped;
+  }
 }
 
 export class AuthService {
   async sendOtp(email: string) {
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { shouldCreateUser: true },
-    });
+    const { error } = await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
     if (error) throw error;
+  }
+
+  async sendPhoneOtp(phoneInput: string) {
+    const phone = normalizeKenyaPhone(phoneInput);
+    const { error } = await supabase.auth.signInWithOtp({ phone, options: { shouldCreateUser: true } });
+    if (error) throw error;
+    return phone;
   }
 
   async verifyOtpAndSetPassword(email: string, token: string, password: string) {
-    const { data, error } = await supabase.auth.verifyOtp({
-      email,
-      token,
-      type: 'email',
-    });
+    const { data, error } = await supabase.auth.verifyOtp({ email, token, type: 'email' });
     if (error) throw error;
-
     const username = email.split('@')[0];
-    const { data: updateData, error: updateError } = await supabase.auth.updateUser({
-      password,
-      data: { username },
-    });
+    const { data: updateData, error: updateError } = await supabase.auth.updateUser({ password, data: { username } });
     if (updateError) throw updateError;
-
     return updateData.user;
   }
 
+  async verifyPhoneOtp(phoneInput: string, token: string) {
+    const phone = normalizeKenyaPhone(phoneInput);
+    const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' });
+    if (error) throw error;
+    const currentUser = data.user;
+    if (!currentUser) throw new Error('Phone verification succeeded but no user session was returned');
+    if (!currentUser.user_metadata?.username) {
+      const { data: updateData, error: updateError } = await supabase.auth.updateUser({ data: { username: `user_${phone.slice(-9)}` } });
+      if (updateError) throw updateError;
+      return updateData.user;
+    }
+    return currentUser;
+  }
+
   async signInWithPassword(email: string, password: string) {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data.user;
   }

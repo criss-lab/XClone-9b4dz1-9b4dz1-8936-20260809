@@ -28,6 +28,10 @@ interface Reply {
   user_profiles: { username: string; avatar_url: string | null } | null;
 }
 
+function normalizeVideoReplies(rows: any[] | null | undefined): Reply[] {
+  return (rows ?? []).map((row) => ({ ...row, user_profiles: Array.isArray(row?.user_profiles) ? row.user_profiles[0] ?? null : row?.user_profiles ?? null }));
+}
+
 // @__PURE__ annotation prevents esbuild non-determinism on module-level Map construction
 const authorPremiumCache: Map<string, boolean> = /* @__PURE__ */ new Map();
 
@@ -232,9 +236,8 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
       await supabase.from('likes').insert({ user_id: user.id, post_id: post.id });
       await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
       if (post.user_id !== user.id) {
-        await supabase.from('notifications').insert({
-          user_id: post.user_id, type: 'like', from_user_id: user.id, post_id: post.id,
-        });
+        await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'like', actor_id: user.id, post_id: post.id,
+         });
       }
       onUpdate?.();
     } catch (_) {
@@ -253,7 +256,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     try {
       if (nowFollowing) {
         await supabase.from('follows').insert({ follower_id: user.id, following_id: post.user_id });
-        await supabase.from('notifications').insert({ user_id: post.user_id, type: 'follow', from_user_id: user.id });
+        await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'follow', actor_id: user.id  });
       } else {
         await supabase.from('follows').delete().match({ follower_id: user.id, following_id: post.user_id });
       }
@@ -277,7 +280,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
         await supabase.from('reposts').insert({ user_id: user.id, post_id: post.id });
         await supabase.from('posts').update({ reposts_count: newCount }).eq('id', post.id);
         if (post.user_id !== user.id)
-          await supabase.from('notifications').insert({ user_id: post.user_id, type: 'repost', from_user_id: user.id, post_id: post.id });
+          await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'repost', actor_id: user.id, post_id: post.id  });
         toast({ title: 'Reposted' });
       } else {
         await supabase.from('reposts').delete().match({ user_id: user.id, post_id: post.id });
@@ -386,11 +389,11 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     setCommentsLoading(true);
     const { data } = await supabase
       .from('replies')
-      .select('id, content, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, created_at, profiles(username, avatar_url)')
       .eq('post_id', post.id)
       .order('created_at', { ascending: false })
       .limit(50);
-    setComments((data as Reply[]) || []);
+    setComments(normalizeVideoReplies(data));
     setCommentsLoading(false);
   };
 
@@ -403,10 +406,10 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     const { data: inserted } = await supabase
       .from('replies')
       .insert({ post_id: post.id, user_id: user.id, content: text })
-      .select('id, content, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, created_at, profiles(username, avatar_url)')
       .single();
     if (inserted) {
-      setComments(prev => [inserted as Reply, ...prev]);
+      setComments(prev => [normalizeVideoReplies([inserted])[0], ...prev]);
       setRepliesCount(c => c + 1);
     }
     setPosting(false);

@@ -9,6 +9,7 @@ import { useSEO } from '@/hooks/useSEO';
 import { useSearchParams } from 'react-router-dom';
 import { TopBar } from '@/components/layout/TopBar';
 import { WalletDashboard } from '@/components/features/WalletDashboard';
+import { AdvertiserSurface } from '@/components/features/AdvertiserSurface';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { useWallet } from '@/hooks/useWallet';
@@ -627,7 +628,7 @@ function InstallmentPanel({ userId, walletBalance, pinHash, currency, onClose }:
     setQuery(q);
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(6);
     setResults(data ?? []); setSearching(false);
   };
@@ -799,7 +800,7 @@ function SplitPaymentPanel({ userId, senderUsername, walletBalance, pinHash, cur
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
     const excludeIds = [userId, ...recipients.map(r => r.id)];
-    const { data } = await supabase.from('user_profiles')
+    const { data } = await supabase.from('profiles')
       .select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`)
       .not('id', 'in', `(${excludeIds.map(id => `"${id}"`).join(',')})`)
@@ -1377,7 +1378,7 @@ function SpendingAnalyticsTab({ userId, currency }: { userId: string; currency: 
   const { barData, pieData, totalIn, totalOut, totalBoosts, avgTxn, recentDeposits } = useMemo(() => {
     const days = period === 'week' ? 7 : 14;
     const now  = Date.now();
-    const dailyMap: any = {};
+    const dailyMap: Record<string, { in: number; out: number }> = {};
     for (let i = days - 1; i >= 0; i--) {
       const key = new Date(now - i * 86400000).toLocaleDateString('en', { month: 'short', day: 'numeric' });
       dailyMap[key] = { in: 0, out: 0 };
@@ -1536,7 +1537,7 @@ function SendMoneyTab({ userId, senderUsername, walletBalance, pinHash, biometri
     setQuery(q);
     if (q.trim().length < 2) { setUsers([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(8);
     setUsers(data ?? []); setSearching(false);
   };
@@ -1805,7 +1806,7 @@ function ScheduledTransfersTab({ userId, currency, pinHash }: { userId: string; 
     setQuery(q);
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(6);
     setResults(data ?? []); setSearching(false);
   };
@@ -2538,7 +2539,7 @@ function ActivityHeatmap({ userId }: { userId: string }) {
   }, [userId]);
 
   const { cells, maxAmount } = useMemo(() => {
-    const map: any = {};
+    const map: Record<string, { count: number; amount: number; hasIn: boolean }> = {};
     const now = Date.now();
     for (let i = 34; i >= 0; i--) {
       const key = new Date(now - i * 86400000).toISOString().split('T')[0];
@@ -2886,7 +2887,7 @@ function P2PBalanceChart({ userId, currency }: { userId: string; currency: Curre
   }, [userId]);
 
   const { chartData, minBal, maxBal } = useMemo(() => {
-    const dayMap: any = {};
+    const dayMap: Record<string, number> = {};
     const now = Date.now();
     for (let i = 29; i >= 0; i--) {
       const key = new Date(now - i * 86400000).toLocaleDateString('en', { month: 'short', day: 'numeric' });
@@ -3085,7 +3086,7 @@ function MonthlyHeatmapCalendar({ userId, currency }: { userId: string; currency
   const { cells, maxAmt } = useMemo(() => {
     const daysInMonth  = new Date(year, month + 1, 0).getDate();
     const firstWeekday = new Date(year, month, 1).getDay();
-    const dayMap: any = {};
+    const dayMap: Record<number, { inAmt: number; outAmt: number; count: number }> = {};
     for (let d = 1; d <= daysInMonth; d++) dayMap[d] = { inAmt: 0, outAmt: 0, count: 0 };
     txns.forEach(t => {
       const day = new Date(t.created_at).getDate();
@@ -3187,7 +3188,7 @@ function RequestMoneyPanel({ userId, senderUsername, currency }: {
     setQuery(q);
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(8);
     setResults(data ?? []); setSearching(false);
   };
@@ -3614,14 +3615,14 @@ function ReferralLeaderboard({ userId }: { userId: string }) {
         .limit(500);
       const counts: any = {};
       (allRefs ?? []).forEach((r: any) => { counts[r.invited_by] = (counts[r.invited_by] ?? 0) + 1; });
-      const top10 = Object.entries(counts).sort((a: any, b: any) => b[1] - a[1]).slice(0, 10);
+      const top10 = Object.entries(counts as Record<string, number>).sort((a, b) => b[1] - a[1]).slice(0, 10);
       if (top10.length === 0) { setLeaders([]); setLoading(false); return; }
-      const { data: profiles } = await supabase.from('user_profiles')
+      const { data: profiles } = await supabase.from('profiles')
         .select('id,username,avatar_url').in('id', top10.map(([id]) => id));
       const pm: any = {};
       (profiles ?? []).forEach((p: any) => { pm[p.id] = p; });
       setLeaders(top10.map(([uid, count]) => ({
-        uid, count,
+        uid, count: Number(count),
         username: pm[uid]?.username ?? 'Unknown',
         avatarUrl: pm[uid]?.avatar_url ?? null,
       })));
@@ -4317,6 +4318,7 @@ export default function WalletPage() {
           </div>
 
           <WalletDashboard />
+        <AdvertiserSurface variant="wallet" />
           {user && wallet && <SpendLimitCard userId={user.id} wallet={wallet} onSaved={fetchWallet} />}
           {user && wallet && <PinSetupCard userId={user.id} pinHash={(wallet as any)?.wallet_pin_hash ?? null} onSaved={fetchWallet} />}
           {user && wallet && <BiometricCard userId={user.id} credentialId={(wallet as any)?.biometric_credential_id ?? null} onSaved={fetchWallet} />}

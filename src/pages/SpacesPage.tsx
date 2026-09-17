@@ -142,7 +142,7 @@ export default function SpacesPage() {
     const clipUrl = `${window.location.origin}/space-recording/${clipRecId}?t=${clipStart}&end=${clipEnd}`;
     const shareTitle = `Clip: ${clipRecTitle.slice(0, 60)}`;
     if (navigator.share) {
-      await navigator.share({ title: shareTitle, url: clipUrl }).catch(() => {});
+      await navigator.share({ title: shareTitle, url: clipUrl }).then(() => {}).catch(() => {});
     } else {
       navigator.clipboard.writeText(clipUrl).then(() => { setClipCopied(true); setTimeout(() => setClipCopied(false), 2500); });
     }
@@ -163,8 +163,8 @@ export default function SpacesPage() {
     setSendingEpTip(true);
     const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: tipEpAmount });
     if (deductErr) { toast.error('Insufficient wallet balance'); setSendingEpTip(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: tipEpHostId, p_amount: tipEpAmount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: tipEpHostId, amount: tipEpAmount }).catch(() => {});
+    await supabase.rpc('add_to_wallet', { p_user_id: tipEpHostId, p_amount: tipEpAmount }).then(() => {}).catch(() => {});
+    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: tipEpHostId, amount: tipEpAmount }).then(() => {}).catch(() => {});
     toast.success(`$${tipEpAmount} tip sent to @${tipEpHostName}!`);
     setTippedEpIds(prev => new Set([...prev, tipEpId!]));
     setTipEpId(null);
@@ -176,7 +176,7 @@ export default function SpacesPage() {
   // ── Playlist share ────────────────────────────────────────────────────────
   const sharePlaylist = useCallback((pl: Playlist) => {
     const url = `${window.location.origin}/spaces?playlist=${pl.id}`;
-    if (navigator.share) { navigator.share({ title: pl.name, url }).catch(() => {}); }
+    if (navigator.share) { navigator.share({ title: pl.name, url }).then(() => {}).catch(() => {}); }
     else { navigator.clipboard.writeText(url).then(() => toast.success('Playlist link copied!')); }
   }, []);
 
@@ -273,7 +273,7 @@ export default function SpacesPage() {
 
   const fetchUserProfile = async () => {
     if (!user) return;
-    const { data } = await supabase.from('user_profiles').select('verified, subscriber_count, followers_count, creator_tier, username').eq('id', user.id).single();
+    const { data } = await supabase.from('profiles').select('verified, subscriber_count, follower_count, creator_tier, username').eq('id', user.id).single();
     if (data) setUserProfile(data);
   };
 
@@ -318,7 +318,7 @@ export default function SpacesPage() {
   const handleShareSpace = useCallback((id: string, title: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `${window.location.origin}/spaces?space=${id}`;
-    if (navigator.share) { navigator.share({ title, url }).catch(() => {}); }
+    if (navigator.share) { navigator.share({ title, url }).then(() => {}).catch(() => {}); }
     else { navigator.clipboard.writeText(url).then(() => { setCopiedId(id); setTimeout(() => setCopiedId(null), 2000); toast.success('Link copied!'); }); }
   }, []);
 
@@ -332,7 +332,7 @@ export default function SpacesPage() {
 
   const fetchAllRecordings = async () => {
     const { data } = await supabase.from('space_recordings')
-      .select('*, user_profiles(*), spaces(title, description, category, artwork_url, episode_number, chapters, tags, subscriber_only, host:user_profiles!spaces_host_id_fkey(*))')
+      .select('*, profiles(*), spaces(title, description, category, artwork_url, episode_number, chapters, tags, subscriber_only, host:user_profiles!spaces_host_id_fkey(*))')
       .order('created_at', { ascending: false }).limit(40);
     if (data) setAllRecordings(data);
   };

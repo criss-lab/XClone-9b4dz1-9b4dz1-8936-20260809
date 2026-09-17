@@ -185,7 +185,7 @@ export default function CommunityPage() {
         agg[row.user_id].likes += row.likes_count ?? 0;
         agg[row.user_id].posts += 1;
       }
-      setLeaderboard(Object.values(agg).sort((a, b) => b.likes - a.likes).slice(0, 3));
+      setLeaderboard((Object.values(agg) as Array<{ profile: any; likes: number; posts: number }>).sort((a, b) => b.likes - a.likes).slice(0, 3));
     }
     setLeaderboardFetched(true);
     setLoadingLeaderboard(false);
@@ -196,7 +196,7 @@ export default function CommunityPage() {
   const fetchWeeklyDigest = useCallback(async (communityId: string) => {
     const since7d = new Date(Date.now() - 7 * 86400000).toISOString();
     const { data } = await supabase.from('posts')
-      .select('id, content, likes_count, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, likes_count, created_at, profiles(username, avatar_url)')
       .eq('community_id', communityId).gte('created_at', since7d)
       .order('likes_count', { ascending: false }).limit(3);
     setDigestPosts(data ?? []);
@@ -231,7 +231,7 @@ export default function CommunityPage() {
       const q = match[1].toLowerCase();
       setMentionQuery(q);
       const suggestions = members
-        .map(m => ({ id: m.user_profiles?.id ?? m.user_id ?? '', username: m.user_profiles?.username ?? '', avatar_url: m.user_profiles?.avatar_url ?? null }))
+        .map(m => ({ id: (m.user_profiles as any)?.id ?? m.user_id ?? '', username: m.user_profiles?.username ?? '', avatar_url: m.user_profiles?.avatar_url ?? null }))
         .filter(m => m.username && (q.length === 0 || m.username.toLowerCase().includes(q)))
         .slice(0, 6);
       setMentionResults(suggestions);
@@ -280,7 +280,7 @@ export default function CommunityPage() {
     setShowChatGifPicker(false); setChatSending(true);
     await supabase.from('community_chat').insert({ community_id: community.id, user_id: user.id, message: gifUrl });
     const rawData = await supabase.from('community_chat')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('community_id', community.id).order('created_at', { ascending: true }).limit(100);
     if (rawData.data) setChatMessages(rawData.data);
     setChatSending(false);
@@ -312,7 +312,7 @@ export default function CommunityPage() {
   const fetchChat = useCallback(async () => {
     if (!community) return;
     const { data } = await supabase.from('community_chat')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('community_id', community.id).order('created_at', { ascending: true }).limit(100);
     if (data) {
       setChatMessages(data);
@@ -366,7 +366,7 @@ export default function CommunityPage() {
       const mentionedUsernames = mentionMatches.map(m => m.slice(1)).filter((u, i, a) => a.indexOf(u) === i).filter(u => u !== user.username);
       if (mentionedUsernames.length > 0) {
         const { data: mentionedProfiles } = await supabase
-          .from('user_profiles')
+          .from('profiles')
           .select('id, username')
           .in('username', mentionedUsernames.slice(0, 5));
         if (mentionedProfiles && mentionedProfiles.length > 0) {
@@ -574,7 +574,7 @@ export default function CommunityPage() {
         setIsMember(!!memberData);
         if (memberData) setUserRole(memberData.role);
       }
-      const { data: membersData } = await supabase.from('community_members').select('*, user_profiles(username, avatar_url, verified)').eq('community_id', data.id).order('role', { ascending: true }).limit(20);
+      const { data: membersData } = await supabase.from('community_members').select('*, profiles(username, avatar_url, verified)').eq('community_id', data.id).order('role', { ascending: true }).limit(20);
       if (membersData) setMembers(membersData);
     } catch { toast({ title: 'Community not found', variant: 'destructive' }); navigate('/communities'); }
     finally { setLoading(false); }
@@ -584,7 +584,7 @@ export default function CommunityPage() {
     if (!community) return;
     setLoadingPosts(true);
     try {
-      const { data } = await supabase.from('posts').select('*, user_profiles(*)').eq('community_id', community.id).order('created_at', { ascending: false });
+      const { data } = await supabase.from('posts').select('*, profiles(*)').eq('community_id', community.id).order('created_at', { ascending: false });
       if (data) setPosts(data);
     } catch (err) { console.error('fetchPosts error:', err); }
     finally { setLoadingPosts(false); }
