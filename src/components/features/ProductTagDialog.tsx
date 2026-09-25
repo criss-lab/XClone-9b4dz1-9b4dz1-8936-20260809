@@ -63,8 +63,9 @@ export function ProductTagDialog({ onClose, onProductSelected }: ProductTagDialo
     return (
       <CreateProductForm
         onClose={() => setShowCreateProduct(false)}
-        onCreated={() => {
+        onCreated={(created) => {
           setShowCreateProduct(false);
+          if (created) setSelectedProducts(prev => prev.some(p => p.id === created.id) ? prev : [...prev, created]);
           fetchProducts();
         }}
       />
@@ -163,7 +164,7 @@ export function ProductTagDialog({ onClose, onProductSelected }: ProductTagDialo
   );
 }
 
-function CreateProductForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateProductForm({ onClose, onCreated }: { onClose: () => void; onCreated: (product?: Product) => void }) {
   const { user } = useAuth();
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
@@ -180,20 +181,29 @@ function CreateProductForm({ onClose, onCreated }: { onClose: () => void; onCrea
     setLoading(true);
 
     try {
-      const { error } = await supabase
+      const { data: createdProduct, error } = await supabase
         .from('products')
         .insert({
           user_id: user.id,
           name: name.trim(),
           price: parseFloat(price),
           description: description.trim(),
-          external_link: externalLink.trim()
-        });
+          external_link: externalLink.trim() || null,
+          image_url: null,
+          stock: 0,
+          category: 'other',
+          region: 'all',
+          local_delivery: false,
+          delivery_fee_minor: 0,
+          is_active: true,
+        })
+        .select('id, name, price, image_url')
+        .single();
 
       if (error) throw error;
 
-      toast.success('Product created successfully');
-      onCreated();
+      toast.success('Product created and listed in Marketplace');
+      onCreated(createdProduct ?? undefined);
     } catch (error: any) {
       toast.error(error.message);
     } finally {

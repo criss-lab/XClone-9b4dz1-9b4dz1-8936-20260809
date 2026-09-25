@@ -1,0 +1,113 @@
+import { invokeBackendFunction } from '@/services/backendClient';
+import { TestagramEvent, trackTestagramEvent } from '@/lib/testagram-analytics';
+
+export type MegalodonAction =
+  | 'detect'
+  | 'register_app'
+  | 'oauth_token'
+  | 'instance'
+  | 'verify'
+  | 'account'
+  | 'status'
+  | 'public_timeline'
+  | 'home_timeline'
+  | 'search'
+  | 'post'
+  | 'favourite'
+  | 'unfavourite'
+  | 'reblog'
+  | 'unreblog'
+  | 'follow'
+  | 'unfollow';
+
+export interface MegalodonRequest {
+  [key: string]: unknown;
+  action: MegalodonAction;
+  instance: string;
+  accessToken?: string;
+  accountId?: string;
+  statusId?: string;
+  query?: string;
+  type?: 'accounts' | 'statuses' | 'hashtags';
+  limit?: number;
+  redirectUri?: string;
+  scopes?: string;
+  clientId?: string;
+  clientSecret?: string;
+  code?: string;
+  status?: string;
+  visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+  sensitive?: boolean;
+  spoilerText?: string;
+  inReplyToId?: string;
+}
+
+export interface MegalodonResponse<T = unknown> {
+  ok: true;
+  user_id: string;
+  provider: string;
+  instance?: unknown;
+  account?: T;
+  status?: T;
+  statuses?: T[];
+  result?: T;
+  relationship?: T;
+  client_id?: string;
+  client_secret?: string;
+  url?: string;
+  access_token?: string;
+  refresh_token?: string;
+}
+
+export async function megalodonGateway<T = unknown>(request: MegalodonRequest): Promise<MegalodonResponse<T>> {
+  const instance = request.instance.trim().replace(/\/$/, '');
+  if (!instance) throw new Error('Fediverse instance is required');
+  if (!/^https:\/\//i.test(instance)) throw new Error('Fediverse instance must use HTTPS');
+
+  const startedAt = Date.now();
+  try {
+    const result = await invokeBackendFunction<MegalodonResponse<T>, MegalodonRequest>('megalodon-gateway', {
+      ...request,
+      instance,
+    });
+    trackTestagramEvent(TestagramEvent.CAPABILITY_SUCCEEDED, {
+      capability: 'megalodon-gateway',
+      action: request.action,
+      provider: result.provider,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    trackTestagramEvent(TestagramEvent.CAPABILITY_FAILED, {
+      capability: 'megalodon-gateway',
+      action: request.action,
+      duration_ms: Date.now() - startedAt,
+      error_type: error instanceof Error ? error.name : 'unknown',
+    });
+    throw error;
+  }
+}
+
+export const megalodonGatewayService = {
+  detect: (instance: string) => megalodonGateway({ action: 'detect', instance }),
+  registerApp: (instance: string, redirectUri: string, scopes = 'read write follow') =>
+    megalodonGateway({ action: 'register_app', instance, redirectUri, scopes }),
+  exchangeOAuthCode: (instance: string, clientId: string, clientSecret: string, code: string, redirectUri: string) =>
+    megalodonGateway({ action: 'oauth_token', instance, clientId, clientSecret, code, redirectUri }),
+  getInstance: (instance: string) => megalodonGateway({ action: 'instance', instance }),
+  verify: (instance: string, accessToken: string) => megalodonGateway({ action: 'verify', instance, accessToken }),
+  getAccount: (instance: string, accountId: string, accessToken?: string) => megalodonGateway({ action: 'account', instance, accountId, accessToken }),
+  getStatus: (instance: string, statusId: string, accessToken?: string) => megalodonGateway({ action: 'status', instance, statusId, accessToken }),
+  getPublicTimeline: (instance: string, limit = 20, accessToken?: string) => megalodonGateway({ action: 'public_timeline', instance, limit, accessToken }),
+  getHomeTimeline: (instance: string, accessToken: string, limit = 20) => megalodonGateway({ action: 'home_timeline', instance, accessToken, limit }),
+  search: (instance: string, query: string, type: MegalodonRequest['type'] = 'statuses', accessToken?: string) => megalodonGateway({ action: 'search', instance, query, type, accessToken }),
+  post: (instance: string, accessToken: string, status: string, options: Pick<MegalodonRequest, 'visibility' | 'sensitive' | 'spoilerText' | 'inReplyToId'> = {}) => megalodonGateway({ action: 'post', instance, accessToken, status, ...options }),
+  favourite: (instance: string, accessToken: string, statusId: string) => megalodonGateway({ action: 'favourite', instance, accessToken, statusId }),
+  unfavourite: (instance: string, accessToken: string, statusId: string) => megalodonGateway({ action: 'unfavourite', instance, accessToken, statusId }),
+  reblog: (instance: string, accessToken: string, statusId: string) => megalodonGateway({ action: 'reblog', instance, accessToken, statusId }),
+  unreblog: (instance: string, accessToken: string, statusId: string) => megalodonGateway({ action: 'unreblog', instance, accessToken, statusId }),
+  follow: (instance: string, accessToken: string, accountId: string) => megalodonGateway({ action: 'follow', instance, accessToken, accountId }),
+  unfollow: (instance: string, accessToken: string, accountId: string) => megalodonGateway({ action: 'unfollow', instance, accessToken, accountId }),
+};
+
+export default megalodonGatewayService;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useSEO } from '@/hooks/useSEO';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
@@ -15,7 +15,6 @@ import {
   TrendingUp,
   Calendar,
   Trophy,
-  Crown,
   Loader2,
   BadgeCheck,
 } from 'lucide-react';
@@ -34,6 +33,7 @@ interface ReferralRecord {
   id: string;
   invited_user: string;
   credits_awarded: number;
+  status: 'pending' | 'completed' | string;
   created_at: string;
   profile: {
     username: string;
@@ -51,127 +51,134 @@ interface LeaderEntry {
   credits: number;
 }
 
+interface ReferralChartPoint {
+  date: string;
+  referrals: number;
+  credits: number;
+}
+
 export default function ReferralPage() {
   useSEO({ noindex: true, title: 'Referrals', url: '/referrals' });
   const { user } = useAuth();
-  const [referrals, setReferrals] = useState([]);  // esbuild guard: no explicit generic
+  const [referrals, setReferrals] = useState<ReferralRecord[]>([]);
   const [totalCredits, setTotalCredits] = useState(0);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [chartData, setChartData] = useState([]);  // esbuild guard: no explicit generic
+  const [chartData, setChartData] = useState<ReferralChartPoint[]>([]);
   // Leaderboard
-  const [leaderboard, setLeaderboard] = useState([]);  // esbuild guard: no explicit generic
+  const [leaderboard, setLeaderboard] = useState<LeaderEntry[]>([]);
   const [leaderLoading, setLeaderLoading] = useState(true);
+  const [referralCode, setReferralCode] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const referralLink = user
-    ? `${window.location.origin}/auth?ref=${user.id}`
+  const referralLink = user && referralCode
+    ? `${window.location.origin}/auth?ref=${encodeURIComponent(referralCode)}`
     : '';
 
   useEffect(() => {
     if (!user) { setLoading(false); return; }
-    loadReferrals();
-    loadLeaderboard();
+    void loadReferrals();
+    void loadLeaderboard();
   }, [user]);
 
-  const loadReferrals = async () => {
-    const { data } = await supabase
-      .from('referrals')
-      .select(`
-        id,
-        invited_user,
-        credits_awarded,
-        created_at,
-        profile:user_profiles!referrals_invited_user_fkey(username, avatar_url, verified)
-      `)
-      .eq('invited_by', user!.id)
-      .order('created_at', { ascending: false });
+  const buildChart = (rows: ReferralRecord[]) => {
+    const today = startOfDay(new Date());
+    const points = Array.from({ length: 30 }, (_, index) => {
+      const day = subDays(today, 29 - index);
+      return {
+        date: format(day, 'MMM d'),
+        referrals: 0,
+        credits: 0,
+        dayKey: format(day, 'yyyy-MM-dd'),
+      };
+    });
 
-    if (data) {
-      const list = data as any[];
+    const byDay = new Map(points.map((point) => [point.dayKey, point]));
+    rows.forEach((row) => {
+      const dayKey = format(startOfDay(new Date(row.created_at)), 'yyyy-MM-dd');
+      const point = byDay.get(dayKey);
+      if (!point) return;
+      point.referrals += 1;
+      point.credits += Number(row.credits_awarded ?? 0);
+    });
+
+    setChartData(points.map(({ dayKey: _dayKey, ...point }) => point));
+  };
+
+  const loadReferrals = async () => {
+    if (!user) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { data: code, error: codeError } = await supabase.rpc('ensure_referral_code');
+      if (codeError) throw codeError;
+      if (code) setReferralCode(String(code));
+
+      const [{ data: statusData, error: statusError }, { data: listData, error: listError }] = await Promise.all([
+        supabase.rpc('get_referral_status'),
+        supabase.rpc('list_referrals'),
+      ]);
+      if (statusError) throw statusError;
+      if (listError) throw listError;
+
+      const list = Array.isArray(listData?.items) ? listData.items as ReferralRecord[] : [];
       setReferrals(list);
-      setTotalCredits(list.reduce((s, r) => s + (r.credits_awarded ?? 0), 0));
+      setTotalCredits(Number(statusData?.earned_credits ?? 0));
       buildChart(list);
+    } catch (err: any) {
+      setError(err?.message || 'We could not load your referral data.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const loadLeaderboard = async () => {
     setLeaderLoading(true);
-    // Aggregate top referrers by count
-    const { data } = await supabase
-      .from('referrals')
-      .select('invited_by, credits_awarded, user_profiles!referrals_invited_by_fkey(id, username, avatar_url, verified)');
-    if (!data) { setLeaderLoading(false); return; }
-    // Build parallel arrays for aggregation
-    const ids: string[] = [];
-    const counts: number[] = [];
-    const credits: number[] = [];
-    const usernames: string[] = [];
-    const avatars: (string | null)[] = [];
-    const verifieds: boolean[] = [];
-    for (const row of data) {
-      const p = (row as any).user_profiles;
-      const uid = row.invited_by;
-      if (!uid || !p) continue;
-      const idx = ids.indexOf(uid);
-      if (idx >= 0) {
-        counts[idx] += 1;
-        credits[idx] += row.credits_awarded ?? 100;
-      } else {
-        ids.push(uid);
-        counts.push(1);
-        credits.push(row.credits_awarded ?? 100);
-        usernames.push(p.username ?? 'user');
-        avatars.push(p.avatar_url ?? null);
-        verifieds.push(!!p.verified);
-      }
-    }
-    // Sort by count desc, take top 10
-    const idxArr = ids.map((_, i) => i);
-    idxArr.sort((a, b) => counts[b] - counts[a]);
-    // esbuild guard: no inline object in .map() — use for-loop push instead
-    const top: any[] = [];
-    for (let j = 0; j < Math.min(idxArr.length, 10); j++) {
-      const ii = idxArr[j];
-      const entry = { userId: ids[ii], username: usernames[ii], avatar: avatars[ii], verified: verifieds[ii], count: counts[ii], credits: credits[ii] };
-      top.push(entry);
-    }
-    setLeaderboard(top);
+    const { data, error: leaderboardError } = await supabase.rpc('referral_leaderboard');
+    if (!leaderboardError && Array.isArray(data?.items)) setLeaderboard(data.items);
+    else setLeaderboard([]);
     setLeaderLoading(false);
-  };
-
-  const buildChart = (list: ReferralRecord[]) => {
-    // Build 30-day referral timeline
-    const days = Array.from({ length: 30 }, (_, i) => {
-      const d = subDays(new Date(), 29 - i);
-      return { date: format(d, 'MM/dd'), key: format(startOfDay(d), 'yyyy-MM-dd'), referrals: 0, credits: 0 };
-    });
-    list.forEach(r => {
-      const dayKey = format(startOfDay(new Date(r.created_at)), 'yyyy-MM-dd');
-      const entry = days.find(d => d.key === dayKey);
-      if (entry) { entry.referrals += 1; entry.credits += r.credits_awarded ?? 100; }
-    });
-    setChartData(days);
   };
 
   const copyLink = async () => {
     if (!referralLink) return;
-    await navigator.clipboard.writeText(referralLink);
-    setCopied(true);
-    toast.success('Link copied to clipboard!');
-    setTimeout(() => setCopied(false), 2500);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(referralLink);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = referralLink;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      setCopied(true);
+      toast.success('Referral link copied');
+      window.setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast.error('Could not copy the link. Press and hold the link to copy it.');
+    }
   };
 
   const shareLink = async () => {
-    if (navigator.share) {
-      await navigator.share({
-        title: 'Join me on TSocial!',
-        text: "Hey! I'm inviting you to TSocial. Sign up using my link and we both earn 100 credits!",
-        url: referralLink,
-      });
-    } else {
-      copyLink();
+    if (!referralLink) return;
+    const shareData = {
+      title: 'Join me on Testagram',
+      text: 'Join me on Testagram. Sign up with my referral link and we both earn 100 credits!',
+      url: referralLink,
+    };
+    try {
+      if (navigator.share && (!navigator.canShare || navigator.canShare(shareData))) {
+        await navigator.share(shareData);
+        return;
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
     }
+    await copyLink();
   };
 
   const steps = [
@@ -253,7 +260,17 @@ export default function ReferralPage() {
           </div>
         )}
 
-        {/* Stats hero */}
+        {error && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold">Referral data could not load</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Your credits are safe. Try loading the referral data again.</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void loadReferrals()}>Retry</Button>
+        </div>
+      )}
+
+      {/* Stats hero */}
         <div className="rounded-2xl bg-gradient-to-br from-primary/15 via-purple-500/10 to-blue-500/5 border border-primary/20 p-5 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-24 h-24 bg-primary/10 rounded-full -translate-y-8 translate-x-8" />
           <div className="absolute bottom-0 left-0 w-16 h-16 bg-purple-500/10 rounded-full translate-y-6 -translate-x-4" />
@@ -278,6 +295,7 @@ export default function ReferralPage() {
                 </div>
                 <p className="text-2xl font-bold">{referrals.length}</p>
                 <p className="text-xs text-muted-foreground">Friends invited</p>
+                {referrals.some((r) => r.status === 'pending') && <p className="text-[10px] text-amber-500 mt-0.5">Includes pending</p>}
               </div>
               <div className="text-center p-2 rounded-xl bg-background/60">
                 <div className="flex items-center justify-center gap-1 mb-1">
@@ -489,11 +507,12 @@ export default function ReferralPage() {
                 <p className="text-xs text-muted-foreground">
                   Joined {new Date(r.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                 </p>
+                {r.status === 'pending' && <span className="inline-flex mt-1 text-[10px] font-semibold text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded-full">Pending reward</span>}
               </div>
 
               <div className="flex items-center gap-1 text-amber-500 font-bold text-sm flex-shrink-0">
                 <Coins className="w-3.5 h-3.5" />
-                +{r.credits_awarded ?? 100}
+                +{r.credits_awarded ?? 0}
               </div>
             </div>
           ))

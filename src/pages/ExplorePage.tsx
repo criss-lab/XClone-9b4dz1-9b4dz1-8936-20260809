@@ -1,5 +1,6 @@
 
 import { useState, useEffect, useRef } from 'react';
+import { FederatedOrganicInjection, FederatedHashtagDiscovery } from '@/components/features/FederatedOrganicDiscovery';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
 import { useNavigate } from 'react-router-dom';
 import { TopBar } from '@/components/layout/TopBar';
@@ -12,6 +13,7 @@ import { formatNumber } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { useSEO } from '@/hooks/useSEO';
+import { backendCapabilities } from '@/services/testagramCapabilityClient';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { ShoppingBag, Star as StarIcon, Heart as HeartIcon, MapPin as MapPinIcon, BadgeCheck as BadgeCheckIcon, ExternalLink as ExtLinkIcon } from 'lucide-react';
 
@@ -54,10 +56,10 @@ function ExploreMarketplace({ searchQuery, navigate }: { searchQuery: string; na
     (async () => {
       let query = supabase
         .from('products')
-        .select('*, user_profiles(id, username, avatar_url, verified)')
+        .select('*, user_profiles:profiles!products_user_id_fkey(id, username, avatar_url, verified_tier)')
         .eq('is_active', true)
         .order('views_count', { ascending: false })
-        .limit(60);
+        .limit(20);
       if (catFilter !== 'all') query = query.eq('category', catFilter);
       const { data } = await query;
       if (!cancelled) { setProducts(data ?? []); setLoading(false); }
@@ -275,30 +277,32 @@ function CategoryTabContent({
     setRxCountEmojis([]);
     setRxCounts([]);
     (async () => {
+      // Each category owns its own query. Never fall back to the global
+      // trending feed: a sparse category should stay sparse rather than
+      // displaying unrelated posts that belong to another surface.
       const since7d = new Date(Date.now() - 7 * 86400000).toISOString();
-      // Build OR filter from keywords
       const orFilter = keywords.map(k => `content.ilike.%${k}%`).join(',');
-      const { data } = await supabase
+      let query = supabase
         .from('posts')
-        .select('id, content, image_url, video_url, is_video, views_count, likes_count, reposts_count, replies_count, created_at, user_profiles(id, username, avatar_url, verified)')
+        .select('id, content, image_url, video_url, is_video, views_count, likes_count, reposts_count, replies_count, created_at, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
         .or(orFilter)
         .is('community_id', null)
-        .gte('created_at', since7d)
-        .order('views_count', { ascending: false })
-        .limit(30);
+        .is('deleted_at', null)
+        .gte('created_at', since7d);
+
+      // Distinct editorial intent per surface:
+      // News = recency, Sports = conversation velocity, Entertainment = engagement/media.
+      if (activeTab === 'News') {
+        query = query.order('created_at', { ascending: false });
+      } else if (activeTab === 'Sports') {
+        query = query.order('likes_count', { ascending: false });
+      } else {
+        query = query.order('views_count', { ascending: false });
+      }
+
+      const { data } = await query.limit(30);
       if (!cancelled) {
-        let finalPosts = data ?? [];
-        // Also fetch general trending posts if no category matches
-        if (finalPosts.length < 5) {
-          const { data: fallback } = await supabase
-            .from('posts')
-            .select('id, content, image_url, video_url, is_video, views_count, likes_count, reposts_count, replies_count, created_at, user_profiles(id, username, avatar_url, verified)')
-            .is('community_id', null)
-            .gte('created_at', since7d)
-            .order('views_count', { ascending: false })
-            .limit(30);
-          finalPosts = fallback ?? [];
-        }
+        const finalPosts = data ?? [];
         setPosts(finalPosts);
         setLoading(false);
         // Fetch reactions for these posts
@@ -585,6 +589,8 @@ export default function ExplorePage() {
   // ── Trending Posts Feed (top views in last 48h) ──
   const [trendingPosts, setTrendingPosts] = useState([] as any[]);
   const [trendingPostsLoading, setTrendingPostsLoading] = useState(false);
+  // Fresh local fallback keeps Explore useful when live trend tables have no current rows.
+  const [freshExplorePosts, setFreshExplorePosts] = useState([] as any[]);
   // ── Category post counts for tab badges ──
   // esbuild guard: plain number array, not Record<string,number>
   const [catPostCounts, setCatPostCounts] = useState([0, 0, 0]);
@@ -602,10 +608,10 @@ export default function ExplorePage() {
     if (!q.trim() || q.trim().length < 2) { setSearchSuggestions([]); setShowSuggestions(false); return; }
     suggestTimerRef.current = setTimeout(async () => {
       const { data } = await supabase
-        .from('user_profiles')
-        .select('id, username, avatar_url, verified, followers_count')
+        .from('profiles')
+        .select('id, username, avatar_url, verified, follower_count')
         .ilike('username', `%${q.trim()}%`)
-        .order('followers_count', { ascending: false })
+        .order('follower_count', { ascending: false })
         .limit(5);
       if (data && data.length > 0) { setSearchSuggestions(data); setShowSuggestions(true); }
       else { setSearchSuggestions([]); setShowSuggestions(false); }
@@ -620,11 +626,11 @@ export default function ExplorePage() {
       setInlineSearchLoading(true);
       const clean = q.trim();
       const [usersRes, hashtagsRes, postsRes] = await Promise.all([
-        supabase.from('user_profiles').select('id, username, avatar_url, verified, followers_count, bio')
-          .ilike('username', `%${clean}%`).order('followers_count', { ascending: false }).limit(5),
+        supabase.from('profiles').select('id, username, avatar_url, verified, follower_count, bio')
+          .ilike('username', `%${clean}%`).order('follower_count', { ascending: false }).limit(5),
         supabase.from('hashtags').select('id, tag, usage_count')
           .ilike('tag', `${clean.replace(/^#/, '')}%`).order('usage_count', { ascending: false }).limit(5),
-        supabase.from('posts').select('id, content, image_url, is_video, views_count, likes_count, user_profiles(id, username, avatar_url, verified)')
+        supabase.from('posts').select('id, content, image_url, is_video, views_count, likes_count, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
           .ilike('content', `%${clean}%`).is('community_id', null).order('likes_count', { ascending: false }).limit(5),
       ]);
       setInlineSearchResults({
@@ -681,11 +687,37 @@ export default function ExplorePage() {
   const tabs: ExploreTab[] = ['Explore', 'Trending', 'News', 'Sports', 'Entertainment', 'Marketplace'];
 
   useEffect(() => {
-    fetchData();
-    fetchActiveChallenges();
-    fetchExploreStories();
-    fetchTrendingPosts();
-    fetchCategoryPostCounts();
+    let cancelled = false;
+    void fetchData();
+
+    // Keep the first render focused on the active surface. Secondary Explore
+    // datasets are fetched only when their tab/section can actually use them.
+    if (activeTab === 'Explore') {
+      void fetchExploreStories();
+      void fetchFreshExplorePosts();
+    }
+    if (activeTab === 'Trending') {
+      void fetchTrendingPosts();
+      void fetchCategoryPostCounts();
+    }
+    if (activeTab === 'News' || activeTab === 'Sports' || activeTab === 'Entertainment') {
+      void fetchTrendingPosts();
+    }
+    if (activeTab === 'Explore' || activeTab === 'Trending') {
+      const schedule = typeof window !== 'undefined' && 'requestIdleCallback' in window
+        ? (cb: () => void) => (window as Window & { requestIdleCallback: (callback: () => void) => number }).requestIdleCallback(cb)
+        : (cb: () => void) => window.setTimeout(cb, 1);
+      const idleId = schedule(() => { if (!cancelled) void fetchActiveChallenges(); });
+      return () => {
+        cancelled = true;
+        if (typeof idleId === 'number' && 'cancelIdleCallback' in window) {
+          (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(idleId);
+        } else if (typeof idleId === 'number') {
+          window.clearTimeout(idleId);
+        }
+      };
+    }
+    return () => { cancelled = true; };
   }, [activeTab, user?.id]);
 
   const fetchCategoryPostCounts = async () => {
@@ -711,13 +743,24 @@ export default function ExplorePage() {
     const since48h = new Date(Date.now() - 48 * 3600000).toISOString();
     const { data } = await supabase
       .from('posts')
-      .select('id, content, image_url, video_url, media_urls, is_video, views_count, likes_count, user_profiles(id, username, avatar_url, verified)')
+      .select('id, content, image_url, video_url, media_urls, is_video, views_count, likes_count, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
       .is('community_id', null)
       .gte('created_at', since48h)
       .order('views_count', { ascending: false })
       .limit(10);
     setTrendingPosts(data ?? []);
     setTrendingPostsLoading(false);
+  };
+
+  const fetchFreshExplorePosts = async () => {
+    const { data } = await supabase
+      .from('posts')
+      .select('id, content, image_url, video_url, media_urls, is_video, views_count, likes_count, reposts_count, replies_count, created_at, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
+      .is('community_id', null)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(12);
+    setFreshExplorePosts(data ?? []);
   };
 
   // Story progress timer
@@ -749,7 +792,7 @@ export default function ExplorePage() {
     try {
       const { data: stories } = await supabase
         .from('stories')
-        .select('id, media_url, media_type, caption, views_count, user_id, user_profiles(id, username, avatar_url, verified)')
+        .select('id, media_url, media_type, caption, views_count, user_id, expires_at, created_at')
         .gt('expires_at', new Date().toISOString())
         .order('views_count', { ascending: false })
         .limit(30);
@@ -778,18 +821,17 @@ export default function ExplorePage() {
 
   const fetchData = async () => {
     setLoading(true);
-    await supabase.rpc('refresh_trending_topics').catch(() => {});
-    const [trendingRes, hashtagRes, whoRes] = await Promise.all([
-      supabase.from('trending_topics').select('*').order('posts_count', { ascending: false }).limit(50),
-      supabase.from('trending_hashtags').select('hashtag_id, trend_score, daily_posts, hashtags(id, tag, usage_count)').order('trend_score', { ascending: false }).limit(20),
-      supabase.from('user_profiles').select('*').order('followers_count', { ascending: false }).limit(10),
+    const [trendingData, hashtagRes, whoRes] = await Promise.allSettled([
+      backendCapabilities.getTrends(50),
+      supabase.from('hashtags').select('id, tag, usage_count, post_count, federated_post_count, last_used_at').order('federated_post_count', { ascending: false }).order('usage_count', { ascending: false }).order('last_used_at', { ascending: false }).limit(20),
+      supabase.from('profiles').select('id, username, display_name, avatar_url, follower_count, verified_tier, verified').order('follower_count', { ascending: false }).limit(10),
     ]);
-    setTrending(trendingRes.data ?? []);
-    if (hashtagRes.data) {
-      setTrendingHashtags(hashtagRes.data.filter((r: any) => r.hashtags).map((r: any) => ({ ...r.hashtags, daily_posts: r.daily_posts })));
+    setTrending(trendingData.status === 'fulfilled' ? (trendingData.value?.items ?? []) : []);
+    if (hashtagRes.status === 'fulfilled' && hashtagRes.value.data) {
+      setTrendingHashtags((hashtagRes.value.data as any[]).map((h: any) => ({ ...h, daily_posts: Number(h.federated_post_count ?? 0) + Number(h.post_count ?? h.usage_count ?? 0) })));
     }
-    if (whoRes.data) {
-      let suggestions = whoRes.data;
+    if (whoRes.status === 'fulfilled' && whoRes.value.data) {
+      let suggestions = whoRes.value.data;
       if (user) suggestions = suggestions.filter((u: any) => u.id !== user.id);
       setWhoToFollow(suggestions.slice(0, 5));
     }
@@ -809,7 +851,7 @@ export default function ExplorePage() {
     } else {
       await supabase.from('follows').insert({ follower_id: user.id, following_id: profileId });
       setFollowingIdArr(prev => [...prev, profileId]);
-      await supabase.from('notifications').insert({ user_id: profileId, type: 'follow', from_user_id: user.id }).catch(() => {});
+      await supabase.from('notifications').insert({ recipient_id: profileId, kind: 'follow', actor_id: user.id  }).catch(() => {});
       toast.success(`Following @${username}!`);
     }
   };
@@ -988,7 +1030,7 @@ export default function ExplorePage() {
                           <span className="text-sm font-semibold truncate">@{u.username}</span>
                           {u.verified && <BadgeCheck className="w-3 h-3 text-primary shrink-0" fill="currentColor" />}
                         </div>
-                        <p className="text-[10px] text-muted-foreground">{(u.followers_count ?? 0).toLocaleString()} followers</p>
+                        <p className="text-[10px] text-muted-foreground">{(u.follower_count ?? 0).toLocaleString()} followers</p>
                       </div>
                     </button>
                   ))}
@@ -1051,6 +1093,28 @@ export default function ExplorePage() {
         </div>
       </div>
 
+      {/* Discovery destinations: each surface has a distinct job and remains one tap away. */}
+      <div className="border-b border-border bg-background">
+        <div className="px-3 py-2 flex gap-2 overflow-x-auto scrollbar-hide">
+          {[
+            { label: 'Fediverse Discovery', icon: Globe, path: '/fediverse/organic-discovery' },
+            { label: 'Search', icon: Search, path: '/search' },
+            { label: 'Hashtags', icon: Hash, path: '/hashtags' },
+            { label: 'Creators', icon: UsersIcon, path: '/discover' },
+            { label: 'Threads', icon: BookOpen, path: '/threads' },
+            { label: 'Marketplace', icon: ShoppingBag, path: '/marketplace' },
+          ].map(({ label, icon: Icon, path }) => (
+            <button key={path} onClick={() => navigate(path)}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-semibold hover:border-primary/40 hover:bg-primary/5 transition-colors">
+              <Icon className="w-3.5 h-3.5 text-primary" />{label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <FederatedOrganicInjection surface="explore" />
+          <FederatedHashtagDiscovery surface="explore" />
+
       {/* ── Inline Mixed Search Results ──────────────────────────── */}
       {(inlineSearchLoading || inlineSearchResults) && searchQuery.trim().length >= 2 && (
         <div className="border-b border-border bg-background">
@@ -1081,7 +1145,7 @@ export default function ExplorePage() {
                           {u.verified && <BadgeCheck className="w-3.5 h-3.5 text-primary shrink-0" fill="currentColor" />}
                         </div>
                         {u.bio && <p className="text-xs text-muted-foreground truncate">{u.bio.slice(0, 50)}</p>}
-                        <p className="text-[10px] text-muted-foreground">{(u.followers_count ?? 0).toLocaleString()} followers</p>
+                        <p className="text-[10px] text-muted-foreground">{(u.follower_count ?? 0).toLocaleString()} followers</p>
                       </div>
                     </button>
                   ))}
@@ -1274,6 +1338,43 @@ export default function ExplorePage() {
             </section>
           )}
 
+          {trendingPosts.length === 0 && !trendingPostsLoading && freshExplorePosts.length > 0 && (
+            <section className="border-b border-border">
+              <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+                <div>
+                  <h2 className="font-bold text-xl flex items-center gap-2"><Globe className="w-5 h-5 text-primary" />Fresh on Testagram</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Recent public posts while trends build up</p>
+                </div>
+                <button onClick={() => navigate('/')} className="text-xs text-primary font-bold hover:underline">Home →</button>
+              </div>
+              <div className="divide-y divide-border">
+                {freshExplorePosts.slice(0, 8).map((post: any) => (
+                  <button key={post.id} onClick={() => navigate(`/post/${post.id}`)}
+                    className="w-full text-left px-4 py-3.5 hover:bg-muted/30 transition-colors flex gap-3">
+                    <div className="w-9 h-9 rounded-full bg-muted overflow-hidden shrink-0">
+                      {post.user_profiles?.avatar_url
+                        ? <img src={post.user_profiles.avatar_url} alt="" className="w-full h-full object-cover" loading="lazy" />
+                        : <div className="w-full h-full flex items-center justify-center text-xs font-bold">{post.user_profiles?.username?.[0]?.toUpperCase() ?? '?'}</div>}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1 mb-0.5">
+                        <span className="text-xs font-bold truncate">@{post.user_profiles?.username ?? 'user'}</span>
+                        {post.user_profiles?.verified && <BadgeCheck className="w-3 h-3 text-primary shrink-0" fill="currentColor" />}
+                        <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}</span>
+                      </div>
+                      <p className="text-sm line-clamp-2 leading-snug">{post.content ?? ''}</p>
+                      <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted-foreground">
+                        <span>{formatNumber(post.likes_count ?? 0)} likes</span>
+                        <span>{formatNumber(post.views_count ?? 0)} views</span>
+                        <span>{formatNumber(post.replies_count ?? 0)} replies</span>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Story viewer — pre-computed vars, no IIFE (esbuild guard) */}
           {activeStoryIdx !== null && activeStory && (
             <div className="fixed inset-0 z-[500] bg-black flex items-center justify-center" onClick={() => setActiveStoryIdx(null)}>
@@ -1460,7 +1561,7 @@ export default function ExplorePage() {
                 {trendingHashtags.slice(0, 8).map((tag: any) => (
                   <button key={tag.id} onClick={() => navigate(`/hashtag/${tag.tag}`)} className="p-3 border border-border rounded-xl hover:bg-muted/50 text-left transition-colors">
                     <p className="font-bold text-primary text-sm">#{tag.tag}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">{formatNumber(tag.usage_count)} posts</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{formatNumber(tag.daily_posts ?? tag.federated_post_count ?? tag.post_count ?? 0)} posts</p>
                   </button>
                 ))}
               </div>
@@ -1537,7 +1638,7 @@ export default function ExplorePage() {
                   <span className={`text-xs font-black w-5 shrink-0 ${i === 0 ? 'text-orange-500' : i === 1 ? 'text-slate-400' : i === 2 ? 'text-amber-600' : 'text-muted-foreground'}`}>{i + 1}</span>
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm text-primary truncate">#{tag.tag}</p>
-                    <p className="text-[10px] text-muted-foreground">{formatNumber(tag.usage_count)} posts</p>
+                    <p className="text-[10px] text-muted-foreground">{formatNumber(tag.daily_posts ?? tag.federated_post_count ?? tag.post_count ?? 0)} posts</p>
                   </div>
                   {i < 3 && <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />}
                 </button>
@@ -1582,7 +1683,7 @@ export default function ExplorePage() {
                         {profile.is_creator && <span className="text-[9px] bg-purple-500/10 text-purple-600 font-bold px-1.5 py-0.5 rounded-full border border-purple-500/20">Creator</span>}
                       </div>
                       <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
-                        <span className="flex items-center gap-0.5"><UsersIcon className="w-2.5 h-2.5" />{formatNumber(profile.followers_count)} followers</span>
+                        <span className="flex items-center gap-0.5"><UsersIcon className="w-2.5 h-2.5" />{formatNumber(profile.follower_count)} followers</span>
                       </div>
                     </div>
                     <button onClick={() => handleFollow(profile.id, profile.username)}
