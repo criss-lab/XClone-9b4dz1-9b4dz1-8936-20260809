@@ -1,21 +1,27 @@
-import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
-import { authService } from '@/lib/auth';
-import { useAuthStore } from '@/stores/authStore';
-import { Loader2 } from 'lucide-react';
+import { authService, finalizeAuthenticatedSession } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { useSEO } from '@/hooks/useSEO';
+import { useAuthStore } from '@/stores/authStore';
 
 function AuthAdBanner() {
-  const ref = useRef(false);
+  const pushed = useRef(false);
+
   useEffect(() => {
-    if (ref.current) return;
-    ref.current = true;
-    try { ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({}); } catch (_) {}
+    if (pushed.current) return;
+    pushed.current = true;
+    try {
+      ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({});
+    } catch {
+      // Ad loading must never block authentication.
+    }
   }, []);
+
   return (
     <ins
       className="adsbygoogle"
@@ -28,99 +34,272 @@ function AuthAdBanner() {
   );
 }
 
+type AuthMode = 'signin' | 'signup' | 'verify' | 'verify-phone' | 'reset';
+type AuthMethod = 'email' | 'phone';
+
 export default function AuthPage() {
   useSEO({ noindex: true, title: 'Sign In', url: '/auth' });
-  // esbuild guard: no explicit generic on useState — infer from initial value
-  const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'verify'
+
+  const [mode, setMode] = useState<AuthMode>('signin');
+  const [method, setMethod] = useState<AuthMethod>('email');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
+  const [verifiedPhone, setVerifiedPhone] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [username, setUsername] = useState('');
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  const [verificationPurpose, setVerificationPurpose] = useState<'otp' | 'signup'>('otp');
+  const [pendingReferralSignup, setPendingReferralSignup] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  // esbuild guard: store initial ref param at module boundary, no useRef generic needed
-  const referrerIdRef = useRef(searchParams.get('ref'));
-  const { login } = useAuthStore();
+  const authUser = useAuthStore((state) => state.user);
+  const login = useAuthStore((state) => state.login);
 
-  // esbuild guard: ref param is stored in localStorage on mount so it survives OTP redirect
-  useEffect(() => {
-    const ref = searchParams.get('ref');
-    if (ref) {
-      localStorage.setItem('ts-pending-ref', ref);
-      if (mode === 'signin') setMode('signup');
-    }
-  }, []);
-
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  const applyPendingReferral = async () => {
+    const code = window.localStorage.getItem('testagram-referral-code');
+    if (!code) return false;
     try {
-      const user = await authService.signInWithPassword(email, password);
-      login(authService.mapUser(user));
-      navigate('/');
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      setLoading(false);
+      const { error: applyError } = await supabase.rpc('apply_referral_code', { p_code: code });
+      if (applyError && !applyError.message.includes('REFERRAL_ALREADY_APPLIED')) {
+        window.localStorage.removeItem('testagram-referral-code');
+        toast({ title: 'Referral link could not be applied', description: 'Your account was created successfully. The referral link was invalid or expired.' });
+        return false;
+      }
+
+      const { data: completion, error: completeError } = await supabase.rpc('complete_referral');
+      if (completeError && !completeError.message.includes('NO_PENDING_REFERRAL')) {
+        toast({ title: 'Referral reward is pending', description: 'Your account is ready. We could not finish the crediting step yet.' });
+        return false;
+      }
+
+      window.localStorage.removeItem('testagram-referral-code');
+      if (completion?.completed) {
+        toast({ title: 'Referral reward added', description: 'You and your friend received 100 credits.' });
+        return true;
+      }
+      return false;
+    } catch {
+      // Referral processing must never block account creation or sign-in.
+      toast({ title: 'Referral reward is pending', description: 'Your account is ready. We could not finish the referral step yet.' });
+      return false;
     }
   };
 
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('reset') === '1' && mode !== 'reset') setMode('reset');
+    const ref = params.get('ref')?.trim();
+    if (ref) window.localStorage.setItem('testagram-referral-code', ref);
+  }, [mode]);
+
+  useEffect(() => {
+    if (authUser && !pendingUserId && mode !== 'verify' && mode !== 'verify-phone' && mode !== 'reset') {
+      navigate('/', { replace: true });
+    }
+  }, [authUser, pendingUserId, mode, navigate]);
+
+  useEffect(() => {
+    if (!pendingUserId) return;
+    if (authUser?.id === pendingUserId) {
+      navigate('/', { replace: true });
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setPendingUserId(null);
+      setLoading(false);
+      toast({
+        title: 'Sign-in is taking too long',
+        description: 'Your session was created, but the app did not finish loading it. Please try again.',
+        variant: 'destructive',
+      });
+    }, 8000);
+
+    return () => window.clearTimeout(timeout);
+  }, [pendingUserId, authUser?.id, navigate, toast]);
+
+  const finishLogin = async (user: any) => {
+    if (!user) throw new Error('Authentication succeeded but no user was returned');
+    const finalized = await finalizeAuthenticatedSession(user);
+    login(finalized);
+    setPendingUserId(null);
+    setLoading(false);
+    navigate('/', { replace: true });
+  };
+
+  const handlePasswordSignIn = async (event: React.FormEvent) => {
+    event.preventDefault();
     setLoading(true);
     try {
-      await authService.sendOtp(email);
-      setMode('verify');
-      toast({ title: 'Success', description: 'Verification code sent to your email' });
+      const user = await authService.signInWithPassword(email, password);
+      login(await finalizeAuthenticatedSession(user));
+      navigate('/', { replace: true });
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      setLoading(false);
+      toast({ title: 'Sign-in error', description: error?.message || 'Unable to sign in.', variant: 'destructive' });
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!email.trim() || !email.includes('@')) {
+      toast({ title: 'Enter your email first', description: 'Password recovery uses your email address.', variant: 'destructive' });
+      return;
+    }
+    setLoading(true);
+    try {
+      await authService.resetPassword(email);
+      toast({ title: 'Reset link sent', description: 'Check your email for the password reset link.' });
+    } catch (error: any) {
+      toast({ title: 'Password reset error', description: error?.message || 'Unable to send the reset link.', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
   };
 
-  const recordReferral = async (newUserId: string) => {
-    // esbuild guard: read from localStorage (survives OTP redirect)
-    const refUsername = localStorage.getItem('ts-pending-ref') ?? referrerIdRef.current;
-    if (!refUsername) return;
-    localStorage.removeItem('ts-pending-ref');
-    // Look up referrer by username (ref param is username, not UUID)
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(refUsername);
-    let referrerId: string | null = null;
-    if (isUuid) {
-      referrerId = refUsername;
-    } else {
-      const { data: refProfile } = await supabase.from('user_profiles').select('id').eq('username', refUsername).maybeSingle();
-      referrerId = refProfile?.id ?? null;
+  const handleUpdatePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (password.length < 8 || password !== confirmation) {
+      toast({ title: 'Check your password', description: password !== confirmation ? 'Passwords do not match.' : 'Password must be at least 8 characters.', variant: 'destructive' });
+      return;
     }
-    if (!referrerId || referrerId === newUserId) return;
-    const { error } = await supabase
-      .from('referrals')
-      .insert({ invited_by: referrerId, invited_user: newUserId, credits_awarded: 100 })
-      .select()
-      .single();
-    if (error) return;
-    // Award 100 credits to both referrer and new user
-    await supabase.rpc('add_to_wallet', { p_user_id: referrerId, p_amount: 100 }).catch(() => {});
-    await supabase.rpc('add_to_wallet', { p_user_id: newUserId, p_amount: 100 }).catch(() => {});
-  };
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
     setLoading(true);
     try {
-      const user = await authService.verifyOtpAndSetPassword(email, otp, password);
-      recordReferral(user.id).catch(() => {});
-      login(authService.mapUser(user));
-      navigate('/');
+      const user = await authService.updatePassword(password);
+      const finalized = await finalizeAuthenticatedSession(user);
+      login(finalized);
+      window.history.replaceState({}, document.title, '/auth');
+      navigate('/', { replace: true });
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Password update error', description: error?.message || 'Unable to update your password.', variant: 'destructive' });
+    } finally {
       setLoading(false);
     }
   };
 
-  // Pre-compute referral context for display
-  const pendingRef = typeof window !== 'undefined' ? (localStorage.getItem('ts-pending-ref') ?? searchParams.get('ref')) : null;
+  const handlePasswordSignUp = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (password.length < 8 || password !== confirmation) {
+      toast({ title: 'Check your password', description: password !== confirmation ? 'Passwords do not match.' : 'Password must be at least 8 characters.', variant: 'destructive' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await authService.signUpWithPassword(email, password, username);
+      if (result.session) {
+        const user = await finalizeAuthenticatedSession(result.session.user);
+        login(user);
+        await applyPendingReferral();
+        navigate('/', { replace: true });
+        return;
+      }
+      setLoading(false);
+      setVerificationPurpose('signup');
+      setPendingReferralSignup(true);
+      setOtp('');
+      if (result.identifierKind === 'phone') {
+        setPhone(result.identifier);
+        setVerifiedPhone(result.identifier);
+        setMode('verify-phone');
+        toast({ title: 'Account created', description: 'Enter the 6-digit code sent to your phone to finish signing up.' });
+      } else {
+        setMode('verify');
+        toast({ title: 'Account created', description: 'Check your email for the confirmation code or link to finish signing up.' });
+      }
+    } catch (error: any) {
+      setLoading(false);
+      toast({ title: 'Account creation error', description: error?.message || 'Unable to create account.', variant: 'destructive' });
+    }
+  };
+
+  const handleSendEmailOtp = async (event?: React.FormEvent | React.MouseEvent) => {
+    event?.preventDefault();
+    setLoading(true);
+    try {
+      await authService.sendOtp(email);
+      setOtp('');
+      setLoading(false);
+      setVerificationPurpose('otp');
+      setMode('verify');
+      toast({ title: 'Code sent', description: 'Enter the 6-digit code sent to your email.' });
+    } catch (error: any) {
+      setLoading(false);
+      toast({ title: 'Email OTP error', description: error?.message || 'Unable to send email code.', variant: 'destructive' });
+    }
+  };
+
+  const handleSendPhoneOtp = async (event?: React.FormEvent | React.MouseEvent) => {
+    event?.preventDefault();
+    setLoading(true);
+    try {
+      const normalized = await authService.sendPhoneOtp(phone);
+      setPhone(normalized);
+      setVerifiedPhone(normalized);
+      setOtp('');
+      setLoading(false);
+      setVerificationPurpose('otp');
+      setMode('verify-phone');
+      toast({ title: 'OTP sent', description: 'Enter the 6-digit code sent by SMS.' });
+    } catch (error: any) {
+      setLoading(false);
+      toast({ title: 'Phone OTP error', description: error?.message || 'Unable to send phone code.', variant: 'destructive' });
+    }
+  };
+
+  const handleVerifyEmailOtp = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const user = await authService.verifyEmailOtp(email, otp);
+      await finishLogin(user);
+      if (pendingReferralSignup) await applyPendingReferral();
+      setPendingReferralSignup(false);
+    } catch (error: any) {
+      setLoading(false);
+      toast({ title: 'Email verification error', description: error?.message || 'Invalid email code.', variant: 'destructive' });
+    }
+  };
+
+  const handleVerifyPhoneOtp = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const user = await authService.verifyPhoneOtp(phone, otp);
+      await finishLogin(user);
+      if (pendingReferralSignup) await applyPendingReferral();
+      setPendingReferralSignup(false);
+    } catch (error: any) {
+      setLoading(false);
+      toast({ title: 'Phone verification error', description: error?.message || 'Invalid phone code.', variant: 'destructive' });
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setLoading(true);
+    try {
+      if (verificationPurpose === 'signup') {
+        if (mode === 'verify-phone') await authService.resendSignupPhone(phone);
+        else await authService.resendSignupEmail(email);
+      } else if (mode === 'verify-phone') {
+        await authService.sendPhoneOtp(phone);
+      } else {
+        await authService.sendOtp(email);
+      }
+      toast({ title: 'Code sent', description: 'A fresh verification code has been sent.' });
+    } catch (error: any) {
+      toast({ title: 'Could not resend code', description: error?.message || 'Please try again in a moment.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const changeIdentifier = () => {
+    setOtp('');
+    setLoading(false);
+    setMode(method === 'phone' ? 'signin' : 'signin');
+  };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
@@ -131,58 +310,71 @@ export default function AuthPage() {
             <span className="text-4xl font-bold text-primary-foreground">T</span>
           </div>
           <h2 className="text-3xl font-bold">
-            {mode === 'signin' ? 'Sign in to T' : mode === 'signup' ? 'Join T today' : 'Verify your email'}
+            {mode === 'signin' ? 'Sign in to T' : mode === 'signup' ? 'Join T today' : mode === 'reset' ? 'Set a new password' : mode === 'verify-phone' ? 'Verify your phone' : 'Verify your email'}
           </h2>
-          {pendingRef && mode !== 'signin' && (
-            <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20">
-              <span className="text-xs font-bold text-primary">🎁 Invited by @{pendingRef}</span>
-              <span className="text-[10px] text-muted-foreground">· You'll both get 100 credits</span>
-            </div>
-          )}
         </div>
 
-        {mode === 'signin' && (
-          <form onSubmit={handleSignIn} className="space-y-4">
-            <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="h-14" />
-            <Input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required className="h-14" />
-            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Sign in'}
-            </Button>
-            <div className="text-center">
-              <button type="button" onClick={() => setMode('signup')} className="text-primary hover:underline">
-                Don't have an account? Sign up
+        {(mode === 'signin' || mode === 'signup') && (
+          <>
+            <form onSubmit={mode === 'signin' ? handlePasswordSignIn : handlePasswordSignUp} className="space-y-4">
+              {mode === 'signup' && <Input type="text" autoComplete="username" placeholder="Username (optional)" value={username} onChange={(e) => setUsername(e.target.value)} className="h-14" />}
+              <Input type="text" inputMode="email" autoComplete="username" placeholder="Email or Kenyan phone number" value={email} onChange={(e) => setEmail(e.target.value)} required className="h-14" />
+              <Input type="password" autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} placeholder="Password (8+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} className="h-14" />
+              {mode === 'signup' && <Input type="password" autoComplete="new-password" placeholder="Confirm password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} required minLength={8} className="h-14" />}
+              <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : mode === 'signin' ? 'Sign in with password' : 'Create account'}</Button>
+            </form>
+            <div className="text-center text-sm">
+              <button type="button" onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')} className="text-primary hover:underline">
+                {mode === 'signin' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
               </button>
             </div>
-          </form>
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-muted">
+              <Button type="button" variant={method === 'email' ? 'default' : 'ghost'} className="rounded-lg" onClick={() => setMethod('email')}>Email OTP</Button>
+              <Button type="button" variant={method === 'phone' ? 'default' : 'ghost'} className="rounded-lg" onClick={() => setMethod('phone')}>Phone OTP</Button>
+            </div>
+            {method === 'email' ? (
+              <form onSubmit={handleSendEmailOtp} className="space-y-4">
+                <p className="text-sm text-muted-foreground text-center">Use a 6-digit code. The same flow signs in existing accounts and creates new accounts.</p>
+                <Input type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} required className="h-14" />
+                <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Send email code'}</Button>
+              </form>
+            ) : (
+              <form onSubmit={handleSendPhoneOtp} className="space-y-4">
+                <p className="text-sm text-muted-foreground text-center">Use your Kenyan mobile number. SMS OTP signs in existing phone accounts or creates a new one.</p>
+                <Input type="tel" inputMode="tel" autoComplete="tel" placeholder="0712 345 678" value={phone} onChange={(event) => setPhone(event.target.value)} required className="h-14" />
+                <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Send phone code'}</Button>
+              </form>
+            )}
+            <div className="text-center"><button type="button" onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')} className="text-primary hover:underline">{mode === 'signin' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}</button></div>
+          </>
         )}
 
-        {mode === 'signup' && (
-          <form onSubmit={handleSendOtp} className="space-y-4">
-            <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="h-14" />
-            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Continue'}
-            </Button>
-            <div className="text-center">
-              <button type="button" onClick={() => setMode('signin')} className="text-primary hover:underline">
-                Already have an account? Sign in
-              </button>
-            </div>
+        {mode === 'reset' && (
+          <form onSubmit={handleUpdatePassword} className="space-y-4">
+            <p className="text-muted-foreground text-center">Choose a new password for your Testagram account.</p>
+            <Input type="password" autoComplete="new-password" placeholder="New password (8+ characters)" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={8} className="h-14" />
+            <Input type="password" autoComplete="new-password" placeholder="Confirm new password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required minLength={8} className="h-14" />
+            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Update password and enter Testagram'}</Button>
           </form>
         )}
 
         {mode === 'verify' && (
-          <form onSubmit={handleVerifyOtp} className="space-y-4">
-            <p className="text-muted-foreground text-center">Enter the 4-digit code sent to {email}</p>
-            <Input type="text" placeholder="Verification code" value={otp} onChange={(e) => setOtp(e.target.value)} required maxLength={4} className="h-14 text-center text-2xl tracking-widest" />
-            <Input type="password" placeholder="Create password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} className="h-14" />
-            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Verify and create account'}
-            </Button>
-            <div className="text-center">
-              <button type="button" onClick={handleSendOtp} className="text-primary hover:underline text-sm" disabled={loading}>
-                Resend code
-              </button>
-            </div>
+          <form onSubmit={handleVerifyEmailOtp} className="space-y-4">
+            <p className="text-muted-foreground text-center">Enter the 6-digit code sent to {email} to {verificationPurpose === 'signup' ? 'finish creating your account' : 'sign in'}.</p>
+            <Input type="text" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} required maxLength={6} minLength={6} className="h-14 text-center text-2xl tracking-widest" />
+            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Verify and enter Testagram'}</Button>
+            <button type="button" onClick={handleResendVerification} className="w-full text-primary hover:underline text-sm" disabled={loading}>Resend email code</button>
+            <button type="button" onClick={changeIdentifier} className="w-full text-muted-foreground hover:underline text-sm">Use a different email or phone</button>
+          </form>
+        )}
+
+        {mode === 'verify-phone' && (
+          <form onSubmit={handleVerifyPhoneOtp} className="space-y-4">
+            <p className="text-muted-foreground text-center">Enter the 6-digit code sent to {verifiedPhone || phone} to {verificationPurpose === 'signup' ? 'finish creating your account' : 'sign in'}.</p>
+            <Input type="text" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit OTP" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} required maxLength={6} minLength={6} className="h-14 text-center text-2xl tracking-widest" />
+            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Verify and enter Testagram'}</Button>
+            <button type="button" onClick={handleResendVerification} className="w-full text-primary hover:underline text-sm" disabled={loading}>Resend phone code</button>
+            <button type="button" onClick={changeIdentifier} className="w-full text-muted-foreground hover:underline text-sm">Use a different email or phone</button>
           </form>
         )}
       </div>

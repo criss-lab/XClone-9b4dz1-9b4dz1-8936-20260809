@@ -1,37 +1,38 @@
 import { useState, useEffect } from 'react';
 import { Bookmark } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { updateInterestSignal } from '@/services/recommendations';
+import { backendCapabilities } from '@/services/backendClient';
+import { bookmarkRemote, unbookmarkRemote, remoteBookmarkState } from '@/api/federation';
 
 interface BookmarkButtonProps {
   postId: string;
+  onChange?: (bookmarked: boolean) => void;
 }
 
-export function BookmarkButton({ postId }: BookmarkButtonProps) {
+export function BookmarkButton({ postId, onChange }: BookmarkButtonProps) {
   const { user } = useAuth();
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      checkBookmark();
+    if (!user) {
+      setIsBookmarked(false);
+      return;
     }
+    let cancelled = false;
+    if (/^https:\/\//i.test(postId)) {
+      remoteBookmarkState(postId).then(state => { if (!cancelled) setIsBookmarked(state); }).catch(() => { if (!cancelled) setIsBookmarked(false); });
+      return () => { cancelled = true; };
+    }
+    backendCapabilities.listBookmarks(100).then(({ items }) => {
+      if (!cancelled) setIsBookmarked(items.some((item: any) => String(item.post_id ?? item.object_uri ?? item.id) === postId));
+    }).catch(() => {
+      if (!cancelled) setIsBookmarked(false);
+    });
+    return () => { cancelled = true; };
   }, [postId, user]);
-
-  const checkBookmark = async () => {
-    if (!user) return;
-
-    const { data } = await supabase
-      .from('bookmarks')
-      .select('id')
-      .eq('post_id', postId)
-      .eq('user_id', user.id)
-      .maybeSingle();
-
-    setIsBookmarked(!!data);
-  };
 
   const toggleBookmark = async () => {
     if (!user) {
@@ -40,34 +41,25 @@ export function BookmarkButton({ postId }: BookmarkButtonProps) {
     }
 
     setLoading(true);
+    const previous = isBookmarked;
+    setIsBookmarked(!previous);
 
     try {
-      if (isBookmarked) {
-        const { error } = await supabase
-          .from('bookmarks')
-          .delete()
-          .eq('post_id', postId)
-          .eq('user_id', user.id);
-
-        if (error) throw error;
-        setIsBookmarked(false);
+      if (previous) {
+        if (/^https:\/\//i.test(postId)) await unbookmarkRemote(postId);
+        else await backendCapabilities.removeBookmark(postId);
+        onChange?.(false);
         toast.success('Removed from bookmarks');
       } else {
-        const { error } = await supabase
-          .from('bookmarks')
-          .insert({
-            post_id: postId,
-            user_id: user.id
-          });
-
-        if (error) throw error;
-        setIsBookmarked(true);
+        if (/^https:\/\//i.test(postId)) await bookmarkRemote(postId);
+        else await backendCapabilities.bookmarkPost(postId);
         toast.success('Added to bookmarks');
-        // Update interest signal — fire-and-forget
+        onChange?.(true);
         updateInterestSignal(user.id, postId, 'bookmark').catch(() => {});
       }
     } catch (error: any) {
-      toast.error(error.message);
+      setIsBookmarked(previous);
+      toast.error(error.message || 'Bookmark update failed');
     } finally {
       setLoading(false);
     }

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
+import { VerifiedTick } from '@/components/ui/VerifiedTick';
 import { useAuth } from '@/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { UserSuggestion as UserSuggestionType } from '@/types/app-types';
 import { Button } from '@/components/ui/button';
-import { BadgeCheck } from 'lucide-react';
+import {  } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 export function UserSuggestions() {
@@ -58,16 +59,13 @@ export function UserSuggestions() {
       });
 
       // Insert notification for the followed user
-      await supabase.from('notifications').insert({
-        user_id: userId,
-        type: 'follow',
-        from_user_id: user.id,
-      });
+      await supabase.from('notifications').insert({ recipient_id: userId, kind: 'follow', actor_id: user.id,
+       });
 
       // Send push notification
       const { sendActivityNotification } = await import('@/components/layout/AuthProvider');
       const myProfile = await supabase
-        .from('user_profiles')
+        .from('profiles')
         .select('username')
         .eq('id', user.id)
         .single();
@@ -120,7 +118,7 @@ export function UserSuggestions() {
                 <div className="flex items-center space-x-1">
                   <p className="font-semibold truncate">{suggestion.suggested_user?.username}</p>
                   {suggestion.suggested_user?.verified && (
-                    <BadgeCheck className="w-4 h-4 text-primary flex-shrink-0" fill="currentColor" />
+                    <VerifiedTick className="w-4 h-4 text-primary flex-shrink-0" />
                   )}
                 </div>
                 <p className="text-sm text-muted-foreground truncate">
