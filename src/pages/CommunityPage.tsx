@@ -39,7 +39,7 @@ const NFT_TIERS = [
   { min: 5,  tier: 'epic',      emoji: '🔮', label: 'Epic',      color: 'from-purple-500/20 to-violet-500/20', border: 'border-purple-500/30' },
   { min: 1,  tier: 'rare',      emoji: '🏅', label: 'Rare',      color: 'from-amber-500/20 to-yellow-500/20', border: 'border-amber-500/30' },
 ] as const;
-const CHAT_EMOJIS = ['❤️', '🔥', '😂', '👏', '🎉', '💯'] as const;
+const CHAT_EMOJIS = ['❤️'] as const;
 const COMM_TAB_LIST = ['posts', 'members', 'chat', 'events'] as const;
 type CommPageTab = typeof COMM_TAB_LIST[number];
 const GIF_URL_RE = /^https:\/\/(media\.tenor|c\.tenor|media1\.tenor|media\.giphy|i\.giphy)\.com\//;
@@ -60,7 +60,7 @@ interface CommunityMember {
   user_profiles: { username: string; avatar_url?: string; verified: boolean; };
 }
 
-export default function CommunityPage() {
+export default function CommunityPage({ section, standalone = false }: { section?: CommPageTab | 'shop'; standalone?: boolean }) {
   const { name } = useParams<{ name: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -79,12 +79,13 @@ export default function CommunityPage() {
 
   const [posts, setPosts] = useState<Post[]>([]);
   const [isMember, setIsMember] = useState(false);
+  const [memberStatus, setMemberStatus] = useState<'active' | 'pending' | null>(null);
   const [userRole, setUserRole] = useState<string>('member');
   const [members, setMembers] = useState<CommunityMember[]>([]);
 
   const shopUnlocked = useFeatureUnlock('community_shop');
   const nftUnlocked  = useFeatureUnlock('nft_badges');
-  const [activeTab, setActiveTab] = useState<CommPageTab | 'shop'>('posts');
+  const [activeTab, setActiveTab] = useState<CommPageTab | 'shop'>(section ?? 'posts');
 
   // Shop state
   const [shopProducts, setShopProducts] = useState<any[]>([]);
@@ -161,10 +162,17 @@ export default function CommunityPage() {
   const handleSupportCommunity = useCallback(async () => {
     if (!user || !community || !supportAmount) return;
     setSendingSupport(true);
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: supportAmount });
-    if (deductErr) { sonnerToast.error('Insufficient wallet balance'); setSendingSupport(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: community.created_by, p_amount: supportAmount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: community.created_by, amount: supportAmount, message: `Support for c/${community.name}` }).catch(() => {});
+    const { error: transferErr } = await supabase.rpc('send_wallet_tip', {
+      p_to_user_id: community.created_by,
+      p_amount: supportAmount,
+      p_note: `Support for c/${community.name}`,
+    });
+    if (transferErr) {
+      const message = transferErr.message?.includes('INSUFFICIENT_FUNDS') ? 'Insufficient wallet balance' : transferErr.message || 'Unable to send support';
+      sonnerToast.error(message);
+      setSendingSupport(false);
+      return;
+    }
     await supabase.from('platform_inbox').insert({ user_id: community.created_by, subject: `💰 Your community received a $${supportAmount} support tip!`, body: `@${user.username ?? 'A member'} sent $${supportAmount} to support c/${community.name}.`, type: 'update', icon_emoji: '💰' }).catch(() => {});
     sonnerToast.success(`$${supportAmount} support sent!`);
     setSupportSent(true); setShowSupportDialog(false); setSupportAmount(null); setSendingSupport(false);
@@ -185,7 +193,7 @@ export default function CommunityPage() {
         agg[row.user_id].likes += row.likes_count ?? 0;
         agg[row.user_id].posts += 1;
       }
-      setLeaderboard(Object.values(agg).sort((a, b) => b.likes - a.likes).slice(0, 3));
+      setLeaderboard((Object.values(agg) as Array<{ profile: any; likes: number; posts: number }>).sort((a, b) => b.likes - a.likes).slice(0, 3));
     }
     setLeaderboardFetched(true);
     setLoadingLeaderboard(false);
@@ -196,7 +204,7 @@ export default function CommunityPage() {
   const fetchWeeklyDigest = useCallback(async (communityId: string) => {
     const since7d = new Date(Date.now() - 7 * 86400000).toISOString();
     const { data } = await supabase.from('posts')
-      .select('id, content, likes_count, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, likes_count, created_at, profiles(username, avatar_url)')
       .eq('community_id', communityId).gte('created_at', since7d)
       .order('likes_count', { ascending: false }).limit(3);
     setDigestPosts(data ?? []);
@@ -231,7 +239,7 @@ export default function CommunityPage() {
       const q = match[1].toLowerCase();
       setMentionQuery(q);
       const suggestions = members
-        .map(m => ({ id: m.user_profiles?.id ?? m.user_id ?? '', username: m.user_profiles?.username ?? '', avatar_url: m.user_profiles?.avatar_url ?? null }))
+        .map(m => ({ id: (m.user_profiles as any)?.id ?? m.user_id ?? '', username: m.user_profiles?.username ?? '', avatar_url: m.user_profiles?.avatar_url ?? null }))
         .filter(m => m.username && (q.length === 0 || m.username.toLowerCase().includes(q)))
         .slice(0, 6);
       setMentionResults(suggestions);
@@ -280,7 +288,7 @@ export default function CommunityPage() {
     setShowChatGifPicker(false); setChatSending(true);
     await supabase.from('community_chat').insert({ community_id: community.id, user_id: user.id, message: gifUrl });
     const rawData = await supabase.from('community_chat')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('community_id', community.id).order('created_at', { ascending: true }).limit(100);
     if (rawData.data) setChatMessages(rawData.data);
     setChatSending(false);
@@ -312,7 +320,7 @@ export default function CommunityPage() {
   const fetchChat = useCallback(async () => {
     if (!community) return;
     const { data } = await supabase.from('community_chat')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('community_id', community.id).order('created_at', { ascending: true }).limit(100);
     if (data) {
       setChatMessages(data);
@@ -342,12 +350,15 @@ export default function CommunityPage() {
     setShowRoleMenu(null);
   }, [community]);
 
+  useEffect(() => { if (section) setActiveTab(section); }, [section]);
+
   useEffect(() => {
-    if (activeTab === 'chat' && community) {
-      fetchChat();
-      chatPollingRef.current = setInterval(fetchChat, 5000);
-    } else { if (chatPollingRef.current) clearInterval(chatPollingRef.current); }
-    return () => { if (chatPollingRef.current) clearInterval(chatPollingRef.current); };
+    if (activeTab !== 'chat' || !community) return;
+    void fetchChat();
+    const channel = supabase.channel(`community-chat-${community.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_chat', filter: `community_id=eq.${community.id}` }, () => { void fetchChat(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); if (chatPollingRef.current) clearInterval(chatPollingRef.current); };
   }, [activeTab, community?.id]);
 
   useEffect(() => { if (activeTab === 'chat') chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages, activeTab]);
@@ -366,7 +377,7 @@ export default function CommunityPage() {
       const mentionedUsernames = mentionMatches.map(m => m.slice(1)).filter((u, i, a) => a.indexOf(u) === i).filter(u => u !== user.username);
       if (mentionedUsernames.length > 0) {
         const { data: mentionedProfiles } = await supabase
-          .from('user_profiles')
+          .from('profiles')
           .select('id, username')
           .in('username', mentionedUsernames.slice(0, 5));
         if (mentionedProfiles && mentionedProfiles.length > 0) {
@@ -570,11 +581,12 @@ export default function CommunityPage() {
       if (error) throw error;
       setCommunity(data);
       if (user) {
-        const { data: memberData } = await supabase.from('community_members').select('id, role').eq('community_id', data.id).eq('user_id', user.id).maybeSingle();
-        setIsMember(!!memberData);
+        const { data: memberData } = await supabase.from('community_members').select('id, role, status').eq('community_id', data.id).eq('user_id', user.id).maybeSingle();
+        setIsMember(memberData?.status === 'active');
+        setMemberStatus(memberData?.status === 'active' || memberData?.status === 'pending' ? memberData.status : null);
         if (memberData) setUserRole(memberData.role);
       }
-      const { data: membersData } = await supabase.from('community_members').select('*, user_profiles(username, avatar_url, verified)').eq('community_id', data.id).order('role', { ascending: true }).limit(20);
+      const { data: membersData } = await supabase.from('community_members').select('*, profiles(username, avatar_url, verified)').eq('community_id', data.id).order('role', { ascending: true }).limit(20);
       if (membersData) setMembers(membersData);
     } catch { toast({ title: 'Community not found', variant: 'destructive' }); navigate('/communities'); }
     finally { setLoading(false); }
@@ -584,7 +596,7 @@ export default function CommunityPage() {
     if (!community) return;
     setLoadingPosts(true);
     try {
-      const { data } = await supabase.from('posts').select('*, user_profiles(*)').eq('community_id', community.id).order('created_at', { ascending: false });
+      const { data } = await supabase.from('posts').select('*, profiles(*)').eq('community_id', community.id).order('created_at', { ascending: false });
       if (data) setPosts(data);
     } catch (err) { console.error('fetchPosts error:', err); }
     finally { setLoadingPosts(false); }
@@ -593,18 +605,35 @@ export default function CommunityPage() {
   const handleJoinToggle = async () => {
     if (!user) { navigate('/auth'); return; }
     if (!community) return;
+    if (memberStatus === 'pending') { toast({ title: 'Request pending', description: 'The community owner has not approved your request yet.' }); return; }
     try {
       if (isMember) {
-        if (userRole === 'owner') { toast({ title: 'Error', description: 'Owners cannot leave.', variant: 'destructive' }); return; }
-        await supabase.from('community_members').delete().match({ community_id: community.id, user_id: user.id });
-        setIsMember(false); toast({ title: 'Left community' });
+        if (userRole === 'owner') {
+          toast({ title: 'Error', description: 'Owners cannot leave.', variant: 'destructive' });
+          return;
+        }
+        const { error } = await supabase.rpc('leave_community', { p_community_id: community.id });
+        if (error) throw error;
+        setIsMember(false);
+        setMemberStatus(null);
+        setUserRole('member');
+        toast({ title: 'Left community' });
       } else {
-        await supabase.from('community_members').insert({ community_id: community.id, user_id: user.id });
-        setIsMember(true); toast({ title: '✅ Joined community!' });
+        const { error } = await supabase.rpc('join_community', { p_community_id: community.id });
+        if (error) throw error;
+        const { data: joinedMembership } = await supabase.from('community_members').select('status, role').eq('community_id', community.id).eq('user_id', user.id).maybeSingle();
+        const nextStatus = joinedMembership?.status === 'pending' ? 'pending' : 'active';
+        setMemberStatus(nextStatus);
+        setIsMember(nextStatus === 'active');
+        if (joinedMembership?.role) setUserRole(joinedMembership.role);
+        toast({ title: nextStatus === 'pending' ? 'Request sent' : '✅ Joined community!', description: nextStatus === 'pending' ? 'The community owner must approve your request.' : undefined });
       }
       fetchCommunity();
-    } catch (error: any) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); }
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
   };
+
 
   const handlePromoteRole = async (memberId: string, _userId: string, newRole: 'member' | 'moderator') => {
     if (!community || !isOwner) return;
@@ -679,8 +708,8 @@ export default function CommunityPage() {
             </div>
           </div>
           {user && (
-            <Button onClick={handleJoinToggle} variant={isMember ? 'outline' : 'default'} className="rounded-full flex-shrink-0" size="sm">
-              {isMember ? 'Joined' : (<><UserPlus className="w-4 h-4 mr-1" />Join</>)}
+            <Button onClick={handleJoinToggle} variant={isMember || memberStatus === 'pending' ? 'outline' : 'default'} className="rounded-full flex-shrink-0" size="sm">
+              {memberStatus === 'pending' ? 'Requested' : isMember ? 'Joined' : (<><UserPlus className="w-4 h-4 mr-1" />Join</>)}
             </Button>
           )}
         </div>
@@ -866,7 +895,7 @@ export default function CommunityPage() {
             const TabIcon = tab === 'posts' ? MessageSquare : tab === 'members' ? Users : tab === 'chat' ? MessageCircle : CalendarDays;
             const tabLabel = tab === 'posts' ? 'Posts' : tab === 'members' ? 'Members' : tab === 'chat' ? 'Chat' : 'Events';
             return (
-              <button key={tab} onClick={() => setActiveTab(tab)}
+              <button key={tab} onClick={() => { setActiveTab(tab); if (community?.name) navigate(`/c/${community.name}/${tab}`); }}
                 className={`flex-shrink-0 flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-colors min-w-0 ${activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'}`}>
                 <TabIcon className="w-4 h-4" />
                 {tabLabel}
@@ -875,7 +904,7 @@ export default function CommunityPage() {
             );
           })}
           {shopUnlocked && (
-            <button onClick={() => setActiveTab('shop')}
+            <button onClick={() => { setActiveTab('shop'); if (community?.name) navigate(`/c/${community.name}/shop`); }}
               className={`flex-shrink-0 flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-colors min-w-0 ${activeTab === 'shop' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'}`}>
               <ShoppingBag className="w-4 h-4" /> Shop
             </button>
