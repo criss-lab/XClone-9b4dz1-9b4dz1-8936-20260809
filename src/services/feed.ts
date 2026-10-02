@@ -1,3 +1,4 @@
+import { backendCapabilities } from '@/services/backendClient';
 import { supabase } from '@/lib/supabase';
 import * as federation from '@/api/federation';
 
@@ -12,40 +13,59 @@ export type Post = {
   [k: string]: any;
 };
 
-function normalizeLocal(row: any): Post {
-  return {
-    id: `local:${row.id}`,
-    content: row.content,
-    created_at: row.created_at,
-    author: row.author,
-    origin: 'local',
-    ...row,
-  };
+function normalizeMediaUrls(row: any): string[] {
+  const raw = row?.media_urls ?? row?.mediaUrls ?? row?.attachments ?? [];
+  const urls = Array.isArray(raw)
+    ? raw.map((item: any) => typeof item === 'string' ? item : (item?.url ?? item?.media_url ?? item?.mediaUrl)).filter(Boolean)
+    : [];
+  if (urls.length) return Array.from(new Set(urls));
+  const singular = row?.image_url ?? row?.video_url ?? row?.media_url ?? row?.mediaUrl;
+  return singular ? [singular] : [];
 }
 
-function normalizeFederated(item: any): Post {
+function normalizeLocal(row: any): Post {
+  const mediaUrls = normalizeMediaUrls(row);
   return {
+    ...row,
+    id: row.id,
+    content: row.content ?? '',
+    created_at: row.created_at,
+    author: row.author ?? row.profile ?? row.user_profiles,
+    user_profiles: row.user_profiles ?? row.profile ?? row.author,
+    image_url: row.image_url ?? (row.is_video ? undefined : mediaUrls[0]),
+    video_url: row.video_url ?? (row.is_video ? mediaUrls[0] : undefined),
+    media_urls: mediaUrls,
+    media_count: Number(row.media_count ?? mediaUrls.length),
+    is_video: Boolean(row.is_video || row.video_url),
+    origin: 'local',
+  };
+}
+function normalizeFederated(item: any): Post {
+  const mediaUrls = normalizeMediaUrls(item);
+  const remoteAccount = item.user_profiles ?? item.remote_account ?? item.account ?? item.author;
+  return {
+    ...item,
     id: `fed:${item.id ?? item.federation_id}`,
     content: item.content ?? item.html ?? '',
     created_at: item.created_at ?? item.published ?? new Date().toISOString(),
-    author: item.author,
+    author: item.author ?? remoteAccount,
+    user_profiles: remoteAccount,
+    image_url: item.image_url ?? (!item.is_video ? mediaUrls[0] : undefined),
+    video_url: item.video_url ?? (item.is_video ? mediaUrls[0] : undefined),
+    media_urls: mediaUrls,
+    media_count: Number(item.media_count ?? mediaUrls.length),
+    is_video: Boolean(item.is_video || item.video_url),
     origin: 'federated',
     federation_id: item.id ?? item.federation_id,
-    ...item,
   };
 }
-
 export async function getMergedHomeTimeline({ limit = 20, before }: { limit?: number; before?: string } = {}) {
-  // Fetch local posts from Supabase (adapt schema as needed)
-  let localRes: any = { data: [] };
+  // Canonical local timeline now comes through the authenticated capability gateway.
+  let localRes: any = { items: [] };
   try {
-    // Example: table `posts` with columns id, content, author, created_at
-    // If supabase is not configured, the proxy will throw when used — catch and continue.
-    localRes = await supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(limit);
+    localRes = await backendCapabilities.listPosts(limit, before);
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn('[feed] failed to fetch local posts', err);
-    localRes = { data: [] };
+    console.warn('[feed] failed to fetch native timeline', err);
   }
 
   let fedRes: any = { posts: [] };
@@ -57,8 +77,30 @@ export async function getMergedHomeTimeline({ limit = 20, before }: { limit?: nu
     fedRes = { posts: [] };
   }
 
-  const localPosts = (localRes?.data ?? []).map(normalizeLocal);
-  const fedPosts = (fedRes?.posts ?? []).map(normalizeFederated);
+  let localItems = Array.isArray(localRes?.items) ? localRes.items : [];
+
+  // The personalized ranking intentionally excludes self-authored and recently
+  // seen posts. That is useful for ranking, but it must never make Home appear
+  // empty in a small/new account or when the ranked candidate set is exhausted.
+  // Fall back to the canonical public posts read path before rendering an empty
+  // Home timeline.
+  if (localItems.length === 0) {
+    try {
+      const { data, error } = await supabase.from('posts')
+        .select('*, user_profiles:profiles!posts_user_id_fkey(id,username,display_name,avatar_url,bio,verified_tier,follower_count,following_count,protected_account,cover_url,website,location,social_links,created_at)')
+        .is('community_id', null)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      if (!error) localItems = data ?? [];
+    } catch (err) {
+      console.warn('[feed] chronological fallback failed', err);
+    }
+  }
+
+  const localPosts = localItems.map(normalizeLocal);
+  const federatedItems = Array.isArray(fedRes) ? fedRes : (fedRes?.posts ?? fedRes?.items ?? []);
+  const fedPosts = federatedItems.map(normalizeFederated);
 
   // Merge and dedupe by federation_id or fallback to id
   const map = new Map<string, Post>();

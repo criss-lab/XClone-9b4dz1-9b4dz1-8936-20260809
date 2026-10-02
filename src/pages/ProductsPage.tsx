@@ -47,14 +47,16 @@ function TipProductModal({ seller, onClose }: { seller: any; onClose: () => void
     const amt = tipAmount || Number(custom);
     if (!amt || amt <= 0) { toast.error('Enter a tip amount'); return; }
     setSending(true);
-    const { data: wallet } = await supabase.from('user_wallets').select('balance').eq('user_id', user.id).maybeSingle();
-    if (!wallet || Number(wallet.balance) < amt) { toast.error('Insufficient wallet balance'); setSending(false); return; }
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: amt });
-    if (deductErr) { toast.error('Failed to deduct from wallet'); setSending(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: seller.id, p_amount: amt });
-    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: seller.id, amount: amt, message: 'Marketplace tip' });
-    await supabase.from('creator_earnings').insert({ user_id: seller.id, source: 'tips', amount: amt, status: 'paid' });
-    await supabase.from('notifications').insert({ user_id: seller.id, type: 'tip', from_user_id: user.id });
+    const { error } = await supabase.rpc('send_wallet_tip', {
+      p_to_user_id: seller.id,
+      p_amount: amt,
+      p_note: 'Marketplace tip',
+    });
+    if (error) {
+      toast.error(error.message.includes('INSUFFICIENT_FUNDS') ? 'Insufficient wallet balance' : error.message);
+      setSending(false);
+      return;
+    }
     toast.success(`$${amt.toFixed(2)} tip sent to @${seller.username}!`);
     setSent(true);
     setSending(false);
@@ -272,7 +274,7 @@ function ProductReviewsModal({ product, onClose }: { product: any; onClose: () =
     setLoading(true);
     const { data } = await supabase
       .from('product_reviews')
-      .select('*, user_profiles(username, avatar_url, verified)')
+      .select('*, profiles(username, avatar_url, verified)')
       .eq('product_id', product.id)
       .order('created_at', { ascending: false });
     const all = data ?? [];
@@ -550,6 +552,9 @@ export function ProductsPage() {
   const [formStock, setFormStock] = useState('');
   const [formCategory, setFormCategory] = useState('other');
   const [formRegion, setFormRegion] = useState('all');
+  const [formLocalDelivery, setFormLocalDelivery] = useState(false);
+  const [formDeliveryFee, setFormDeliveryFee] = useState('0');
+  const [formDeliveryEta, setFormDeliveryEta] = useState('');
   const [saving, setSaving] = useState(false);
   const [boostingProduct, setBoostingProduct] = useState(null as any);
 
@@ -579,7 +584,7 @@ export function ProductsPage() {
     setLoading(true);
     const { data } = await supabase
       .from('products')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('is_active', true)
       .order('views_count', { ascending: false })
       .limit(80);
@@ -610,6 +615,9 @@ export function ProductsPage() {
       is_active: true,
       category: formCategory,
       region: formRegion,
+      local_delivery: formLocalDelivery,
+      delivery_fee_minor: Math.max(0, Math.round(Number(formDeliveryFee || 0) * 100)),
+      delivery_eta: formDeliveryEta.trim() || null,
     };
     if (editingProduct) {
       const { error } = await supabase.from('products').update(payload).eq('id', editingProduct.id);
@@ -642,7 +650,7 @@ export function ProductsPage() {
   const resetForm = () => {
     setFormName(''); setFormDesc(''); setFormPrice('');
     setFormLink(''); setFormImage('');
-    setFormStock(''); setFormCategory('other'); setFormRegion('all');
+    setFormStock(''); setFormCategory('other'); setFormRegion('all'); setFormLocalDelivery(false); setFormDeliveryFee('0'); setFormDeliveryEta('');
     setEditingProduct(null);
   };
 
@@ -655,7 +663,7 @@ export function ProductsPage() {
     setFormImage(p.image_url ?? '');
     setFormStock(String(p.stock ?? ''));
     setFormCategory(p.category ?? 'other');
-    setFormRegion(p.region ?? 'all');
+    setFormRegion(p.region ?? 'all'); setFormLocalDelivery(Boolean(p.local_delivery)); setFormDeliveryFee(String(Number(p.delivery_fee_minor ?? 0)/100)); setFormDeliveryEta(p.delivery_eta ?? '');
     setViewMode('edit-product');
   };
 
@@ -748,6 +756,11 @@ export function ProductsPage() {
               <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1 block">Buy Link (optional)</label>
               <input value={formLink} onChange={e => setFormLink(e.target.value)} placeholder="https://your-store.com/product"
                 className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+
+            <div className="p-4 rounded-2xl border border-border bg-muted/30 space-y-3">
+              <div className="flex items-center justify-between"><div><p className="font-bold text-sm">Delivery options</p><p className="text-xs text-muted-foreground">Let buyers choose seller delivery or local delivery.</p></div><button type="button" onClick={()=>setFormLocalDelivery(v=>!v)} className={'w-12 h-7 rounded-full transition-colors '+(formLocalDelivery?'bg-primary':'bg-muted')}><span className={'block w-5 h-5 rounded-full bg-white transition-transform '+(formLocalDelivery?'translate-x-6':'translate-x-1')}/></button></div>
+              {formLocalDelivery&&<div className="grid grid-cols-2 gap-3"><div><label className="text-xs font-semibold text-muted-foreground">Local delivery fee</label><input type="number" min="0" step="0.01" value={formDeliveryFee} onChange={e=>setFormDeliveryFee(e.target.value)} className="w-full mt-1 px-3 py-2.5 rounded-xl border border-border bg-background" placeholder="0.00"/></div><div><label className="text-xs font-semibold text-muted-foreground">Estimated delivery</label><input value={formDeliveryEta} onChange={e=>setFormDeliveryEta(e.target.value)} className="w-full mt-1 px-3 py-2.5 rounded-xl border border-border bg-background" placeholder="1–2 days"/></div></div>}
             </div>
 
             {/* Category */}
