@@ -5,16 +5,47 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatNumber(num: number): string {
-  if (num >= 1000000) {
-    return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+export function formatNumber(num: number | null | undefined): string {
+  // Feed/sidebar payloads can legitimately omit aggregate counters. Formatting
+  // must be total because these values are rendered during the initial tree.
+  const value = typeof num === 'number' && Number.isFinite(num) ? num : 0;
+  if (value >= 1000000) {
+    return (value / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
   }
-  if (num >= 1000) {
-    return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  if (value >= 1000) {
+    return (value / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
   }
-  return num.toString();
+  return String(value);
 }
 
+export function localizeSocialLinks(content: string): string {
+  // ActivityPub HTML deliberately uses canonical URLs from the source instance.
+  // Those URLs must never become browser-level navigation targets in Testagram.
+  // Mentions stay inside Testagram and retain the canonical actor URL as a query
+  // parameter so the Fediverse profile page can resolve the exact remote actor.
+  return content.replace(/<a\b([^>]*)\bhref=(['"])(https?:\/\/[^'"]+)\2([^>]*)>([\s\S]*?)<\/a>/gi, (match, before, quote, href, after, label) => {
+    const text = String(label).replace(/<[^>]*>/g, '').trim();
+    const token = text.match(/^([@#])([^\s<]+)/);
+    if (!token) return match;
+
+    const kind = token[1];
+    const rawValue = token[2].replace(/^@/, '').replace(/^#/, '');
+    if (!rawValue) return match;
+
+    if (kind === '#') {
+      const localHref = '/hashtag/' + encodeURIComponent(rawValue.toLowerCase());
+      return '<a href="' + localHref + '" class="text-primary hover:underline">' + label + '</a>';
+    }
+
+    const actor = href;
+    let host = '';
+    try { host = new URL(actor).hostname; } catch { return match; }
+    const username = rawValue.split('@')[0];
+    const handle = username + '@' + host;
+    const localHref = '/fediverse/profile?actor=' + encodeURIComponent(actor) + '&handle=' + encodeURIComponent(handle);
+    return '<a href="' + localHref + '" class="text-primary hover:underline">' + label + '</a>';
+  });
+}
 export function parseContent(content: string): string {
   const processInline = (text: string) =>
     text
@@ -75,6 +106,9 @@ export function parseContent(content: string): string {
 
   let parsed = htmlParts.join('');
 
+  // Normalize any pre-existing remote hashtag/mention anchors before creating local links.
+  parsed = localizeSocialLinks(parsed);
+
   // Linkify hashtags — skip occurrences already inside HTML attributes (href/id/class)
   // Two-step: protect attributes, then replace bare #word tokens in text
   parsed = parsed.replace(/(<[^>]+>)|#(\w+)/g, (m, tag, hash) => {
@@ -82,7 +116,17 @@ export function parseContent(content: string): string {
     return `<a href="/hashtag/${hash}" class="text-primary hover:underline">#${hash}</a>`;
   });
 
-  // Linkify @mentions — same protection pattern
+  // Linkify remote @user@instance mentions before local @user mentions.
+  // Remote mentions must remain inside Testagram while preserving their actor identity.
+  parsed = parsed.replace(/(<[^>]+>)|@(\w+)@([A-Za-z0-9.-]+)(?=\s|$|[.,!?;:])/g, (m, tag, username, domain) => {
+    if (tag) return tag;
+    const actor = 'https://' + domain + '/@' + username;
+    const handle = username + '@' + domain;
+    const href = '/fediverse/profile?actor=' + encodeURIComponent(actor) + '&handle=' + encodeURIComponent(handle);
+    return '<a href="' + href + '" class="text-primary hover:underline">@' + username + '@' + domain + '</a>';
+  });
+
+  // Linkify local @mentions — same protection pattern.
   parsed = parsed.replace(/(<[^>]+>)|@(\w+)/g, (m, tag, mention) => {
     if (tag) return tag;
     return `<a href="/profile/${mention}" class="text-primary hover:underline">@${mention}</a>`;

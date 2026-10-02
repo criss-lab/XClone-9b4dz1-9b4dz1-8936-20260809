@@ -6,9 +6,10 @@ import { TwoFAModal, TwoFASetupCard, MpesaPaymentHistory, WalletBudgetPlanner, F
 import { MpesaFullTab } from '@/components/features/MpesaTab';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
 import { useSEO } from '@/hooks/useSEO';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { TopBar } from '@/components/layout/TopBar';
 import { WalletDashboard } from '@/components/features/WalletDashboard';
+import { AdvertiserSurface } from '@/components/features/AdvertiserSurface';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { useWallet } from '@/hooks/useWallet';
@@ -264,46 +265,21 @@ function PinEntryModal({ title, onConfirm, onCancel, userId }: {
 
 // ── PIN Setup Card ────────────────────────────────────────────────────────
 function PinSetupCard({ userId, pinHash, onSaved }: { userId: string; pinHash: string | null; onSaved: () => void }) {
-  const hasPin = useMemo(() => !!pinHash, [pinHash]);
-  const [mode,       setMode]    = useState('idle' as 'idle' | 'setup' | 'change' | 'remove');
-  const [oldPin,     setOldPin]  = useState('');
-  const [newPin,     setNewPin]  = useState('');
-  const [confirmPin, setConfirm] = useState('');
-  const [saving,     setSaving]  = useState(false);
-  const resetForm = () => { setMode('idle'); setOldPin(''); setNewPin(''); setConfirm(''); };
+  const hasPin = !!pinHash;
+  const [mode, setMode] = useState('idle' as 'idle' | 'setup' | 'change');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [saving, setSaving] = useState(false);
+  const resetForm = () => { setMode('idle'); setNewPin(''); setConfirmPin(''); };
 
   const handleSave = async () => {
-    if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) { toast.error('PIN must be exactly 4 digits'); return; }
+    if (!/^\\d{4,6}$/.test(newPin)) { toast.error('PIN must be 4 to 6 digits'); return; }
     if (newPin !== confirmPin) { toast.error('PINs do not match'); return; }
-    if (hasPin && mode === 'change') {
-      const oldHash = await hashPin(oldPin);
-      if (oldHash !== pinHash) { toast.error('Current PIN is incorrect'); return; }
-    }
     setSaving(true);
-    const hash = await hashPin(newPin);
-    const { error } = await supabase.from('user_wallets').update({ wallet_pin_hash: hash }).eq('user_id', userId);
+    const { error } = await supabase.rpc('set_wallet_pin', { p_pin: newPin });
     setSaving(false);
-    if (error) { toast.error('Failed to save PIN'); return; }
-    // Track last changed in localStorage
-    try {
-      const raw = localStorage.getItem(`ts-pin-meta-${userId}`);
-      const meta = raw ? JSON.parse(raw) : {};
-      meta.lastChanged = new Date().toISOString();
-      localStorage.setItem(`ts-pin-meta-${userId}`, JSON.stringify(meta));
-    } catch { /* ignore */ }
+    if (error) { toast.error(error.message || 'Failed to save PIN'); return; }
     toast.success(hasPin ? 'PIN updated!' : 'PIN set!');
-    resetForm(); onSaved();
-  };
-
-  const handleRemove = async () => {
-    if (oldPin.length !== 4) { toast.error('Enter your current PIN'); return; }
-    const oldHash = await hashPin(oldPin);
-    if (oldHash !== pinHash) { toast.error('PIN is incorrect'); return; }
-    setSaving(true);
-    const { error } = await supabase.from('user_wallets').update({ wallet_pin_hash: null }).eq('user_id', userId);
-    setSaving(false);
-    if (error) { toast.error('Failed to remove PIN'); return; }
-    toast.success('PIN removed');
     resetForm(); onSaved();
   };
 
@@ -317,57 +293,35 @@ function PinSetupCard({ userId, pinHash, onSaved }: { userId: string; pinHash: s
             {hasPin && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-600 font-bold border border-green-500/20">Active</span>}
           </div>
           {mode === 'idle' && (
-            <div className="flex gap-3">
-              {hasPin ? (
-                <>
-                  <button onClick={() => setMode('change')} className="text-xs text-primary font-semibold hover:underline">Change</button>
-                  <button onClick={() => setMode('remove')} className="text-xs text-red-500 font-semibold hover:underline">Remove</button>
-                </>
-              ) : (
-                <button onClick={() => setMode('setup')} className="text-xs text-primary font-semibold hover:underline">Set PIN</button>
-              )}
-            </div>
+            <button onClick={() => setMode(hasPin ? 'change' : 'setup')} className="text-xs text-primary font-semibold hover:underline">
+              {hasPin ? 'Change' : 'Set PIN'}
+            </button>
           )}
         </div>
-        {mode === 'idle' && (
+        {mode === 'idle' ? (
           <p className="text-xs text-muted-foreground">
-            {hasPin ? 'Your wallet PIN is required before sending or withdrawing.' : 'Set a 4-digit PIN for extra security on withdrawals and transfers.'}
+            {hasPin ? 'Your server-verified wallet PIN protects sensitive transactions.' : 'Set a 4–6 digit PIN. The wallet stores only a server-side password hash.'}
           </p>
-        )}
-        {mode !== 'idle' && (
+        ) : (
           <div className="mt-4 space-y-3">
-            {(mode === 'change' || mode === 'remove') && (
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground mb-1.5 block uppercase tracking-wide">Current PIN</label>
-                <input type="password" inputMode="numeric" maxLength={4} placeholder="••••"
-                  value={oldPin} onChange={e => setOldPin(e.target.value.replace(/\D/g,'').slice(0,4))}
-                  className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/30" />
-              </div>
-            )}
-            {mode !== 'remove' && (
-              <>
-                <div>
-                  <label className="text-xs font-semibold text-muted-foreground mb-1.5 block uppercase tracking-wide">New PIN</label>
-                  <input type="password" inputMode="numeric" maxLength={4} placeholder="••••"
-                    value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g,'').slice(0,4))}
-                    className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/30" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-muted-foreground mb-1.5 block uppercase tracking-wide">Confirm PIN</label>
-                  <input type="password" inputMode="numeric" maxLength={4} placeholder="••••"
-                    value={confirmPin} onChange={e => setConfirm(e.target.value.replace(/\D/g,'').slice(0,4))}
-                    className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/30" />
-                </div>
-              </>
-            )}
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground mb-1.5 block uppercase tracking-wide">New PIN</label>
+              <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={6} placeholder="••••"
+                value={newPin} onChange={e => setNewPin(e.target.value.replace(/\\D/g,'').slice(0,6))}
+                className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground mb-1.5 block uppercase tracking-wide">Confirm PIN</label>
+              <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={6} placeholder="••••"
+                value={confirmPin} onChange={e => setConfirmPin(e.target.value.replace(/\\D/g,'').slice(0,6))}
+                className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
             <div className="flex gap-3">
-              <button onClick={resetForm} className="flex-1 py-2.5 border border-border rounded-xl font-semibold text-sm hover:bg-muted transition-colors">Cancel</button>
-              <button onClick={mode === 'remove' ? handleRemove : handleSave} disabled={saving}
-                className={`flex-1 py-2.5 rounded-xl font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2 ${
-                  mode === 'remove' ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-primary text-primary-foreground hover:opacity-90'
-                } transition-opacity`}>
+              <button onClick={resetForm} className="flex-1 py-2.5 border border-border rounded-xl font-semibold text-sm hover:bg-muted">Cancel</button>
+              <button onClick={handleSave} disabled={saving}
+                className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                {saving ? 'Saving…' : mode === 'remove' ? 'Remove PIN' : 'Save PIN'}
+                {saving ? 'Saving…' : 'Save PIN'}
               </button>
             </div>
           </div>
@@ -406,7 +360,12 @@ function BiometricCard({ userId, credentialId, onSaved }: { userId: string; cred
         },
       }) as PublicKeyCredential;
       const credId = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
-      const { error } = await supabase.from('user_wallets').update({ biometric_credential_id: credId }).eq('user_id', userId);
+      const publicKey = (cred.response as AuthenticatorAttestationResponse).getPublicKey?.();
+      if (!publicKey) throw new Error('This authenticator did not provide a public key');
+      const publicKeyB64 = btoa(String.fromCharCode(...new Uint8Array(publicKey)));
+      const { error } = await supabase.rpc('set_wallet_biometric_enabled', {
+        p_enabled: true, p_credential_id: credId, p_public_key: publicKeyB64,
+      });
       if (error) throw error;
       toast.success('Biometric authentication enabled!');
       onSaved();
@@ -417,7 +376,9 @@ function BiometricCard({ userId, credentialId, onSaved }: { userId: string; cred
 
   const removeBiometric = async () => {
     setRemoving(true);
-    const { error } = await supabase.from('user_wallets').update({ biometric_credential_id: null }).eq('user_id', userId);
+    const { error } = await supabase.rpc('set_wallet_biometric_enabled', {
+      p_enabled: false, p_credential_id: null, p_public_key: null,
+    });
     setRemoving(false);
     if (error) { toast.error('Failed to remove biometrics'); return; }
     toast.success('Biometric authentication removed');
@@ -627,7 +588,7 @@ function InstallmentPanel({ userId, walletBalance, pinHash, currency, onClose }:
     setQuery(q);
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(6);
     setResults(data ?? []); setSearching(false);
   };
@@ -635,18 +596,10 @@ function InstallmentPanel({ userId, walletBalance, pinHash, currency, onClose }:
   const execute = async () => {
     if (!recipient || !totalAmt || parseFloat(totalAmt) <= 0) return;
     setSaving(true);
-    const now = Date.now();
-    const rows = Array.from({ length: installments }, (_, i) => {
-      const d = new Date(now + (freq === 'weekly' ? (i + 1) * 7 : (i + 1) * 30) * 86400000);
-      d.setHours(10, 0, 0, 0);
-      return {
-        from_user_id: userId, to_user_id: recipient.id, to_username: recipient.username,
-        amount: perInstall,
-        note: note.trim() ? `Installment ${i + 1}/${installments}: ${note.trim()}` : `Installment ${i + 1}/${installments}`,
-        scheduled_for: d.toISOString(),
-      };
+    const { error } = await supabase.rpc('wallet_create_pay_later', {
+      p_to_user_id: recipient.id, p_total: parseFloat(totalAmt), p_installments: installments,
+      p_frequency: freq, p_note: note.trim() || null,
     });
-    const { error } = await supabase.from('scheduled_transfers').insert(rows);
     setSaving(false);
     if (error) { toast.error('Failed to schedule installments'); return; }
     toast.success(`${installments} installments scheduled!`);
@@ -799,7 +752,7 @@ function SplitPaymentPanel({ userId, senderUsername, walletBalance, pinHash, cur
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
     const excludeIds = [userId, ...recipients.map(r => r.id)];
-    const { data } = await supabase.from('user_profiles')
+    const { data } = await supabase.from('profiles')
       .select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`)
       .not('id', 'in', `(${excludeIds.map(id => `"${id}"`).join(',')})`)
@@ -815,24 +768,15 @@ function SplitPaymentPanel({ userId, senderUsername, walletBalance, pinHash, cur
 
   const executeSplit = async () => {
     setStep('sending');
-    let successCount = 0;
-    for (const recipient of recipients) {
-      const { error } = await supabase.rpc('p2p_wallet_transfer', {
-        p_from_user_id: userId, p_to_user_id: recipient.id, p_amount: perPerson, p_note: note.trim() || null,
-      });
-      if (!error) {
-        successCount++;
-        setSent(successCount);
-        supabase.from('platform_inbox').insert({
-          user_id: recipient.id,
-          subject: `You received ${fmtAmt(perPerson, currency)} from @${senderUsername} (split bill)`,
-          body: `@${senderUsername} split a bill and sent you ${fmtAmt(perPerson, currency)}${note.trim() ? ` — "${note.trim()}"` : ''}.`,
-          type: 'payment', icon_emoji: '💸', cta_label: 'View Wallet', cta_url: '/wallet',
-        }).then(() => {});
-      }
+    const { data: splitId, error } = await supabase.rpc('wallet_create_split', {
+      p_total: parseFloat(total), p_recipient_ids: recipients.map(r => r.id), p_note: note.trim() || null,
+    });
+    if (error || !splitId) {
+      setStep('form'); toast.error(error?.message || 'Split failed — no funds were moved.'); return;
     }
+    setSent(recipients.length);
     setStep('done');
-    toast.success(`Split complete! Sent ${fmtAmt(perPerson, currency)} to ${successCount} people.`);
+    toast.success(`Split complete! Sent ${fmtAmt(perPerson, currency)} to ${recipients.length} people.`);
   };
 
   const handleConfirm = () => { if (pinHash) { setShowPin(true); } else { executeSplit(); } };
@@ -963,13 +907,18 @@ function ReferralEarningsTab({ userId }: { userId: string }) {
     const loadData = async () => {
       setLoading(true);
       const [{ data: refs }, { data: creds }] = await Promise.all([
-        supabase.from('referrals')
-          .select('*, invited_user:user_profiles!referrals_invited_user_fkey(id,username,avatar_url)')
-          .eq('invited_by', userId).order('created_at', { ascending: false }),
-        supabase.from('credit_transactions').select('*').eq('user_id', userId)
-          .ilike('reason', '%referral%').order('created_at', { ascending: false }).limit(50),
+        supabase.from('wallet_referrals').select('*')
+          .eq('inviter_user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('wallet_referral_credits').select('*').eq('user_id', userId)
+          .eq('reason', 'referral_signup').order('created_at', { ascending: false }).limit(50),
       ]);
-      setReferrals(refs ?? []); setCredits(creds ?? []); setLoading(false);
+      const ids = (refs ?? []).map((r: any) => r.invited_user_id);
+      const { data: invitedProfiles } = ids.length
+        ? await supabase.from('profiles').select('id,username,avatar_url').in('id', ids)
+        : { data: [] };
+      const profileById = new Map((invitedProfiles ?? []).map((p: any) => [p.id, p]));
+      setReferrals((refs ?? []).map((r: any) => ({ ...r, invited_user: profileById.get(r.invited_user_id) ?? null })));
+      setCredits(creds ?? []); setLoading(false);
     };
     loadData();
   }, [userId]);
@@ -1039,7 +988,7 @@ function ReferralEarningsTab({ userId }: { userId: string }) {
                 <p className="text-xs text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</p>
               </div>
               <div className="shrink-0 text-right">
-                <p className="text-sm font-black text-amber-600">+{r.credits_awarded ?? 100}</p>
+                <p className="text-sm font-black text-amber-600">+{r.credits_awarded ?? 0}</p>
                 <p className="text-[10px] text-muted-foreground">credits</p>
               </div>
             </div>
@@ -1054,32 +1003,63 @@ function ReferralEarningsTab({ userId }: { userId: string }) {
 // ── M-Pesa Secrets Guide ──────────────────────────────────────────────────
 function MpesaSecretsGuide() {
   const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<{ configured: number; total: number; ready: boolean; keys: Array<{ key: string; configured: boolean }> } | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+
+  const loadStatus = async () => {
+    setLoadingStatus(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('mpesa-config-status');
+      if (error) throw error;
+      setStatus(data ?? null);
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoadingStatus(false);
+    }
+  };
+
+  useEffect(() => { loadStatus(); }, []);
+
   return (
     <div className="rounded-2xl border border-border overflow-hidden">
-      <button onClick={() => setOpen(v => !v)} className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-muted/40 transition-colors text-left">
+      <button onClick={() => { setOpen(v => !v); if (!open) loadStatus(); }} className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-muted/40 transition-colors text-left">
         <div className="w-8 h-8 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0">
           <Key className="w-4 h-4 text-amber-600" />
         </div>
         <div className="flex-1">
-          <p className="font-bold text-sm">M-Pesa Setup Guide</p>
-          <p className="text-xs text-muted-foreground">Configure secrets in Cloud → Secrets</p>
+          <p className="font-bold text-sm">M-Pesa Setup</p>
+          <p className="text-xs text-muted-foreground">
+            {loadingStatus ? 'Checking configuration…' : status ? `${status.configured}/${status.total} secrets configured` : 'Configuration status unavailable'}
+          </p>
         </div>
+        {status && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${status.ready ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'}`}>{status.ready ? 'Ready' : 'Needs setup'}</span>}
         <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <div className="border-t border-border px-4 pb-4 pt-3 space-y-3">
-          <p className="text-xs text-muted-foreground">Add each secret in <strong className="text-foreground">OnSpace Cloud → Secrets</strong>. Use sandbox values for testing.</p>
+          <p className="text-xs text-muted-foreground">Secrets are checked server-side. Values are never returned to the browser.</p>
           <div className="space-y-2">
-            {MPESA_SECRETS.map(s => (
-              <div key={s.key} className="p-3 bg-background border border-border rounded-xl">
-                <code className="text-[11px] font-mono font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded block mb-1">{s.key}</code>
-                <p className="text-xs text-foreground mb-0.5">{s.desc}</p>
-                <p className="text-[10px] text-muted-foreground flex items-start gap-1">
-                  <ExternalLink className="w-2.5 h-2.5 shrink-0 mt-0.5" />{s.where}
-                </p>
-              </div>
-            ))}
+            {MPESA_SECRETS.map(s => {
+              const configured = status?.keys.find(k => k.key === s.key)?.configured;
+              return (
+                <div key={s.key} className="p-3 bg-background border border-border rounded-xl">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <code className="text-[11px] font-mono font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">{s.key}</code>
+                    <span className={`text-[10px] font-bold ${configured ? 'text-green-600' : 'text-muted-foreground'}`}>{configured ? 'Configured' : 'Missing'}</span>
+                  </div>
+                  <p className="text-xs text-foreground mb-0.5">{s.desc}</p>
+                  <p className="text-[10px] text-muted-foreground flex items-start gap-1">
+                    <ExternalLink className="w-2.5 h-2.5 shrink-0 mt-0.5" />{s.where}
+                  </p>
+                </div>
+              );
+            })}
           </div>
+          <button onClick={loadStatus} disabled={loadingStatus}
+            className="w-full py-2.5 border border-border rounded-xl font-semibold text-xs hover:bg-muted disabled:opacity-50">
+            {loadingStatus ? 'Checking…' : 'Refresh configuration'}
+          </button>
           <a href="https://developer.safaricom.co.ke" target="_blank" rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 w-full py-2.5 border border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400 rounded-xl font-semibold text-xs hover:bg-amber-500/10 transition-colors">
             <ExternalLink className="w-3.5 h-3.5" /> Open Safaricom Developer Portal
@@ -1184,7 +1164,7 @@ function PayoutScheduleCard({ userId, defaultPhone }: { userId: string; defaultP
 
   const fetchSchedule = async () => {
     setLoading(true);
-    const { data } = await supabase.from('payout_schedules').select('*').eq('user_id', userId).maybeSingle();
+    const { data } = await supabase.from('wallet_auto_payout_schedules').select('*').eq('user_id', userId).maybeSingle();
     if (data) {
       setSchedule(data); setEnabled(data.is_active); setFrequency(data.frequency ?? 'monthly');
       setMinAmount(String(data.minimum_amount ?? 5)); setPhone(data.payout_destination ?? defaultPhone ?? '');
@@ -1205,14 +1185,10 @@ function PayoutScheduleCard({ userId, defaultPhone }: { userId: string; defaultP
     if (frequency === 'weekly') nextPayout.setDate(nextPayout.getDate() + 7);
     else nextPayout.setMonth(nextPayout.getMonth() + 1);
     nextPayout.setHours(9, 0, 0, 0);
-    const payload = {
-      user_id: userId, frequency, payout_method: 'mpesa', payout_destination: phoneTrimmed,
-      minimum_amount: parseFloat(minAmount) || 5, is_active: enabled,
-      next_payout_at: enabled ? nextPayout.toISOString() : null,
-    };
+    const payload = null;
     let err;
-    if (schedule) { const { error } = await supabase.from('payout_schedules').update(payload).eq('id', schedule.id); err = error; }
-    else { const { error } = await supabase.from('payout_schedules').insert(payload); err = error; }
+    const { error: rpcError } = await supabase.rpc('wallet_upsert_auto_payout_schedule', { p_frequency: frequency, p_minimum_amount: parseFloat(minAmount) || 5, p_destination: phoneTrimmed || null, p_enabled: enabled });
+    err = rpcError;
     setSaving(false);
     if (err) { toast.error('Failed to save schedule'); return; }
     toast.success(enabled ? `Auto-payout scheduled ${frequency}` : 'Auto-payout disabled');
@@ -1377,7 +1353,7 @@ function SpendingAnalyticsTab({ userId, currency }: { userId: string; currency: 
   const { barData, pieData, totalIn, totalOut, totalBoosts, avgTxn, recentDeposits } = useMemo(() => {
     const days = period === 'week' ? 7 : 14;
     const now  = Date.now();
-    const dailyMap: any = {};
+    const dailyMap: Record<string, { in: number; out: number }> = {};
     for (let i = days - 1; i >= 0; i--) {
       const key = new Date(now - i * 86400000).toLocaleDateString('en', { month: 'short', day: 'numeric' });
       dailyMap[key] = { in: 0, out: 0 };
@@ -1536,7 +1512,7 @@ function SendMoneyTab({ userId, senderUsername, walletBalance, pinHash, biometri
     setQuery(q);
     if (q.trim().length < 2) { setUsers([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(8);
     setUsers(data ?? []); setSearching(false);
   };
@@ -1796,7 +1772,7 @@ function ScheduledTransfersTab({ userId, currency, pinHash }: { userId: string; 
 
   const loadTransfers = async () => {
     setLoading(true);
-    const { data } = await supabase.from('scheduled_transfers')
+    const { data } = await supabase.from('wallet_scheduled_transfers')
       .select('*').eq('from_user_id', userId).eq('status', 'pending').order('scheduled_for', { ascending: true });
     setTransfers(data ?? []); setLoading(false);
   };
@@ -1805,7 +1781,7 @@ function ScheduledTransfersTab({ userId, currency, pinHash }: { userId: string; 
     setQuery(q);
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(6);
     setResults(data ?? []); setSearching(false);
   };
@@ -1842,13 +1818,8 @@ function ScheduledTransfersTab({ userId, currency, pinHash }: { userId: string; 
     const toProcess = transfers.filter(t => selected.includes(t.id));
     let done = 0;
     for (const t of toProcess) {
-      const { error } = await supabase.rpc('p2p_wallet_transfer', {
-        p_from_user_id: userId, p_to_user_id: t.to_user_id, p_amount: Number(t.amount), p_note: t.note ?? null,
-      });
-      if (!error) {
-        await supabase.from('scheduled_transfers').delete().eq('id', t.id).eq('from_user_id', userId);
-        done++; setBatchDone(done);
-      }
+      const { data: executed, error } = await supabase.rpc('wallet_execute_scheduled_transfer', { p_id: t.id });
+      if (!error && executed) { done++; setBatchDone(done); }
     }
     setBatching(false); setSelected([]);
     toast.success(`${done}/${toProcess.length} transfers executed!`);
@@ -2433,6 +2404,13 @@ const TAG_DOT_BG = {
 } as const;
 // ── Referral leaderboard ──────────────────────────────────────────────────
 const RANK_BADGES = ['🥇','🥈','🥉'];
+const WALLET_ROUTE_MAP: Record<ActiveTab, string> = {
+  wallet: '/wallet', pocket: '/wallet/pocket', send: '/wallet/send', receive: '/wallet/receive',
+  mpesa: '/wallet/mpesa', history: '/wallet/history', analytics: '/wallet/analytics',
+  referrals: '/wallet/referrals', scheduled: '/wallet/scheduled', savings: '/wallet/savings',
+  reminders: '/wallet/reminders', security: '/wallet/security', converter: '/wallet/converter',
+};
+
 // ── Wallet search commands ────────────────────────────────────────────────
 const SEARCH_COMMANDS: { label: string; hint: string; emoji: string; tab: ActiveTab; keywords: string[] }[] = [
   { label: 'Deposit via M-Pesa', hint: 'Top up your wallet',              emoji: '💰', tab: 'wallet',    keywords: ['deposit','top up','topup','add money','mpesa','funds']          },
@@ -2538,7 +2516,7 @@ function ActivityHeatmap({ userId }: { userId: string }) {
   }, [userId]);
 
   const { cells, maxAmount } = useMemo(() => {
-    const map: any = {};
+    const map: Record<string, { count: number; amount: number; hasIn: boolean }> = {};
     const now = Date.now();
     for (let i = 34; i >= 0; i--) {
       const key = new Date(now - i * 86400000).toISOString().split('T')[0];
@@ -2598,60 +2576,85 @@ function ActivityHeatmap({ userId }: { userId: string }) {
 function SpendingAlertsCard({ userId }: { userId: string }) {
   const [prefs, setPrefs] = useState({ enabled: false, threshold: '10', budget: '50' } as { enabled: boolean; threshold: string; budget: string });
   const [checking, setChecking] = useState(false);
+  const [loadingPrefs, setLoadingPrefs] = useState(true);
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(`ts-alerts-${userId}`);
-      if (raw) setPrefs(JSON.parse(raw));
-    } catch { /* use defaults */ }
-  }, [userId]);
+  const loadPrefs = async () => {
+    setLoadingPrefs(true);
+    const { data } = await supabase.from('wallet_alert_preferences')
+      .select('enabled,withdrawal_threshold_usd,daily_budget_usd')
+      .eq('user_id', userId).maybeSingle();
+    if (data) setPrefs({
+      enabled: Boolean(data.enabled),
+      threshold: String(data.withdrawal_threshold_usd),
+      budget: String(data.daily_budget_usd),
+    });
+    setLoadingPrefs(false);
+  };
 
-  const save = (next: { enabled: boolean; threshold: string; budget: string }) => {
+  useEffect(() => { loadPrefs(); }, [userId]);
+
+  const save = async (next: { enabled: boolean; threshold: string; budget: string }) => {
     setPrefs(next);
-    localStorage.setItem(`ts-alerts-${userId}`, JSON.stringify(next));
+    const { error } = await supabase.from('wallet_alert_preferences').upsert({
+      user_id: userId,
+      enabled: next.enabled,
+      withdrawal_threshold_usd: Number(next.threshold) || 10,
+      daily_budget_usd: Number(next.budget) || 50,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' });
+    if (error) toast.error('Could not save spending alerts');
   };
 
   const runCheck = async () => {
     if (!prefs.enabled) return;
     setChecking(true);
-    const since = new Date(); since.setHours(0, 0, 0, 0);
-    const { data } = await supabase.from('wallet_transactions')
-      .select('amount,type,created_at,id').eq('user_id', userId).gte('created_at', since.toISOString());
-    const withdrawals = (data ?? []).filter((t: any) => t.type === 'withdrawal');
-    const todayTotal  = withdrawals.reduce((s: number, t: any) => s + Number(t.amount), 0);
-    const budget      = parseFloat(prefs.budget    || '0');
-    const threshold   = parseFloat(prefs.threshold || '0');
-    const todayKey    = since.toISOString().split('T')[0];
-    const alertKey    = `ts-alerted-${userId}`;
-    const alerted: any = (() => { try { return JSON.parse(localStorage.getItem(alertKey) ?? '{}'); } catch { return {}; } })();
+    try {
+      const since = new Date(); since.setHours(0, 0, 0, 0);
+      const { data } = await supabase.from('wallet_transactions')
+        .select('amount,type,created_at,id').eq('user_id', userId).gte('created_at', since.toISOString());
+      const withdrawals = (data ?? []).filter((t: any) => t.type === 'withdrawal');
+      const todayTotal = withdrawals.reduce((s: number, t: any) => s + Number(t.amount), 0);
+      const budget = parseFloat(prefs.budget || '0');
+      const threshold = parseFloat(prefs.threshold || '0');
+      const todayKey = since.toISOString().split('T')[0];
+      const alertKey = `ts-alerted-${userId}`;
+      const alerted: any = (() => { try { return JSON.parse(localStorage.getItem(alertKey) ?? '{}'); } catch { return {}; } })();
 
-    if (budget > 0 && todayTotal >= budget * 0.8 && !alerted[`budget-${todayKey}`]) {
-      await supabase.from('platform_inbox').insert({
-        user_id: userId, subject: 'Spending Alert: 80% of daily budget used',
-        body: `You have spent $${todayTotal.toFixed(2)} today — 80% of your $${budget.toFixed(2)} daily budget.`,
-        type: 'warning', icon_emoji: '⚠️', cta_label: 'Review Limit', cta_url: '/wallet',
-      });
-      alerted[`budget-${todayKey}`] = true;
-      localStorage.setItem(alertKey, JSON.stringify(alerted));
-      toast.warning('Alert sent: 80% of daily budget reached!');
-    }
-    if (threshold > 0) {
-      for (const t of withdrawals.filter((t: any) => Number(t.amount) >= threshold)) {
-        const k = `txn-${t.id}`;
-        if (!alerted[k]) {
-          await supabase.from('platform_inbox').insert({
-            user_id: userId, subject: `Large withdrawal alert: $${Number(t.amount).toFixed(2)}`,
-            body: `A withdrawal of $${Number(t.amount).toFixed(2)} was recorded — above your $${threshold.toFixed(2)} threshold.`,
-            type: 'warning', icon_emoji: '💸', cta_label: 'View History', cta_url: '/wallet?tab=history',
-          });
-          alerted[k] = true;
-        }
+      if (budget > 0 && todayTotal >= budget * 0.8 && !alerted[`budget-${todayKey}`]) {
+        await supabase.from('platform_inbox').insert({
+          user_id: userId, subject: 'Spending Alert: 80% of daily budget used',
+          body: `You have spent $${todayTotal.toFixed(2)} today — 80% of your $${budget.toFixed(2)} daily budget.`,
+          type: 'warning', icon_emoji: '⚠️', cta_label: 'Review Limit', cta_url: '/wallet',
+        });
+        alerted[`budget-${todayKey}`] = true;
+        localStorage.setItem(alertKey, JSON.stringify(alerted));
+        toast.warning('Alert sent: 80% of daily budget reached!');
       }
-      localStorage.setItem(alertKey, JSON.stringify(alerted));
+      if (threshold > 0) {
+        for (const t of withdrawals.filter((t: any) => Number(t.amount) >= threshold)) {
+          const k = `txn-${t.id}`;
+          if (!alerted[k]) {
+            await supabase.from('platform_inbox').insert({
+              user_id: userId, subject: `Large withdrawal alert: $${Number(t.amount).toFixed(2)}`,
+              body: `A withdrawal of $${Number(t.amount).toFixed(2)} was recorded — above your $${threshold.toFixed(2)} threshold.`,
+              type: 'warning', icon_emoji: '💸', cta_label: 'View History', cta_url: '/wallet?tab=history',
+            });
+            alerted[k] = true;
+          }
+        }
+        localStorage.setItem(alertKey, JSON.stringify(alerted));
+      }
+    } finally {
+      setChecking(false);
     }
-    setChecking(false);
-    toast.success('Alert check complete');
   };
+
+  useEffect(() => {
+    if (!prefs.enabled || loadingPrefs) return;
+    runCheck();
+    const id = window.setInterval(runCheck, 60000);
+    return () => window.clearInterval(id);
+  }, [prefs.enabled, prefs.threshold, prefs.budget, loadingPrefs]);
 
   return (
     <div className="rounded-2xl border border-border overflow-hidden">
@@ -2662,47 +2665,54 @@ function SpendingAlertsCard({ userId }: { userId: string }) {
             <h3 className="font-bold text-sm">Spending Alerts</h3>
             {prefs.enabled && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 font-bold border border-amber-500/20">On</span>}
           </div>
-          <button onClick={() => save({ ...prefs, enabled: !prefs.enabled })}
+          <button onClick={() => save({ ...prefs, enabled: !prefs.enabled })} disabled={loadingPrefs}
             className={`relative w-11 h-6 rounded-full transition-colors ${prefs.enabled ? 'bg-primary' : 'bg-muted'}`}>
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${prefs.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
           </button>
         </div>
-        {prefs.enabled ? (
-          <div className="space-y-4 mt-3">
-            <div>
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Large withdrawal alert (USD)</label>
+        {loadingPrefs ? (
+          <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading saved alert settings…</div>
+        ) : prefs.enabled ? (
+          <>
+            <p className="text-xs text-muted-foreground mb-3">Testagram checks your wallet every minute and sends an inbox notification when a withdrawal crosses your threshold or daily spending reaches 80%.</p>
+            <div className="mb-3">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Large withdrawal threshold (USD)</label>
               <div className="grid grid-cols-4 gap-2 mb-2">
                 {['5','10','25','50'].map(v => (
                   <button key={v} onClick={() => save({ ...prefs, threshold: v })}
-                    className={`py-2 rounded-xl font-bold text-xs border-2 transition-all ${prefs.threshold === v ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'border-border hover:border-amber-500/30'}`}>${v}</button>
+                    className={`py-2 rounded-xl font-bold text-xs border-2 transition-all ${prefs.threshold === v ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'border-border hover:border-amber-500/30'}`}>$${v}</button>
                 ))}
               </div>
-              <input type="number" min="1" step="0.01" placeholder="Custom threshold…"
-                value={!['5','10','25','50'].includes(prefs.threshold) ? prefs.threshold : ''}
-                onChange={e => save({ ...prefs, threshold: e.target.value })}
+              <input type="number" min="1" step="0.01" placeholder="Custom threshold…" value={!['5','10','25','50'].includes(prefs.threshold) ? prefs.threshold : ''}
+                onChange={e => setPrefs({ ...prefs, threshold: e.target.value })}
                 className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/30" />
             </div>
-            <div>
+            <div className="mb-3">
               <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Daily budget alert at 80% (USD)</label>
               <div className="grid grid-cols-4 gap-2 mb-2">
                 {['25','50','100','250'].map(v => (
                   <button key={v} onClick={() => save({ ...prefs, budget: v })}
-                    className={`py-2 rounded-xl font-bold text-xs border-2 transition-all ${prefs.budget === v ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'border-border hover:border-amber-500/30'}`}>${v}</button>
+                    className={`py-2 rounded-xl font-bold text-xs border-2 transition-all ${prefs.budget === v ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'border-border hover:border-amber-500/30'}`}>$${v}</button>
                 ))}
               </div>
-              <input type="number" min="1" step="0.01" placeholder="Custom budget…"
-                value={!['25','50','100','250'].includes(prefs.budget) ? prefs.budget : ''}
-                onChange={e => save({ ...prefs, budget: e.target.value })}
+              <input type="number" min="1" step="0.01" placeholder="Custom budget…" value={!['25','50','100','250'].includes(prefs.budget) ? prefs.budget : ''}
+                onChange={e => setPrefs({ ...prefs, budget: e.target.value })}
                 className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/30" />
             </div>
-            <button onClick={runCheck} disabled={checking}
-              className="w-full py-2.5 border border-amber-500/30 text-amber-600 rounded-xl font-semibold text-sm hover:bg-amber-500/5 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors">
-              {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <AlertTriangle className="w-4 h-4" />}
-              {checking ? 'Checking…' : 'Check Alerts Now'}
-            </button>
-          </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => save(prefs)} disabled={loadingPrefs}
+                className="py-2.5 bg-primary text-primary-foreground rounded-xl font-semibold text-sm hover:opacity-90 disabled:opacity-50">
+                Save Settings
+              </button>
+              <button onClick={runCheck} disabled={checking}
+                className="py-2.5 border border-amber-500/30 text-amber-600 rounded-xl font-semibold text-sm hover:bg-amber-500/5 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors">
+                {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <AlertTriangle className="w-4 h-4" />}
+                {checking ? 'Checking…' : 'Check Now'}
+              </button>
+            </div>
+          </>
         ) : (
-          <p className="text-xs text-muted-foreground mt-1">Get inbox notifications when a withdrawal exceeds a set amount, or your daily spending hits 80% of your budget.</p>
+          <p className="text-xs text-muted-foreground mt-1">Get inbox notifications when a withdrawal exceeds a set amount, or your daily spending hits 80% of your budget. Settings are saved to your wallet.</p>
         )}
       </div>
     </div>
@@ -2716,7 +2726,11 @@ function WalletNotificationsHub({ userId }: { userId: string }) {
   const [marking, setMarking] = useState(false);
   const [open,    setOpen]    = useState(false);
 
-  useEffect(() => { load(); }, [userId]);
+  useEffect(() => {
+    load();
+    const id = window.setInterval(load, 30000);
+    return () => window.clearInterval(id);
+  }, [userId]);
 
   const load = async () => {
     setLoading(true);
@@ -2886,7 +2900,7 @@ function P2PBalanceChart({ userId, currency }: { userId: string; currency: Curre
   }, [userId]);
 
   const { chartData, minBal, maxBal } = useMemo(() => {
-    const dayMap: any = {};
+    const dayMap: Record<string, number> = {};
     const now = Date.now();
     for (let i = 29; i >= 0; i--) {
       const key = new Date(now - i * 86400000).toLocaleDateString('en', { month: 'short', day: 'numeric' });
@@ -3085,7 +3099,7 @@ function MonthlyHeatmapCalendar({ userId, currency }: { userId: string; currency
   const { cells, maxAmt } = useMemo(() => {
     const daysInMonth  = new Date(year, month + 1, 0).getDate();
     const firstWeekday = new Date(year, month, 1).getDay();
-    const dayMap: any = {};
+    const dayMap: Record<number, { inAmt: number; outAmt: number; count: number }> = {};
     for (let d = 1; d <= daysInMonth; d++) dayMap[d] = { inAmt: 0, outAmt: 0, count: 0 };
     txns.forEach(t => {
       const day = new Date(t.created_at).getDate();
@@ -3187,7 +3201,7 @@ function RequestMoneyPanel({ userId, senderUsername, currency }: {
     setQuery(q);
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    const { data } = await supabase.from('user_profiles').select('id,username,avatar_url,verified')
+    const { data } = await supabase.from('profiles').select('id,username,avatar_url,verified')
       .ilike('username', `%${q.trim()}%`).neq('id', userId).limit(8);
     setResults(data ?? []); setSearching(false);
   };
@@ -3315,7 +3329,7 @@ function SavingsPocketTab({ userId, mainBalance, savingsBalance, pinHash, curren
   }, [historyKey]);
 
   useEffect(() => {
-    supabase.from('savings_goals').select('id,name,emoji,current_amount,target_amount')
+    supabase.from('wallet_savings_goals').select('id,name,emoji,current_amount,target_amount')
       .eq('user_id', userId).eq('is_completed', false)
       .order('created_at', { ascending: false })
       .then(({ data }) => setGoals(data ?? []));
@@ -3340,22 +3354,19 @@ function SavingsPocketTab({ userId, mainBalance, savingsBalance, pinHash, curren
     if (type === 'in'  && amt > mainBalance)    { toast.error('Insufficient wallet balance');  return; }
     if (type === 'out' && amt > savingsBalance) { toast.error('Insufficient savings balance'); return; }
     setSaving(true);
-    const newMain    = parseFloat((type === 'in' ? mainBalance - amt : mainBalance + amt).toFixed(2));
-    const newSavings = parseFloat((type === 'in' ? savingsBalance + amt : savingsBalance - amt).toFixed(2));
-    const { error } = await supabase.from('user_wallets')
-      .update({ balance: newMain, savings_balance: newSavings }).eq('user_id', userId);
+    const { error } = await supabase.rpc('wallet_move_savings', { p_amount: amt, p_direction: type });
     setSaving(false);
     if (error) { toast.error('Transfer failed'); return; }
     addHistory(type, amt);
     if (type === 'in' && linkedGoalId) {
-      const { data: goal } = await supabase.from('savings_goals')
+      const { data: goal } = await supabase.from('wallet_savings_goals')
         .select('current_amount,target_amount,name').eq('id', linkedGoalId).eq('user_id', userId).maybeSingle();
       if (goal) {
         const prevAmt    = Number(goal.current_amount);
         const targetAmt  = Number(goal.target_amount);
         const newGoalAmt = Math.min(prevAmt + amt, targetAmt);
         const completed  = newGoalAmt >= targetAmt;
-        await supabase.from('savings_goals')
+        await supabase.from('wallet_savings_goals')
           .update({ current_amount: newGoalAmt, is_completed: completed }).eq('id', linkedGoalId);
         if (completed) toast.success(`🎉 Goal "${goal.name}" completed!`);
         else toast.info(`Goal progress: ${fmtAmt(newGoalAmt, currency)} / ${fmtAmt(targetAmt, currency)}`);
@@ -3614,14 +3625,14 @@ function ReferralLeaderboard({ userId }: { userId: string }) {
         .limit(500);
       const counts: any = {};
       (allRefs ?? []).forEach((r: any) => { counts[r.invited_by] = (counts[r.invited_by] ?? 0) + 1; });
-      const top10 = Object.entries(counts).sort((a: any, b: any) => b[1] - a[1]).slice(0, 10);
+      const top10 = Object.entries(counts as Record<string, number>).sort((a, b) => b[1] - a[1]).slice(0, 10);
       if (top10.length === 0) { setLeaders([]); setLoading(false); return; }
-      const { data: profiles } = await supabase.from('user_profiles')
+      const { data: profiles } = await supabase.from('profiles')
         .select('id,username,avatar_url').in('id', top10.map(([id]) => id));
       const pm: any = {};
       (profiles ?? []).forEach((p: any) => { pm[p.id] = p; });
       setLeaders(top10.map(([uid, count]) => ({
-        uid, count,
+        uid, count: Number(count),
         username: pm[uid]?.username ?? 'Unknown',
         avatarUrl: pm[uid]?.avatar_url ?? null,
       })));
@@ -3690,11 +3701,17 @@ const WALLET_TABS: { key: ActiveTab; label: string }[] = [
 
 function WalletAdBanner() { return <PageAdBanner />; }
 
-export default function WalletPage() {
+export default function WalletPage({ initialTab, standaloneTitle }: { initialTab?: ActiveTab; standaloneTitle?: string } = {}) {
   useSEO({ noindex: true, title: 'Wallet', url: '/wallet' });
   const { user }                = useAuth();
-  const { wallet, fetchWallet } = useWallet();
+  const { wallet, walletSecurity, fetchWallet } = useWallet();
   const [showTour, setShowTour] = useState(false);
+  const [canonicalSavingsBalance, setCanonicalSavingsBalance] = useState(0);
+  useEffect(() => {
+    if (!user) return;
+    supabase.from('wallet_savings_pockets').select('balance').eq('user_id', user.id).maybeSingle()
+      .then(({ data }) => setCanonicalSavingsBalance(Number(data?.balance ?? 0)));
+  }, [user, wallet]);
 
   useEffect(() => {
     if (!user) return;
@@ -3705,9 +3722,10 @@ export default function WalletPage() {
   }, [user]);
 
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState(() => {
-    const t = searchParams.get('tab');
+    const t = initialTab ?? searchParams.get('tab');
     if (t === 'send')      return 'send';
     if (t === 'history')   return 'history';
     if (t === 'analytics') return 'analytics';
@@ -3793,11 +3811,11 @@ export default function WalletPage() {
 
   const handleCurrencyChange = async (c: CurrencyCode) => {
     setCurrency(c);
-    if (user) await supabase.from('user_wallets').update({ preferred_currency: c }).eq('user_id', user.id);
+    if (user) await supabase.rpc('set_wallet_preferred_currency', { p_currency: c });
   };
 
-  const pinHash: string | null               = (wallet as any)?.wallet_pin_hash         ?? null;
-  const biometricCredentialId: string | null  = (wallet as any)?.biometric_credential_id ?? null;
+  const pinHash: string | null               = walletSecurity?.pin_hash ?? null;
+  const biometricCredentialId: string | null  = walletSecurity?.biometric_credential_id ?? null;
   const [showPinModal, setShowPinModal]       = useState(false);
 
   const [phone,    setPhone]    = useState('');
@@ -3941,7 +3959,6 @@ export default function WalletPage() {
       if (!res.ok || !payload.success) throw new Error(payload.error || 'B2C request failed');
       toast.success('Payout initiated — check your phone!');
       const convId = payload.conversation_id;
-      await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: usdAmt });
       await fetchWallet(); startBalancePoll();
       let elapsed = 0; setWPollSecs(0); setWPollMsg('Your M-Pesa payment is on its way…'); setWStep('polling');
       wPollRef.current = setInterval(async () => {
@@ -3958,7 +3975,6 @@ export default function WalletPage() {
           toast.success('Withdrawal complete!');
         } else if (txn?.status === 'failed') {
           clearInterval(wPollRef.current!); stopBalancePoll();
-          await supabase.rpc('add_to_wallet', { p_user_id: user.id, p_amount: usdAmt }); await fetchWallet();
           setWStep('failed'); setWPollMsg('Payout failed — balance restored.'); toast.error('Payout failed. Balance restored.');
         }
       }, 3000);
@@ -3987,7 +4003,7 @@ export default function WalletPage() {
     walletBalance:  Number(wallet?.balance ?? 0),
     username:       user?.username ?? user?.email?.split('@')[0] ?? 'me',
     totalDeposited: Number((wallet as any)?.total_deposited ?? 0),
-    savingsBalance: Number((wallet as any)?.savings_balance ?? 0),
+    savingsBalance: canonicalSavingsBalance,
   }), [wallet, user]);
 
   return (
@@ -4009,16 +4025,16 @@ export default function WalletPage() {
         <InstallmentPanel userId={user.id} walletBalance={walletBalance} pinHash={pinHash} currency={currency} onClose={() => setShowInstallment(false)} />
       )}
 
-      <TopBar title="My Wallet" showBack />
+      <TopBar title={standaloneTitle ?? 'My Wallet'} showBack />
       <WalletAdBanner />
-      <div className="max-w-2xl mx-auto px-4 pt-2 pb-1 flex justify-end">
-        <WalletSearchShortcut onNavigate={setActiveTab} />
-      </div>
+      {!standaloneTitle && <div className="max-w-2xl mx-auto px-4 pt-2 pb-1 flex justify-end">
+        <WalletSearchShortcut onNavigate={tab => navigate(WALLET_ROUTE_MAP[tab])} />
+      </div>}
 
-      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border">
+      {!standaloneTitle && <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border">
         <div className="flex max-w-2xl mx-auto overflow-x-auto scrollbar-hide">
           {WALLET_TABS.map(t => (
-            <button key={t.key} onClick={() => setActiveTab(t.key)}
+            <button key={t.key} onClick={() => navigate(WALLET_ROUTE_MAP[t.key])}
               className={`flex-shrink-0 flex-1 py-3 font-semibold text-xs border-b-2 transition-colors whitespace-nowrap px-1 ${
                 activeTab === t.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/40'
               }`}>
@@ -4031,7 +4047,7 @@ export default function WalletPage() {
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       <div className="max-w-2xl mx-auto p-4 space-y-5">
         {activeTab === 'mpesa'     && user && <MpesaFullTab userId={user.id} currency={currency} wallet={wallet} onSaved={fetchWallet} />}
@@ -4106,7 +4122,7 @@ export default function WalletPage() {
         {showTour && user && (
           <WalletOnboardingTour
             userId={user.id}
-            onNavigate={tab => { setActiveTab(tab); setShowTour(false); }}
+            onNavigate={tab => { navigate(WALLET_ROUTE_MAP[tab]); setShowTour(false); }}
             onDismiss={() => setShowTour(false)}
           />
         )}
@@ -4126,10 +4142,10 @@ export default function WalletPage() {
               </p>
             )}
             <div className="grid grid-cols-3 gap-2 mt-4">
-              <button onClick={() => setActiveTab('receive')} className="flex items-center justify-center gap-1.5 py-2 bg-primary/10 border border-primary/20 rounded-xl text-primary font-semibold text-xs hover:bg-primary/15 transition-colors">
+              <button onClick={() => navigate(WALLET_ROUTE_MAP.receive)} className="flex items-center justify-center gap-1.5 py-2 bg-primary/10 border border-primary/20 rounded-xl text-primary font-semibold text-xs hover:bg-primary/15 transition-colors">
                 <QrCode className="w-3.5 h-3.5" /> Receive
               </button>
-              <button onClick={() => setActiveTab('send')} className="flex items-center justify-center gap-1.5 py-2 bg-primary text-primary-foreground rounded-xl font-semibold text-xs hover:opacity-90 transition-opacity">
+              <button onClick={() => navigate(WALLET_ROUTE_MAP.send)} className="flex items-center justify-center gap-1.5 py-2 bg-primary text-primary-foreground rounded-xl font-semibold text-xs hover:opacity-90 transition-opacity">
                 <Send className="w-3.5 h-3.5" /> Send
               </button>
               <button onClick={() => setShowSplit(true)} className="flex items-center justify-center gap-1.5 py-2 bg-blue-500/10 border border-blue-500/20 rounded-xl text-blue-600 font-semibold text-xs hover:bg-blue-500/15 transition-colors">
@@ -4138,14 +4154,14 @@ export default function WalletPage() {
               <button onClick={() => setShowInstallment(true)} className="flex items-center justify-center gap-1.5 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-600 font-semibold text-xs hover:bg-amber-500/15 transition-colors">
                 <Calendar className="w-3.5 h-3.5" /> Pay Later
               </button>
-              <button onClick={() => setActiveTab('referrals')} className="flex items-center justify-center gap-1.5 py-2 bg-purple-500/10 border border-purple-500/20 rounded-xl text-purple-600 font-semibold text-xs hover:bg-purple-500/15 transition-colors">
+              <button onClick={() => navigate(WALLET_ROUTE_MAP.referrals)} className="flex items-center justify-center gap-1.5 py-2 bg-purple-500/10 border border-purple-500/20 rounded-xl text-purple-600 font-semibold text-xs hover:bg-purple-500/15 transition-colors">
                 <Users className="w-3.5 h-3.5" /> Refer
               </button>
-              <button onClick={() => setActiveTab('security')} className="flex items-center justify-center gap-1.5 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 font-semibold text-xs hover:bg-red-500/15 transition-colors">
+              <button onClick={() => navigate(WALLET_ROUTE_MAP.security)} className="flex items-center justify-center gap-1.5 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 font-semibold text-xs hover:bg-red-500/15 transition-colors">
                 <Lock className="w-3.5 h-3.5" /> Security
               </button>
             </div>
-            <button onClick={() => setActiveTab('pocket')}
+            <button onClick={() => navigate(WALLET_ROUTE_MAP.pocket)}
               className="w-full flex items-center justify-between gap-2 py-2.5 px-3 mt-1 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-700 dark:text-emerald-400 font-semibold text-xs hover:bg-emerald-500/15 transition-colors">
               <div className="flex items-center gap-1.5"><ArrowDownLeft className="w-3.5 h-3.5" /> Savings Pocket</div>
               <span className="font-black text-sm">{fmtAmt(savingsBalance, currency)}</span>
@@ -4317,8 +4333,9 @@ export default function WalletPage() {
           </div>
 
           <WalletDashboard />
+        <AdvertiserSurface variant="wallet" />
           {user && wallet && <SpendLimitCard userId={user.id} wallet={wallet} onSaved={fetchWallet} />}
-          {user && wallet && <PinSetupCard userId={user.id} pinHash={(wallet as any)?.wallet_pin_hash ?? null} onSaved={fetchWallet} />}
+          {user && wallet && <PinSetupCard userId={user.id} pinHash={pinHash} onSaved={fetchWallet} />}
           {user && wallet && <BiometricCard userId={user.id} credentialId={(wallet as any)?.biometric_credential_id ?? null} onSaved={fetchWallet} />}
           {user && <PayoutScheduleCard userId={user.id} defaultPhone={wallet?.mpesa_phone ?? null} />}
           <WalletNotificationsHub userId={user.id} />
@@ -4335,11 +4352,21 @@ export default function WalletPage() {
             </div>
             <BellOff className="w-4 h-4 text-muted-foreground/50 shrink-0" />
           </div>
-          <div className="flex items-start gap-3 p-4 bg-muted/20 border border-border rounded-2xl">
-            <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center shrink-0 mt-0.5"><Globe className="w-4 h-4 text-blue-500" /></div>
-            <div>
-              <p className="font-semibold text-sm">Multi-Currency Display</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Toggle between USD, KES, and EUR. Your preference is saved automatically.</p>
+          <div className="p-4 bg-muted/20 border border-border rounded-2xl">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center shrink-0"><Globe className="w-4 h-4 text-blue-500" /></div>
+              <div className="flex-1">
+                <p className="font-semibold text-sm">Multi-Currency Display</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Choose how your wallet amounts are displayed. The preference is saved to your wallet.</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-3">
+              {CURRENCIES.map(c => (
+                <button key={c.code} onClick={() => handleCurrencyChange(c.code)}
+                  className={`py-2.5 rounded-xl border-2 text-xs font-bold transition-all ${currency === c.code ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/30'}`}>
+                  {c.code}
+                </button>
+              ))}
             </div>
           </div>
           {user && <SpendingAlertsCard userId={user.id} />}
