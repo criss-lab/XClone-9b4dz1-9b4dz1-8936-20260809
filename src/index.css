@@ -2,179 +2,149 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ======================== */
-/* CSS Variables – Light Theme (default) */
-/* ======================== */
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 5%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 5%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 5%;
-
-    --primary: 142 76% 32%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 0 0% 95%;
-    --secondary-foreground: 0 0% 9%;
-
-    --muted: 0 0% 95%;
-    --muted-foreground: 0 0% 42%;
-
-    --accent: 142 76% 32%;
-    --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 0 0% 88%;
-    --input: 0 0% 88%;
-    --ring: 142 76% 32%;
-
-    --radius: 0.75rem;
-  }
-
-  /* ======================== */
-  /* Dark Theme */
-  /* ======================== */
-  .dark {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 98%;
-
-    --card: 0 0% 7%;
-    --card-foreground: 0 0% 98%;
-
-    --popover: 0 0% 7%;
-    --popover-foreground: 0 0% 98%;
-
-    --primary: 142 76% 36%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 0 0% 14%;
-    --secondary-foreground: 0 0% 98%;
-
-    --muted: 0 0% 14%;
-    --muted-foreground: 0 0% 64%;
-
-    --accent: 142 76% 36%;
-    --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 0 0% 15%;
-    --input: 0 0% 15%;
-    --ring: 142 76% 36%;
-  }
-
-  body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
-    transition: background-color 0.2s ease, color 0.2s ease;
-  }
+  :root { --background: 0 0% 100%; --foreground: 0 0% 5%; --card: 0 0% 100%; --card-foreground: 0 0% 5%; --popover: 0 0% 100%; --popover-foreground: 0 0% 5%; --primary: 142 76% 32%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 95%; --secondary-foreground: 0 0% 9%; --muted: 0 0% 95%; --muted-foreground: 0 0% 42%; --accent: 142 76% 32%; --accent-foreground: 0 0% 100%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 0 0% 88%; --input: 0 0% 88%; --ring: 142 76% 32%; --radius: 0.75rem; }
+  .dark { --background: 0 0% 0%; --foreground: 0 0% 98%; --card: 0 0% 7%; --card-foreground: 0 0% 98%; --popover: 0 0% 7%; --popover-foreground: 0 0% 98%; --primary: 142 76% 36%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 14%; --secondary-foreground: 0 0% 98%; --accent: 142 76% 36%; --accent-foreground: 0 0% 100%; --destructive: 0 62% 50%; --destructive-foreground: 0 0% 100%; --border: 0 0% 15%; --input: 0 0% 15%; --ring: 142 76% 36%; }
+  body { @apply bg-background text-foreground; font-feature-settings: "rlig" 1, "calt" 1; transition: background-color 0.2s ease, color 0.2s ease; }
 }
 
-/* ======================== */
-/* Scrollbars */
-/* ======================== */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.5); }
-
-/* ======================== */
-/* Animations */
-/* ======================== */
 html { scroll-behavior: smooth; }
-
-@keyframes slideIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes slideInLeft {
-  from { opacity: 0; transform: translateX(-10px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-@keyframes scaleIn {
-  from { opacity: 0; transform: scale(0.95); }
-  to   { opacity: 1; transform: scale(1); }
-}
-
-.animate-slide-in     { animation: slideIn 0.3s ease-out; }
-.animate-slide-left   { animation: slideInLeft 0.3s ease-out; }
-.animate-fade-in      { animation: fadeIn 0.3s ease-out; }
-.animate-scale-in     { animation: scaleIn 0.2s ease-out; }
-
-/* ======================== */
-/* Post content */
-/* ======================== */
+@keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideInLeft { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+.animate-slide-in { animation: slideIn 0.3s ease-out; }
+.animate-slide-left { animation: slideInLeft 0.3s ease-out; }
+.animate-fade-in { animation: fadeIn 0.3s ease-out; }
+.animate-scale-in { animation: scaleIn 0.2s ease-out; }
 .post-content a { @apply text-primary hover:underline; }
-
-/* ======================== */
-/* Overflow / responsive */
-/* ======================== */
 * { max-width: 100%; word-wrap: break-word; overflow-wrap: break-word; box-sizing: border-box; }
 html, body { overflow-x: hidden; width: 100%; }
+
+/* Native/WebView edge-to-edge contract. The Android shell draws behind the
+   system bars; fixed UI owns only the safe-area padding, never the viewport. */
+html, body, #root { min-height: 100%; }
+body { min-height: 100dvh; margin: 0; }
+.tg-shell { min-height: 100dvh; min-height: 100svh; }
+.safe-area-top { padding-top: env(safe-area-inset-top, 0px); }
+.safe-area-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+@supports (height: 100dvh) {
+  .tg-shell { min-height: 100dvh; }
+}
 img, video, iframe, svg { max-width: 100%; height: auto; }
 pre, code { white-space: pre-wrap; word-break: break-all; }
+.video-feed-container { height: 100svh; overflow-y: scroll; scroll-snap-type: y mandatory; -webkit-overflow-scrolling: touch; }
+.video-feed-item { height: 100svh; scroll-snap-align: start; scroll-snap-stop: always; position: relative; }
+.glass-light { background: hsl(var(--background) / 0.85); color: hsl(var(--foreground)); border-color: hsl(var(--border) / 0.8); backdrop-filter: blur(12px); }
+.dark .glass-light { background: hsl(var(--background) / 0.75); color: hsl(var(--foreground)); border-color: hsl(var(--border) / 0.8); }
 
-/* ======================== */
-/* TikTok-style video feed */
-/* ======================== */
-.video-feed-container {
-  height: 100svh;
-  overflow-y: scroll;
-  scroll-snap-type: y mandatory;
-  -webkit-overflow-scrolling: touch;
-}
-.video-feed-item {
-  height: 100svh;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
-  position: relative;
-}
+/* Theme contract: every semantic surface follows the active user appearance. */
+html { background: hsl(var(--background)); color-scheme: light; }
+html.dark { color-scheme: dark; }
+body { background-color: hsl(var(--background)); color: hsl(var(--foreground)); }
+.bg-background { background-color: hsl(var(--background)); }
+.bg-card { background-color: hsl(var(--card)); }
+.bg-popover { background-color: hsl(var(--popover)); }
+.text-foreground { color: hsl(var(--foreground)); }
+.text-muted-foreground { color: hsl(var(--muted-foreground)); }
+.border-border { border-color: hsl(var(--border)); }
+.divide-border > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)); }
 
-/* ======================== */
-/* Theme-aware glass effects */
-/* ======================== */
-.glass-light { background: rgba(255,255,255,0.85); backdrop-filter: blur(12px); }
-.dark .glass-light { background: rgba(0,0,0,0.75); backdrop-filter: blur(12px); }
-
-/* ======================== */
-/* Pulse animation for live badge */
-/* ======================== */
-@keyframes livePulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
-}
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .animate-live-pulse { animation: livePulse 1.4s ease-in-out infinite; }
+@keyframes floatUp { 0% { opacity: 1; transform: translateY(0) scale(1); } 80% { opacity: 0.7; transform: translateY(-120px) scale(1.2); } 100% { opacity: 0; transform: translateY(-160px) scale(0.8); } }
+:root:not(.dark) .border-border { border-color: hsl(0 0% 88%); }
+:root:not(.dark) [class~="bg-muted/50"] { background-color: hsl(0 0% 96% / 0.5); }
 
-/* ======================== */
-/* Float-up reaction animation (live spaces, community chat) */
-/* ======================== */
-@keyframes floatUp {
-  0%   { opacity: 1; transform: translateY(0) scale(1); }
-  80%  { opacity: 0.7; transform: translateY(-120px) scale(1.2); }
-  100% { opacity: 0; transform: translateY(-160px) scale(0.8); }
+/* Surgical profile header collision guard. Attribute selectors avoid escaping Tailwind's gap-2.5 class. */
+.border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 {
+  margin-top: 0 !important;
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 1rem;
+  row-gap: 0.75rem;
+}
+.border-b.border-border:has(> .h-48 img[alt="Cover"]) > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 { margin-top: -4rem !important; }
+.border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 > [class~="flex"][class~="flex-wrap"][class~="items-center"][class~="gap-2.5"][class~="mt-4"][class~="max-w-full"] {
+  min-width: 0;
+  width: 100%;
+  margin-top: 1rem !important;
+  justify-content: flex-end;
+  align-content: flex-start;
+}
+@media (max-width: 639px) {
+  .border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 { grid-template-columns: minmax(0, 1fr); row-gap: 0.75rem; }
+  .border-b.border-border:has(> .h-48 img[alt="Cover"]) > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 { margin-top: -4rem !important; }
+  .border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 > [class~="flex"][class~="flex-wrap"][class~="items-center"][class~="gap-2.5"][class~="mt-4"][class~="max-w-full"] { justify-content: flex-start; margin-top: 0.25rem !important; }
 }
 
-/* ======================== */
-/* Light theme specific overrides */
-/* ======================== */
-:root:not(.dark) .border-border {
-  border-color: hsl(0 0% 88%);
+
+/* ── Testagram UI system v2 ─────────────────────────────────────────────── */
+:root {
+  --tg-surface: 0 0% 100%;
+  --tg-surface-raised: 0 0% 99%;
+  --tg-shadow: 0 18px 50px -32px hsl(142 76% 32% / .32);
 }
-:root:not(.dark) .bg-muted\/50 {
-  background-color: hsl(0 0% 96% / 0.5);
+.dark {
+  --tg-surface: 0 0% 5%;
+  --tg-surface-raised: 0 0% 7%;
+  --tg-shadow: 0 18px 50px -32px hsl(142 76% 42% / .28);
+}
+body {
+  background:
+    radial-gradient(circle at 10% -10%, hsl(var(--primary) / .07), transparent 28rem),
+    radial-gradient(circle at 95% 0%, hsl(265 80% 60% / .05), transparent 24rem),
+    hsl(var(--background));
+}
+.tg-shell { min-height: 100dvh; }
+.tg-main {
+  width: min(100%, 720px);
+  background: hsl(var(--tg-surface) / .92);
+  box-shadow: var(--tg-shadow);
+}
+.tg-topbar {
+  background: hsl(var(--background) / .78);
+  backdrop-filter: blur(20px) saturate(1.35);
+  -webkit-backdrop-filter: blur(20px) saturate(1.35);
+}
+.tg-nav-item {
+  position: relative;
+  border: 1px solid transparent;
+  transition: background .18s ease, border-color .18s ease, transform .18s ease;
+}
+.tg-nav-item:hover { background: hsl(var(--muted) / .72); border-color: hsl(var(--border)); transform: translateX(2px); }
+.tg-nav-item[data-active="true"] {
+  background: linear-gradient(90deg, hsl(var(--primary) / .13), hsl(var(--primary) / .04));
+  border-color: hsl(var(--primary) / .18);
+  color: hsl(var(--primary));
+}
+.tg-nav-item[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+}
+.tg-card {
+  background: hsl(var(--card) / .96);
+  border: 1px solid hsl(var(--border) / .78);
+  border-radius: 1.1rem;
+  box-shadow: 0 8px 30px -24px hsl(0 0% 0% / .45);
+}
+.tg-focus:focus-visible { outline: 3px solid hsl(var(--ring) / .32); outline-offset: 2px; }
+@media (max-width: 1023px) {
+  .tg-main { width: 100%; border-inline: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tg-nav-item, .tg-nav-item:hover { transition: none; transform: none; }
 }

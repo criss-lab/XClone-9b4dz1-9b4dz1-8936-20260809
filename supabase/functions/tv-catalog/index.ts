@@ -1,0 +1,301 @@
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
+type Source = { id: string; label: string; url: string; country?: string; priority: number };
+
+const NEXUS = "https://dearbulut.github.io/iptv/api/v1";
+
+const SOURCES: Record<string, Source> = {
+  "iptv-org-global": { id:"iptv-org-global", label:"IPTV-ORG · Global public", url:"https://iptv-org.github.io/iptv/index.m3u", country:"INT", priority:135 },
+  "iptv-org-news": { id:"iptv-org-news", label:"IPTV-ORG · News", url:"https://iptv-org.github.io/iptv/categories/news.m3u", country:"INT", priority:128 },
+  "iptv-org-sports": { id:"iptv-org-sports", label:"IPTV-ORG · Sports", url:"https://iptv-org.github.io/iptv/categories/sports.m3u", country:"INT", priority:127 },
+  "iptv-org-music": { id:"iptv-org-music", label:"IPTV-ORG · Music", url:"https://iptv-org.github.io/iptv/categories/music.m3u", country:"INT", priority:126 },
+  "free-tv-global": { id:"free-tv-global", label:"Free-TV/IPTV · Global free TV", url:"https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8", country:"INT", priority:130 },
+  "free-tv-ke": { id:"free-tv-ke", label:"Free-TV/IPTV · Kenya", url:"https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists/playlist_kenya.m3u8", country:"KE", priority:129 },
+  "iptv-org-ke": { id:"iptv-org-ke", label:"IPTV-ORG · Kenya", url:"https://iptv-org.github.io/iptv/countries/ke.m3u", country:"KE", priority:145 },
+  "iptv-org-int": { id:"iptv-org-int", label:"IPTV-ORG · Sub-Saharan Africa", url:"https://iptv-org.github.io/iptv/regions/ssa.m3u", country:"AF", priority:140 },
+  "nexus-ke": { id:"nexus-ke", label:"IPTV Nexus · Kenya · health checked", url:NEXUS+"/by-country/ke.json", country:"KE", priority:160 },
+  "nexus-news": { id:"nexus-news", label:"IPTV Nexus · News · health checked", url:NEXUS+"/by-category/news.json", country:"INT", priority:156 },
+  "nexus-sports": { id:"nexus-sports", label:"IPTV Nexus · Sports · health checked", url:NEXUS+"/by-category/sports.json", country:"INT", priority:155 },
+  "nexus-music": { id:"nexus-music", label:"IPTV Nexus · Music · health checked", url:NEXUS+"/by-category/music.json", country:"INT", priority:154 },
+  "nexus-kids": { id:"nexus-kids", label:"IPTV Nexus · Kids · health checked", url:NEXUS+"/by-category/kids.json", country:"INT", priority:153 },
+  "nexus-entertainment": { id:"nexus-entertainment", label:"IPTV Nexus · Entertainment · health checked", url:NEXUS+"/by-category/entertainment.json", country:"INT", priority:152 },
+};
+
+const cors = {
+  "Access-Control-Allow-Origin":"*",
+  "Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods":"GET,OPTIONS",
+  "Cache-Control":"public, max-age=60, s-maxage=300, stale-while-revalidate=600",
+  "Content-Type":"application/json; charset=utf-8"
+};
+
+const blocked = /(adult|porn|xxx|premium|paid subscription|xtream|stalker|pirate)/i;
+
+const UPSTASH_URL = Deno.env.get("UPSTASH_REDIS_REST_URL")?.replace(/\/$/, "");
+const UPSTASH_TOKEN = Deno.env.get("UPSTASH_REDIS_REST_TOKEN");
+
+async function upstash(command:string[]) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1800);
+  try {
+    const response = await fetch(UPSTASH_URL, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + UPSTASH_TOKEN,
+        "Content-Type": "application/json"
+      },
+      signal: controller.signal,
+      body: JSON.stringify(command)
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload?.result ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getCachedChannels(sourceId:string) {
+  const value = await upstash(["GET", "tv:catalog:v4:" + sourceId]);
+  if (typeof value !== "string" || !value) return null;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+async function setCachedChannels(sourceId:string, payload:unknown) {
+  const value = JSON.stringify(payload);
+  if (value.length > 9000000) return;
+  await upstash(["SET", "tv:catalog:v4:" + sourceId, value, "EX", "120"]);
+}
+const clean = (v:string|undefined) => v?.replace(/\s+/g," ").trim() || undefined;
+const attr = (line:string,key:string) => line.match(new RegExp(key+'="([^"]*)"',"i"))?.[1]?.trim();
+
+function idFor(name:string,url:string) {
+  return btoa(unescape(encodeURIComponent((name+"|"+url).toLowerCase()))).replace(/[^a-z0-9]/gi,"").slice(0,80);
+}
+
+function parseM3U(text:string, source:Source, max=300) {
+  const lines=text.replace(/^\uFEFF/,"").split(/\r?\n/);
+  const out:any[]=[]; let info:string|null=null;
+  for (const raw of lines) {
+    if (out.length>=max) break;
+    const line=raw.trim(); if(!line) continue;
+    if(line.startsWith("#EXTINF")) { info=line; continue; }
+    if(line.startsWith("#")) continue;
+    if(!info || !/^https?:\/\//i.test(line)) { info=null; continue; }
+    const comma=info.indexOf(",");
+    const name=clean(comma>=0?info.slice(comma+1):attr(info,"tvg-name"))||"Live TV";
+    if(blocked.test(name)) { info=null; continue; }
+    const url=line;
+    out.push({
+      id:idFor(name,url), name, url,
+      logo:clean(attr(info,"tvg-logo")),
+      group:clean(attr(info,"group-title")),
+      country:clean(attr(info,"tvg-country"))||source.country,
+      language:clean(attr(info,"tvg-language")),
+      source:source.label, priority:source.priority
+    });
+    info=null;
+  }
+  return out;
+}
+
+async function fetchJson(url:string, signal:AbortSignal) {
+  const r=await fetch(url,{signal,headers:{Accept:"application/json","User-Agent":"TestagramTV/3.0"}});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return await r.json();
+}
+
+function normalizeNexusRows(payload:unknown):any[] {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+  const value = payload as Record<string, unknown>;
+  for (const key of ["channels","items","data","results","stations"]) {
+    if (Array.isArray(value[key])) return value[key] as any[];
+  }
+  return [];
+}
+
+function fromNexus(payload:unknown, label:string, priority:number, countryOverride?:string) {
+  const out:any[]=[];
+  for(const c of normalizeNexusRows(payload)) {
+    if(!c || typeof c !== "object") continue;
+    if(c?.is_nsfw || c?.online === false || blocked.test(String(c?.name||""))) continue;
+    const streams = Array.isArray(c?.streams) ? c.streams : [];
+    const stream = streams.find((s:any)=>s && s?.health?.status==="online" && typeof s?.url==="string");
+    if(!stream?.url) continue;
+    const quality=String(stream.quality||c.best_quality||"");
+    out.push({
+      id:String(c.id||idFor(String(c.name||stream.title||"Live TV"),stream.url)),
+      name:String(c.name||stream.title||"Live TV"),
+      url:String(stream.url),
+      logo:typeof c.logo==="string" ? c.logo : undefined,
+      country:countryOverride||String(c.country||"INT"),
+      language:Array.isArray(c.languages)?c.languages[0]:undefined,
+      group:Array.isArray(c.categories)?c.categories[0]:undefined,
+      source:label, priority:priority + (Number.parseInt(quality)||0)/1000
+    });
+  }
+  return out;
+}
+
+async function fetchM3U(source:Source, signal:AbortSignal, max=300) {
+  const r=await fetch(source.url,{signal,redirect:"follow",headers:{Accept:"application/vnd.apple.mpegurl,text/plain,*/*","User-Agent":"TestagramTV/3.0"}});
+  if(!r.ok) throw new Error(source.id+" HTTP "+r.status);
+  return parseM3U(await r.text(),source,max);
+}
+
+async function probeStream(url:string, signal:AbortSignal) {
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),1800);
+  const abort=()=>controller.abort(); signal.addEventListener("abort",abort,{once:true});
+  try {
+    const head=await fetch(url,{method:"HEAD",redirect:"follow",signal:controller.signal,headers:{"User-Agent":"TestagramTV-Health/1.0","Accept":"*/*"}});
+    if(head.ok){const type=(head.headers.get("content-type")||"").toLowerCase();if(/mpegurl|m3u|video|audio|octet-stream/.test(type))return true;}
+  } catch {} finally {clearTimeout(timer);signal.removeEventListener("abort",abort);}
+  const c2=new AbortController(); const t2=setTimeout(()=>c2.abort(),1800); const a2=()=>c2.abort(); signal.addEventListener("abort",a2,{once:true});
+  try {
+    const r=await fetch(url,{method:"GET",redirect:"follow",signal:c2.signal,headers:{"User-Agent":"TestagramTV-Health/1.0","Accept":"application/vnd.apple.mpegurl,application/x-mpegURL,video/*,audio/*,*/*","Range":"bytes=0-2047"}});
+    if(!r.ok&&r.status!==206)return false; const type=(r.headers.get("content-type")||"").toLowerCase();
+    if(/mpegurl|m3u/.test(type)){
+      const body=await r.text();
+      if(!/#EXTM3U|#EXTINF|#EXT-X-/.test(body)) return false;
+      const base=new URL(r.url||url);
+      const child=body.split(/\\r?\\n/).map(x=>x.trim()).find(x=>x && !x.startsWith("#"));
+      if(!child) return true;
+      try{
+        const media=new URL(child,base).toString();
+        const c3=new AbortController(); const t3=setTimeout(()=>c3.abort(),1800);
+        try{
+          const m=await fetch(media,{method:"GET",redirect:"follow",signal:c3.signal,headers:{"User-Agent":"TestagramTV-Health/1.0","Accept":"video/*,audio/*,application/octet-stream,*/*","Range":"bytes=0-2047"}});
+          if(!m.ok&&m.status!==206) return false;
+          const mt=(m.headers.get("content-type")||"").toLowerCase();
+          return m.status===206 || /video|audio|mpeg|mp2t|octet-stream/.test(mt);
+        } finally { clearTimeout(t3); }
+      } catch { return false; }
+    }
+    return /video|audio|mpeg|mp2t|octet-stream/.test(type)||r.status===206;
+  } catch{return false} finally{clearTimeout(t2);signal.removeEventListener("abort",a2);}
+}
+function browserPlaybackUrl(url:string) { return "https://ffrhglgkukgsuhxenena.supabase.co/functions/v1/tv-stream-proxy?url="+encodeURIComponent(url); }
+
+async function onlyLiveChannels(channels:any[],signal:AbortSignal,max=8){
+  const candidates=channels.filter(c=>/^https:\/\//i.test(String(c?.url||""))).slice(0,max*3); const live:any[]=[]; let cursor=0;
+  const worker=async()=>{while(cursor<candidates.length&&live.length<max){const c=candidates[cursor++];if(await probeStream(c.url,signal))live.push({...c,live:true,live_checked_at:new Date().toISOString()});}};
+  await Promise.all(Array.from({length:12},()=>worker())); return live.slice(0,max);
+}
+
+async function githubDiscovery(signal:AbortSignal) {
+  const token=Deno.env.get("GITHUB_TOKEN");
+  const headers:any={Accept:"application/vnd.github+json","User-Agent":"TestagramTV-GitHub-Discovery"};
+  if(token) headers.Authorization="Bearer "+token;
+  const search=await fetch("https://api.github.com/search/repositories?q=iptv+m3u+free+in:name,description&sort=stars&order=desc&per_page=8",{signal,headers});
+  if(!search.ok) throw new Error("GitHub search HTTP "+search.status);
+  const repos=(await search.json()).items||[];
+  const safe=repos.filter((r:any)=>r?.public!==false&&!r?.archived&&!r?.fork&&!blocked.test((r.full_name||"")+" "+(r.description||""))).slice(0,6);
+  const out:any[]=[];
+  await Promise.all(safe.map(async (repo:any)=>{
+    try {
+      const root=await fetch("https://api.github.com/repos/"+repo.full_name+"/contents",{signal,headers});
+      if(!root.ok) return;
+      const files=await root.json();
+      const playlist=Array.isArray(files)
+        ? files.find((f:any)=>f?.type==="file" && /\.(m3u8?|m3u)$/i.test(f.name||"") && (f.size||0)<=2000000)
+        : null;
+      if(!playlist?.download_url) return;
+      const raw=await fetch(playlist.download_url,{signal,headers:{Accept:"text/plain","User-Agent":"TestagramTV-GitHub-Discovery"}});
+      if(!raw.ok) return;
+      const source={id:"gh-"+repo.id,label:"GitHub · "+repo.full_name,url:playlist.download_url,country:"INT",priority:75};
+      out.push(...parseM3U(await raw.text(),source,100));
+    } catch {}
+  }));
+  return out;
+}
+
+Deno.serve(async(req)=>{
+  if(req.method==="OPTIONS") return new Response("ok",{headers:cors});
+  const sourceId=new URL(req.url).searchParams.get("source")||"iptv-org-global";
+  const source=SOURCES[sourceId];
+  if(!source) return new Response(JSON.stringify({error:"Unknown TV source"}),{status:404,headers:cors});
+
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),10000);
+  try {
+    const cached = await getCachedChannels(sourceId);
+    if (cached && Array.isArray(cached.channels)) {
+      return new Response(JSON.stringify({
+        ...cached,
+        meta:{...cached.meta, cache_hit:true, generated_at:new Date().toISOString()}
+      }),{headers:cors});
+    }
+
+    let channels:any[]=[];
+    if(sourceId==="iptv-org-global") {
+      const [m3u,nexusKe,nexusNews,github]=await Promise.allSettled([
+        fetchM3U(source,controller.signal,260),
+        fetchJson(NEXUS+"/by-country/ke.json",controller.signal),
+        fetchJson(NEXUS+"/by-category/news.json",controller.signal),
+        githubDiscovery(controller.signal)
+      ]);
+      if(m3u.status==="fulfilled") channels.push(...m3u.value);
+      if(nexusKe.status==="fulfilled") channels.push(...fromNexus(nexusKe.value,"IPTV Nexus · Kenya · health checked",160,"KE"));
+      if(nexusNews.status==="fulfilled") channels.push(...fromNexus(nexusNews.value,"IPTV Nexus · News · health checked",156));
+      if(github.status==="fulfilled") channels.push(...github.value);
+    } else if(sourceId==="iptv-org-ke") {
+      const [m3u,nexus]=await Promise.allSettled([
+        fetchM3U(source,controller.signal,180),
+        fetchJson(NEXUS+"/by-country/ke.json",controller.signal)
+      ]);
+      if(nexus.status==="fulfilled") channels.push(...fromNexus(nexus.value,"IPTV Nexus · Kenya · health checked",160,"KE"));
+      if(m3u.status==="fulfilled") channels.push(...m3u.value);
+    } else if(sourceId==="iptv-org-int") {
+      const countries=["za","ng","gh","ug","tz","rw","zm","zw","bw"];
+      const rows=await Promise.allSettled(countries.map(c=>fetchJson(NEXUS+"/by-country/"+c+".json",controller.signal)));
+      rows.forEach((r,i)=>{if(r.status==="fulfilled") channels.push(...fromNexus(r.value,"IPTV Nexus · "+countries[i].toUpperCase()+" · health checked",150));});
+      const m3u=await fetchM3U(source,controller.signal,300).catch(()=>[]);
+      channels.push(...m3u);
+    } else if (sourceId.startsWith("nexus-")) {
+      const endpoint = sourceId === "nexus-ke"
+        ? NEXUS+"/by-country/ke.json"
+        : NEXUS+"/by-category/"+sourceId.slice("nexus-".length)+".json";
+      const rows = await fetchJson(endpoint,controller.signal);
+      channels = fromNexus(rows,source.label,source.priority,sourceId === "nexus-ke" ? "KE" : undefined);
+    } else {
+      channels=await fetchM3U(source,controller.signal,300);
+    }
+
+    const seen=new Set<string>();
+    channels=channels.filter(c=>{
+      const key=String(c.url||"").toLowerCase();
+      if(!key||seen.has(key)||blocked.test(c.name||"")) return false;
+      seen.add(key); return true;
+    }).sort((a,b)=>b.priority-a.priority).slice(0,160);
+    // Only publish streams that are currently reachable and recognizable as media/HLS.
+    channels=await onlyLiveChannels(channels,controller.signal,8);
+    channels=channels.map(c=>({...c,source_url:c.url,url:browserPlaybackUrl(String(c.url))}));
+
+    const payload = {
+      source,
+      channels,
+      meta:{
+        generated_at:new Date().toISOString(),
+        channel_count:channels.length,
+        live_only:true,
+        health_checked:true,
+        auto_discovery:sourceId==="iptv-org-global",
+        storage:"stream_urls_only",
+        cache_hit:false,
+        cache_backend:UPSTASH_URL && UPSTASH_TOKEN ? "upstash" : "origin"
+      }
+    };
+    await setCachedChannels(sourceId,payload);
+    return new Response(JSON.stringify(payload),{headers:cors});
+  } catch(error) {
+    console.error("[tv-catalog]",sourceId,error);
+    return new Response(JSON.stringify({error:"TV source temporarily unavailable",source:sourceId}),{
+      status:502,
+      headers:{...cors,"Cache-Control":"no-store"}
+    });
+  } finally { clearTimeout(timer); }
+});
