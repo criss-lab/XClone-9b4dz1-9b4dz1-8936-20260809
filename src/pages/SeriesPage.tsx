@@ -132,7 +132,7 @@ export default function SeriesPage() {
     setLoadingPosts(true);
     const { data } = await supabase
       .from('post_series_items')
-      .select('*, posts(*, user_profiles(username, avatar_url, verified))')
+      .select('*, posts(*, user_profiles:profiles!posts_user_id_fkey(username, avatar_url, verified))')
       .eq('series_id', series.id)
       .order('position', { ascending: true });
     setSeriesPosts(data ?? []);
@@ -235,7 +235,7 @@ export default function SeriesPage() {
         read: false,
       }));
       for (let i = 0; i < notifications.length; i += 10) {
-        await supabase.from('platform_inbox').insert(notifications.slice(i, i + 10)).catch(() => {});
+        await supabase.from('platform_inbox').insert(notifications.slice(i, i + 10)).then(() => {}).catch(() => {});
       }
       toast.success(`Challenge sent to ${follows.length} follower${follows.length !== 1 ? 's' : ''}! \ud83c\udfc6`);
     } catch { setChallengeSent(false); }

@@ -1,0 +1,1053 @@
+name: Production Deployment Reconciliation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Exact Git commit SHA to deploy and prove"
+        required: false
+        type: string
+
+concurrency:
+  group: production-deployment-reconciliation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  APP_ORIGIN: "https://testagram.site"
+  NPM_CONFIG_LOGLEVEL: error
+  NODE_OPTIONS: --no-deprecation
+
+jobs:
+  reconcile-production:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Resolve target SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET_SHA="${{ github.event.inputs.target_sha || github.sha }}"
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::target_sha must be a full SHA"; exit 1; }
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact target revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Prove checkout SHA
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.target.outputs.sha }}"
+
+      - name: Guard retired TV infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          # TV media is now owned by Testagram's native edge/control-plane path.
+          # These SSH/SRS deployment hooks are retired and must never become a
+          # production dependency again.
+          retired_media_dir_prefix="media-"
+          retired_media_dir_suffix="engine"
+          retired_path_regex="(^|/)tv-srs(/|$)|(^|/)${retired_media_dir_prefix}${retired_media_dir_suffix}(/|[-_.]|$)"
+          if git ls-files | grep -Ei "${retired_path_regex}" >/tmp/tv-retired-paths.txt; then
+            echo "::error::Retired TV media infrastructure is still tracked in the production revision."
+            cat /tmp/tv-retired-paths.txt
+            exit 1
+          fi
+          legacy_ssh_prefix='MEDIA_'
+          legacy_ssh_component='ENGINE'
+          legacy_public_ip="${legacy_ssh_prefix}${legacy_ssh_component}_PUBLIC_IP"
+          legacy_ssh_pattern="${legacy_ssh_prefix}${legacy_ssh_component}_SSH_(HOST|USER|PRIVATE_KEY)"
+          if git grep -nE "${legacy_ssh_pattern}|${legacy_public_ip}" -- . ':!.git' ':!supabase/migrations/**' ':!.github/workflows/production-deployment-reconciliation.yml' >/tmp/tv-retired-config.txt; then
+            echo "::error::Retired TV SSH configuration is still referenced in the production revision."
+            cat /tmp/tv-retired-config.txt
+            exit 1
+          fi
+          retired_provider_pattern='MEDIA_ENGINE_URL|MEDIA_ENGINE_SECRET|MUX_TOKEN_ID|MUX_TOKEN_SECRET|MUX_WEBHOOK_SIGNING_SECRET'
+          if git grep -nE "${retired_provider_pattern}" -- . ':!.git' ':!supabase/migrations/**' ':!.github/workflows/production-deployment-reconciliation.yml' >/tmp/tv-retired-providers.txt; then
+            echo "::error::Retired provider-specific TV configuration is still referenced in the production revision."
+            cat /tmp/tv-retired-providers.txt
+            exit 1
+          fi
+          echo "TV architecture guard passed: YouTube public delivery + Testagram TV control plane + Supabase control plane + Cloudflare TURN guest bridge."
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        env:
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
+        run: npm run build
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
+        with:
+          version: 2.118.0
+
+      - name: Verify Supabase management authentication
+        id: supabase-auth
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SUPABASE_ACCESS_TOKEN" ]]; then
+            echo "NOTICE:Supabase management token is not configured; Supabase reconciliation will be skipped."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          output="$(SUPABASE_ACCESS_TOKEN="$SUPABASE_ACCESS_TOKEN" supabase projects list --output json 2>&1)"
+          status=$?
+          set -e
+          if (( status == 0 )); then
+            echo "Supabase management authentication passed."
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qiE '401|unauthorized|invalid.*token|authentication' <<<"$output"; then
+            echo "NOTICE:Supabase management API rejected the configured GitHub token (HTTP 401). Skipping optional Supabase reconciliation so Cloudflare production deployment can still be verified."
+            echo "NOTICE:Rotate/update SUPABASE_ACCESS_TOKEN in the GitHub production environment to restore Edge Function reconciliation."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$output"
+          echo "::error::Supabase management preflight failed for a non-authentication reason."
+          exit 1
+
+      # FCM credentials are production runtime secrets managed by Supabase, not source-control deployment inputs.
+      # The notification-delivery-worker already supports its credential from the Edge secret
+      # FCM_SERVICE_ACCOUNT_JSON and falls back to the locked Vault lookup. Do not copy a
+      # Firebase service-account private key through GitHub on every application deployment.
+      # This also prevents an obsolete Firebase project credential from blocking unrelated
+      # production reconciliation after a credential rotation.
+
+      - name: Reconcile and apply Supabase database migrations
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            SUPABASE_HOST="${SUPABASE_URL#https://}"
+            SUPABASE_HOST="${SUPABASE_HOST%%/*}"
+            PROJECT_REF="${SUPABASE_HOST%%.*}"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for migration reconciliation."; exit 1; }
+
+          # Production migration history predates the current repository and contains
+          # intentionally generated platform versions plus legacy migrations that are
+          # not a runnable linear queue. The TV control-plane migration is the verified
+          # production baseline. From this point forward CI only applies canonical
+          # timestamped migrations newer than that baseline, by migration name.
+          SUPABASE_PROJECT_REF="$PROJECT_REF" SUPABASE_ACCESS_TOKEN="$SUPABASE_ACCESS_TOKEN" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const projectRef = process.env.SUPABASE_PROJECT_REF;
+          const token = process.env.SUPABASE_ACCESS_TOKEN;
+          const baselineVersion = "20260929193000";
+          const baselineName = "tv_guest_invite_rls";
+          const migrationsDir = path.join(process.cwd(), "supabase", "migrations");
+          if (!token) throw new Error("SUPABASE_ACCESS_TOKEN is required for migration reconciliation.");
+          if (!fs.existsSync(migrationsDir)) throw new Error("supabase/migrations directory is missing.");
+
+          const historyUrl = "https://api.supabase.com/v1/projects/" + projectRef + "/database/migrations";
+          const response = await fetch(historyUrl, { headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+          const body = await response.text();
+          if (!response.ok) throw new Error("Supabase migration history lookup failed (HTTP " + response.status + "): " + body.slice(0, 500));
+
+          const remote = JSON.parse(body);
+          const applied = new Set(Array.isArray(remote) ? remote.map((m) => String(m?.name || "")).filter(Boolean) : []);
+          if (!applied.has(baselineName)) {
+            throw new Error("Verified migration baseline is missing from production history: " + baselineName);
+          }
+
+          const files = fs.readdirSync(migrationsDir)
+            .filter((name) => /^\d{14}_.+\.sql$/.test(name))
+            .sort((a, b) => a.localeCompare(b));
+          const pending = files.filter((file) => {
+            const version = file.slice(0, 14);
+            const name = file.slice(0, -4);
+            return version > baselineVersion && !applied.has(name);
+          });
+
+          console.log("Production migration records: " + applied.size);
+          console.log("Repository timestamped migrations: " + files.length);
+          console.log("Migration baseline: " + baselineName);
+          console.log("Pending migrations newer than baseline: " + pending.length);
+
+          for (const file of pending) {
+            const name = file.slice(0, -4);
+            const query = fs.readFileSync(path.join(migrationsDir, file), "utf8");
+            console.log("Applying migration newer than baseline: " + name);
+            const apply = await fetch(historyUrl, {
+              method: "POST",
+              headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ name, query }),
+            });
+            const applyBody = await apply.text();
+            if (!apply.ok) throw new Error("Migration failed for " + name + " (HTTP " + apply.status + "): " + applyBody.slice(0, 1000));
+            console.log("Applied migration: " + name);
+          }
+
+          console.log("Supabase migration reconciliation passed from verified baseline.");
+          NODE
+
+      - name: Retire legacy LiveKit Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            SUPABASE_HOST="${SUPABASE_URL#https://}"
+            SUPABASE_HOST="${SUPABASE_HOST%%/*}"
+            PROJECT_REF="${SUPABASE_HOST%%.*}"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve Supabase project ref for LiveKit retirement."; exit 1; }
+          for fn in livekit-tv-token livekit-token livekit-tv-guest-token livekit-space-token tv-stream-proxy mux-tv-webhook; do
+            echo "Retiring legacy TV Edge Function: $fn"
+            supabase functions delete "$fn" --project-ref "$PROJECT_REF" --yes || true
+          done
+          echo "Legacy LiveKit/Mux TV Edge Function retirement completed."
+
+      - name: Synchronize M-Pesa sandbox secrets into Supabase Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+          MPESA_ENV: ${{ secrets.MPESA_ENV }}
+          MPESA_CONSUMER_KEY: ${{ secrets.MPESA_CONSUMER_KEY }}
+          MPESA_CONSUMER_SECRET: ${{ secrets.MPESA_CONSUMER_SECRET }}
+          MPESA_SHORTCODE: ${{ secrets.MPESA_SHORTCODE }}
+          MPESA_PASSKEY: ${{ secrets.MPESA_PASSKEY }}
+          MPESA_USD_KES_RATE: ${{ secrets.MPESA_USD_KES_RATE }}
+          MPESA_B2C_SHORTCODE: ${{ secrets.MPESA_B2C_SHORTCODE }}
+          MPESA_INITIATOR_NAME: ${{ secrets.MPESA_INITIATOR_NAME }}
+          MPESA_SECURITY_CRED: ${{ secrets.MPESA_SECURITY_CRED }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for M-Pesa secret synchronization."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for M-Pesa secret synchronization."; exit 1; }
+
+          # M-Pesa is optional during the sandbox phase. Never substitute
+          # fake/default credentials: if the real sandbox configuration is not
+          # provisioned yet, keep reconciliation green and deploy the functions.
+          # The runtime config-status endpoint will report STK as not ready.
+          missing=()
+          [[ -n "$MPESA_ENV" ]] || missing+=(MPESA_ENV)
+          [[ -n "$MPESA_CONSUMER_KEY" ]] || missing+=(MPESA_CONSUMER_KEY)
+          [[ -n "$MPESA_CONSUMER_SECRET" ]] || missing+=(MPESA_CONSUMER_SECRET)
+          [[ -n "$MPESA_SHORTCODE" ]] || missing+=(MPESA_SHORTCODE)
+          [[ -n "$MPESA_PASSKEY" ]] || missing+=(MPESA_PASSKEY)
+          [[ -n "$MPESA_USD_KES_RATE" ]] || missing+=(MPESA_USD_KES_RATE)
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "NOTICE:M-Pesa sandbox secrets are not fully provisioned; skipping secret synchronization."
+            echo "NOTICE:Missing sandbox configuration names: ${missing[*]}"
+            echo "M-Pesa functions will still be deployed; STK readiness remains false until real sandbox credentials are added."
+            exit 0
+          fi
+
+          case "$MPESA_ENV" in
+            sandbox) ;;
+            live)
+              echo "::error::Live M-Pesa configuration is intentionally blocked by this sandbox-only deployment gate. Set MPESA_ENV=sandbox."
+              exit 1
+              ;;
+            *) echo "::error::MPESA_ENV must be exactly 'sandbox' for the current deployment."; exit 1 ;;
+          esac
+
+          if ! [[ "$MPESA_USD_KES_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk "BEGIN { exit !($MPESA_USD_KES_RATE > 0) }"; then
+            echo "::error::MPESA_USD_KES_RATE must be a positive numeric value."
+            exit 1
+          fi
+
+          umask 077
+          TMP_ENV="$(mktemp)"
+          trap 'rm -f "$TMP_ENV"' EXIT
+          {
+            printf 'MPESA_ENV=%s\n' "$MPESA_ENV"
+            printf 'MPESA_CONSUMER_KEY=%s\n' "$MPESA_CONSUMER_KEY"
+            printf 'MPESA_CONSUMER_SECRET=%s\n' "$MPESA_CONSUMER_SECRET"
+            printf 'MPESA_SHORTCODE=%s\n' "$MPESA_SHORTCODE"
+            printf 'MPESA_PASSKEY=%s\n' "$MPESA_PASSKEY"
+            printf 'MPESA_USD_KES_RATE=%s\n' "$MPESA_USD_KES_RATE"
+            if [[ -n "$MPESA_B2C_SHORTCODE" ]]; then printf 'MPESA_B2C_SHORTCODE=%s\n' "$MPESA_B2C_SHORTCODE"; fi
+            if [[ -n "$MPESA_INITIATOR_NAME" ]]; then printf 'MPESA_INITIATOR_NAME=%s\n' "$MPESA_INITIATOR_NAME"; fi
+            if [[ -n "$MPESA_SECURITY_CRED" ]]; then printf 'MPESA_SECURITY_CRED=%s\n' "$MPESA_SECURITY_CRED"; fi
+          } > "$TMP_ENV"
+
+          supabase secrets set --project-ref "$PROJECT_REF" --env-file "$TMP_ENV"
+          echo "M-Pesa sandbox secrets synchronized without printing secret values."
+
+      - name: Deploy M-Pesa Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for M-Pesa Edge Function deployment."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for M-Pesa deployment."; exit 1; }
+          deploy_function() {
+            local name="$1"
+            local optional_arg="${2:-}"
+            local attempt=1
+            local max_attempts=4
+            while true; do
+              if [[ -n "$optional_arg" ]]; then
+                if supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF" "$optional_arg"; then
+                  return 0
+                fi
+              elif supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF"; then
+                return 0
+              fi
+              if (( attempt >= max_attempts )); then
+                echo "::error::Supabase Edge Function deployment failed after $max_attempts attempts: $name"
+                return 1
+              fi
+              local delay=$((attempt * 20))
+              echo "NOTICE:Supabase Edge Function deployment hit a transient registry/deployment failure for $name; retrying in ${delay}s (attempt $((attempt+1))/$max_attempts)."
+              sleep "$delay"
+              attempt=$((attempt+1))
+            done
+          }
+          deploy_function mpesa-stk-push "--no-verify-jwt"
+          deploy_function mpesa-stk-status
+          deploy_function mpesa-config-status
+          echo "M-Pesa sandbox Edge Functions deployed with callback-compatible JWT configuration."
+
+      - name: Deploy Fediverse Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for the Fediverse gateway deployment gate."; exit 1; }
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref."; exit 1; }
+          # Supabase can return transient HTTP 500s while building/rolling out an Edge Function.
+          # Treat deployment as a retryable infrastructure operation instead of failing the
+          # entire production reconciliation on the first registry/control-plane error.
+          deploy_function() {
+            local name="$1"
+            local flags="${2:-}"
+            local attempt=1
+            local max_attempts=4
+            while true; do
+              echo "Deploying Supabase Edge Function $name (attempt $attempt/$max_attempts)"
+              if [[ "$flags" == "--no-verify-jwt" ]]; then
+                if supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF" --no-verify-jwt; then
+                  return 0
+                fi
+              elif supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF"; then
+                return 0
+              fi
+              if (( attempt >= max_attempts )); then
+                echo "::error::Supabase Edge Function deployment failed after $max_attempts attempts: $name"
+                return 1
+              fi
+              local delay=$((attempt * 20))
+              echo "NOTICE:Supabase deployment for $name returned a retryable failure; waiting ${delay}s before attempt $((attempt+1))/$max_attempts."
+              sleep "$delay"
+              attempt=$((attempt+1))
+            done
+          }
+
+          deploy_function gateway-relay "--no-verify-jwt"
+          deploy_function federated-feed
+          deploy_function megalodon-gateway
+          # The production UI's Follow/Unfollow path is testagram-api -> federation-transport.
+          # Keep both gateway functions reconciled with the same exact source revision.
+          deploy_function testagram-api "--no-verify-jwt"
+          # Testagram's public ActivityPub actor URLs are canonical on testagram.site.
+          export FEDERATION_PUBLIC_ORIGIN="https://testagram.site"
+          deploy_function federation-transport "--no-verify-jwt"
+          # activitypub-federation was the retired duplicate client gateway. Remove the
+          # live Edge Function as part of reconciliation so production has one canonical
+          # outbound path: testagram-api -> federation-transport.
+          supabase functions delete activitypub-federation --project-ref "$PROJECT_REF" --yes || true
+
+          GATEWAY_URL="https://${PROJECT_REF}.supabase.co/functions/v1/gateway-relay?action=health"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 "$GATEWAY_URL" > fediverse-gateway-health.json
+          node -e 'const fs=require("node:fs"); const body=fs.readFileSync("fediverse-gateway-health.json","utf8").trim(); let p; try { p=JSON.parse(body); } catch { console.error("Fediverse gateway returned invalid JSON:", body); process.exit(1); } if (p?.ok !== true || p?.service !== "gateway-relay" || p?.backend !== "supabase") { console.error("Fediverse gateway contract failed:", JSON.stringify(p)); process.exit(1); } console.log("Fediverse gateway gate passed:", JSON.stringify(p));'
+
+      - name: Deploy Testagram notification Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+        run: |
+          set -euo pipefail
+
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for notification deployment."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for notification deployment."; exit 1; }
+
+          deploy_notification_function() {
+            local name="$1"
+            local attempt=1
+            local max_attempts=4
+            while true; do
+              echo "Deploying notification Edge Function $name (attempt $attempt/$max_attempts)"
+              if supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF" --no-verify-jwt; then
+                return 0
+              fi
+              if (( attempt >= max_attempts )); then
+                echo "::error::Notification Edge Function deployment failed after $max_attempts attempts: $name"
+                return 1
+              fi
+              local delay=$((attempt * 20))
+              echo "NOTICE:Notification deployment returned a retryable failure; waiting ${delay}s before attempt $((attempt+1))/$max_attempts."
+              sleep "$delay"
+              attempt=$((attempt+1))
+            done
+          }
+
+          # notification-delivery-worker is the canonical scheduled FCM worker.
+          # notification-fcm-worker is a legacy duplicate and is intentionally retired so
+          # two independent workers cannot consume the same durable notification outbox.
+          supabase functions delete notification-fcm-worker --project-ref "$PROJECT_REF" --yes || true
+          deploy_notification_function notification-delivery-worker
+          deploy_notification_function novu-notification-delivery
+          deploy_notification_function register-push-token
+
+          echo "Testagram notification Edge Functions deployed and reconciled."
+
+      - name: Deploy Testagram Ads Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for the Testagram Ads deployment gate."; exit 1; }
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref."; exit 1; }
+
+          # Repair stale legacy import-map metadata before deploying the Ads functions.
+          # The affected functions were previously registered with an import_map_path
+          # pointing at an old ephemeral /tmp deployment path. That metadata survives
+          # source changes and causes the Supabase API to return HTTP 500 during deploy.
+          # Current functions use function-local deno.json (Deno config), not legacy
+          # import maps, so clear only that stale remote metadata in-place.
+          functions_json="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Accept: application/json" \
+            "https://api.supabase.com/v1/projects/$PROJECT_REF/functions")"
+          for fn in zenad-decision zenad-campaign zenad-ad-asset-upload; do
+            state="$(printf '%s' "$functions_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s);const n=process.argv[1];const f=(Array.isArray(a)?a:[]).find(x=>x.slug===n);process.stdout.write(f?JSON.stringify({import_map:f.import_map===true,import_map_path:f.import_map_path||""}):"{}")})' "$fn")"
+            if [[ "$state" == *'"import_map":true'* && "$state" == *'"import_map_path":"file:'* ]]; then
+              echo "Repairing stale import-map metadata for $fn: $state"
+              curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+                --request PATCH \
+                -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                --data '{"import_map":false}' \
+                "https://api.supabase.com/v1/projects/$PROJECT_REF/functions/$fn" >/dev/null
+            fi
+          done
+
+          deploy_ads_function() {
+            local name="$1"
+            local flags="${2:-}"
+            local attempt=1
+            local max_attempts=4
+            while true; do
+              echo "Deploying Testagram Ads Edge Function $name (attempt $attempt/$max_attempts)"
+              if [[ "$flags" == "--no-verify-jwt" ]]; then
+                if supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF" --no-verify-jwt; then return 0; fi
+              elif supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF"; then
+                return 0
+              fi
+              if (( attempt >= max_attempts )); then
+                echo "::error::Testagram Ads Edge Function deployment failed after $max_attempts attempts: $name"
+                return 1
+              fi
+              delay=$((attempt * 20))
+              echo "NOTICE:Supabase Ads deployment returned a transient failure for $name; retrying in ${delay}s (attempt $((attempt+1))/$max_attempts)."
+              sleep "$delay"
+              attempt=$((attempt+1))
+            done
+          }
+          deploy_ads_function testagram-ad-campaign
+          deploy_ads_function testagram-ads
+          deploy_ads_function zenad-decision
+          deploy_ads_function zenad-event "--no-verify-jwt"
+          deploy_ads_function testagram-ad-asset-upload
+          deploy_ads_function mpesa-ad-payment "--no-verify-jwt"
+          # These two compatibility wrappers have no external imports. Deploy them with
+          # the same transient-error retry contract after stale remote import-map metadata
+          # has been normalized above.
+          deploy_ads_function zenad-campaign
+          deploy_ads_function zenad-ad-asset-upload
+          node -e 'const fs=require("node:fs"); const p="supabase/migrations/20260919193000_testagram_ads_runtime_schema_repair.sql"; if(!fs.existsSync(p)){console.error("Canonical Testagram Ads runtime migration is missing:",p); process.exit(1)} console.log("Testagram Ads schema source present:",p);'
+
+      - name: Deploy Testagram TV control-plane Edge Function
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ffrhglgkukgsuhxenena
+          SUPABASE_URL: https://ffrhglgkukgsuhxenena.supabase.co
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TESTAGRAM_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN }}
+          CLOUDFLARE_TURN_TOKEN_ID: ${{ secrets.CLOUDFLARE_TURN_TOKEN_ID }}
+          CLOUDFLARE_TURN_API_TOKEN: ${{ secrets.CLOUDFLARE_TURN_API_TOKEN }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_RTMP_URL: ${{ secrets.YOUTUBE_RTMP_URL }}
+          YOUTUBE_INGESTION_URL: ${{ secrets.YOUTUBE_INGESTION_URL }}
+          YOUTUBE_BACKUP_INGESTION_URL: ${{ secrets.YOUTUBE_BACKUP_INGESTION_URL }}
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"; fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve Supabase project ref for TV control-plane deployment."; exit 1; }
+          require_secret() {
+            local name="$1" value="$2"
+            if [[ -z "$value" ]]; then echo "::error::Required TV production secret is missing from GitHub: $name"; exit 1; fi
+            printf '::add-mask::%s\n' "$value"
+          }
+          require_secret "CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_ACCOUNT_ID"
+          require_secret "TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN" "$CLOUDFLARE_API_TOKEN"
+          require_secret "CLOUDFLARE_TURN_TOKEN_ID" "$CLOUDFLARE_TURN_TOKEN_ID"
+          require_secret "CLOUDFLARE_TURN_API_TOKEN" "$CLOUDFLARE_TURN_API_TOKEN"
+          require_secret "YOUTUBE_CLIENT_ID" "$YOUTUBE_CLIENT_ID"
+          require_secret "YOUTUBE_CLIENT_SECRET" "$YOUTUBE_CLIENT_SECRET"
+          require_secret "YOUTUBE_REFRESH_TOKEN" "$YOUTUBE_REFRESH_TOKEN"
+          require_secret "YOUTUBE_RTMP_URL" "$YOUTUBE_RTMP_URL"
+          require_secret "YOUTUBE_INGESTION_URL" "$YOUTUBE_INGESTION_URL"
+          require_secret "YOUTUBE_BACKUP_INGESTION_URL" "$YOUTUBE_BACKUP_INGESTION_URL"
+          require_secret "YOUTUBE_STREAM_KEY" "$YOUTUBE_STREAM_KEY"
+
+          # Verify the OAuth credentials and stream key against YouTube itself before
+          # publishing the credentials into Supabase. Secret presence alone cannot prove
+          # that the stream key belongs to the channel represented by the refresh token.
+          echo "Verifying YouTube OAuth credentials and configured stream ownership..."
+          YT_ACCESS_TOKEN="$(YOUTUBE_CLIENT_ID="$YOUTUBE_CLIENT_ID" YOUTUBE_CLIENT_SECRET="$YOUTUBE_CLIENT_SECRET" YOUTUBE_REFRESH_TOKEN="$YOUTUBE_REFRESH_TOKEN" node <<NODE
+          const tokenRes=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:process.env.YOUTUBE_CLIENT_ID,client_secret:process.env.YOUTUBE_CLIENT_SECRET,refresh_token:process.env.YOUTUBE_REFRESH_TOKEN,grant_type:"refresh_token"})});
+          const token=await tokenRes.json().catch(()=>({}));
+          if(!tokenRes.ok||!token.access_token){console.error("::error::YouTube OAuth refresh failed:",token.error_description||token.error||"unknown error");process.exit(1);}
+          process.stdout.write(token.access_token);
+          NODE
+          )"
+          printf "::add-mask::%s\n" "$YT_ACCESS_TOKEN"
+          yt_streams_json="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 -H "Authorization: Bearer $YT_ACCESS_TOKEN" "https://www.googleapis.com/youtube/v3/liveStreams?part=id,snippet,cdn,status&mine=true&maxResults=50")"
+          YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY" YT_STREAMS_JSON="$yt_streams_json" node <<NODE
+          const key=process.env.YOUTUBE_STREAM_KEY;
+          const payload=JSON.parse(process.env.YT_STREAMS_JSON);
+          const items=Array.isArray(payload.items)?payload.items:[];
+          const match=items.find(x=>String(x?.cdn?.ingestionInfo?.streamName||"")===key);
+          if(!match){
+            console.error("::error::YouTube OAuth is valid, but YOUTUBE_STREAM_KEY does not match any live stream owned by that OAuth channel.");
+            console.error("::error::YouTube returned "+items.length+" owned stream(s); no stream matched the configured key.");
+            console.error("::error::Owned stream diagnostics (stream keys intentionally omitted): "+JSON.stringify(items.map(x=>({id:x?.id||null,title:x?.snippet?.title||null,status:x?.status?.streamStatus||null}))));
+            process.exit(2);
+          }
+          console.log("YouTube stream ownership preflight passed:",JSON.stringify({stream_id:match.id,title:match.snippet?.title||null,status:match.status?.streamStatus||null}));
+          NODE
+          echo "YouTube OAuth/channel/stream-key relationship is valid."
+
+          # Normalize copy/paste whitespace at the GitHub Actions boundary. GitHub
+          # exposes the environment secret exactly as stored; do not let CR/LF or
+          # accidental surrounding whitespace become part of the Cloudflare request.
+          CLOUDFLARE_ACCOUNT_ID="$(printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')"
+          CLOUDFLARE_API_TOKEN="$(printf '%s' "$CLOUDFLARE_API_TOKEN" | tr -d '\r\n')"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]] || {
+            echo "::error::TESTAGRAM_CLOUDFLARE_ACCOUNT_ID reached the runner but is not a 32-character Cloudflare account ID."
+            exit 1
+          }
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || {
+            echo "::error::TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN is empty after GitHub secret injection."
+            exit 1
+          }
+          if printf '%s' "$CLOUDFLARE_API_TOKEN" | grep -q '[[:space:]]'; then
+            echo "::error::TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN contains whitespace; replace the GitHub secret with the token value only."
+            exit 1
+          fi
+
+          echo "Validating the exact TV Cloudflare token GitHub injected into this production job..."
+          cf_token_verify_status="$(curl -sS -o /tmp/testagram-cloudflare-token-verify.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/user/tokens/verify")"
+          if [[ "$cf_token_verify_status" != "200" ]]; then
+            echo "::error::The fresh TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN is not accepted by Cloudflare (HTTP $cf_token_verify_status)."
+            cat /tmp/testagram-cloudflare-token-verify.json
+            exit 1
+          fi
+          node - <<'NODE'
+          const fs=require("node:fs");
+          const p=JSON.parse(fs.readFileSync("/tmp/testagram-cloudflare-token-verify.json","utf8"));
+          if (p?.success !== true || p?.result?.status !== "active") {
+            console.error("::error::Cloudflare TV API token is not active:", JSON.stringify({success:p?.success,status:p?.result?.status,errors:p?.errors}));
+            process.exit(1);
+          }
+          console.log("Cloudflare TV API token is active; GitHub secret injection is verified.");
+          NODE
+
+          # Do not use /accounts/{id}/tokens/verify as the TV gate. Cloudflare's
+          # account-token verification endpoint is specifically for account-owned
+          # token validation and can reject an otherwise active API token before the
+          # actual Stream permission endpoint is reached. The Stream API itself is the
+          # authoritative check for this TV token/account pair.
+          echo "Validating Cloudflare Stream access for the configured account..."
+          cf_status="$(curl -sS -o /tmp/testagram-cloudflare-stream.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/stream/live_inputs?per_page=1")"
+          if [[ "$cf_status" == "200" ]] && grep -q '"success"[[:space:]]*:[[:space:]]*true' /tmp/testagram-cloudflare-stream.json; then
+            echo "Cloudflare Stream is provisioned and accessible."
+            export TESTAGRAM_TV_CLOUDFLARE_AVAILABLE=true
+
+            echo "Validating Cloudflare Stream Write permission with a disposable Live Input..."
+            cf_write="$(curl -sS -X POST -o /tmp/testagram-cloudflare-stream-write.json -w '%{http_code}' \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Idempotency-Key: testagram-ci-preflight-$GITHUB_RUN_ID" \
+              --data '{"enabled":false,"meta":{"name":"Testagram CI credential preflight"},"recording":{"mode":"off"}}' \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/stream/live_inputs")"
+            if [[ "$cf_write" != "200" ]]; then
+              echo "::error::Cloudflare Stream Write preflight failed with HTTP $cf_write."
+              cat /tmp/testagram-cloudflare-stream-write.json
+              exit 1
+            fi
+            disposable_input="$(python3 -c 'import json; print(json.load(open("/tmp/testagram-cloudflare-stream-write.json"))["result"]["uid"])')"
+            if [[ -z "$disposable_input" ]]; then
+              echo "::error::Cloudflare Stream Write preflight returned no Live Input UID."
+              cat /tmp/testagram-cloudflare-stream-write.json
+              exit 1
+            fi
+            curl --fail --silent --show-error -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/stream/live_inputs/$disposable_input" >/tmp/testagram-cloudflare-stream-delete.json
+            echo "Cloudflare Stream Write permission verified and disposable preflight input removed."
+          else
+            if grep -q '"code"[[:space:]]*:[[:space:]]*10002' /tmp/testagram-cloudflare-stream.json && grep -qi 'stream not enabled' /tmp/testagram-cloudflare-stream.json; then
+              echo "NOTICE:Cloudflare Stream is not provisioned for this account. TV production will use the native Testagram WebRTC fallback until Stream is enabled."
+              export TESTAGRAM_TV_CLOUDFLARE_AVAILABLE=false
+            else
+              echo "::error::Cloudflare Stream credential/account access failed with HTTP $cf_status."
+              cat /tmp/testagram-cloudflare-stream.json
+              exit 1
+            fi
+          fi
+
+          supabase secrets set --project-ref "$PROJECT_REF"             "TESTAGRAM_CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID"             "TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN=$CLOUDFLARE_API_TOKEN"             "CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID"             "CLOUDFLARE_STREAM_API_TOKEN=$CLOUDFLARE_API_TOKEN"             "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"             "CLOUDFLARE_TURN_TOKEN_ID=$CLOUDFLARE_TURN_TOKEN_ID"             "CLOUDFLARE_TURN_API_TOKEN=$CLOUDFLARE_TURN_API_TOKEN"
+          printf '::add-mask::%s\n' "$YOUTUBE_STREAM_KEY"
+          supabase secrets set --project-ref "$PROJECT_REF" "YOUTUBE_CLIENT_ID=$YOUTUBE_CLIENT_ID"
+          supabase secrets set --project-ref "$PROJECT_REF" "YOUTUBE_CLIENT_SECRET=$YOUTUBE_CLIENT_SECRET"
+          supabase secrets set --project-ref "$PROJECT_REF" "YOUTUBE_REFRESH_TOKEN=$YOUTUBE_REFRESH_TOKEN"
+          supabase secrets set --project-ref "$PROJECT_REF" "YOUTUBE_RTMP_URL=$YOUTUBE_RTMP_URL"
+          supabase secrets set --project-ref "$PROJECT_REF" "YOUTUBE_STREAM_KEY=$YOUTUBE_STREAM_KEY"
+          echo "YouTube output credential and secure RTMPS endpoint synchronized to the Cloudflare TV control plane."
+          attempt=1; max_attempts=4
+          while true; do
+            echo "Deploying tv-media-control (attempt $attempt/$max_attempts)"
+            if supabase functions deploy tv-media-control --use-api --project-ref "$PROJECT_REF" --no-verify-jwt; then break; fi
+            if (( attempt >= max_attempts )); then echo "::error::tv-media-control deployment failed after $max_attempts attempts."; exit 1; fi
+            delay=$((attempt * 20)); echo "NOTICE:tv-media-control deployment retrying in ${delay}s."; sleep "$delay"; attempt=$((attempt+1))
+          done
+          echo "Testagram TV Cloudflare control-plane Edge Function deployed."
+      - name: Reconcile Cloudflare DNS for Worker Custom Domains
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo "::error::CLOUDFLARE_API_TOKEN is required for Cloudflare DNS reconciliation."; exit 1; }
+
+          echo "Verifying the exact Cloudflare token injected into the production environment..."
+          token_verify_status="$(curl -sS -o /tmp/cloudflare-token-verify.json -w "%{http_code}" --retry 4 --retry-delay 2 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Accept: application/json" \
+            "https://api.cloudflare.com/client/v4/user/tokens/verify")"
+          if [[ "$token_verify_status" != "200" ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not accepted by Cloudflare (HTTP $token_verify_status)."
+            cat /tmp/cloudflare-token-verify.json
+            exit 1
+          fi
+          node - <<'NODE'
+          const fs=require("node:fs");
+          const p=JSON.parse(fs.readFileSync("/tmp/cloudflare-token-verify.json","utf8"));
+          if(p?.success!==true || p?.result?.status!=="active"){
+            console.error("::error::Cloudflare API token is not active:",JSON.stringify({success:p?.success,status:p?.result?.status,errors:p?.errors}));
+            process.exit(1);
+          }
+          console.log("Cloudflare API token is active.");
+          NODE
+
+          zone_id="$(printf '%s' "$CLOUDFLARE_ZONE_ID" | tr -d '[:space:]')"
+          if [[ -n "$zone_id" ]]; then
+            [[ "$zone_id" =~ ^[0-9a-fA-F]{32}$ ]] || { echo "::error::CLOUDFLARE_ZONE_ID is not a valid 32-character zone ID."; exit 1; }
+            echo "Using explicitly configured Cloudflare zone ID."
+          else
+            echo "Resolving active Cloudflare zone for testagram.site..."
+            zone_response="$(curl -sS -w '\n%{http_code}' --retry 4 --retry-delay 2 \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Accept: application/json" \
+              "https://api.cloudflare.com/client/v4/zones?name=testagram.site&status=active")"
+            zone_status="${zone_response##*$'\n'}"
+            zone_body="${zone_response%$'\n'*}"
+            if [[ "$zone_status" != "200" ]]; then
+              echo "::error::Cloudflare zone lookup failed (HTTP $zone_status)."
+              echo "::error::Token verification passed, so this is a zone-listing/scope problem. Configure CLOUDFLARE_ZONE_ID and ensure Zone:DNS:Edit applies to testagram.site."
+              printf '%s\n' "$zone_body"
+              exit 1
+            fi
+            zone_id="$(printf '%s' "$zone_body" | jq -r '.result[] | select(.status == "active") | .id' | head -n 1)"
+            [[ "$zone_id" =~ ^[0-9a-fA-F]{32}$ ]] || { echo "::error::Active testagram.site zone was not resolved."; exit 1; }
+          fi
+          printf '::add-mask::%s\n' "$zone_id"
+
+          for host in testagram.site www.testagram.site; do
+            for type in A AAAA CNAME; do
+              echo "Checking $type records for $host..."
+              dns_response="$(curl -sS -w '\n%{http_code}' --retry 4 --retry-delay 2 \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                -H "Accept: application/json" \
+                "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?name=$host&type=$type&per_page=100")"
+              dns_status="${dns_response##*$'\n'}"
+              dns_body="${dns_response%$'\n'*}"
+              if [[ "$dns_status" != "200" ]]; then
+                echo "::error::Cloudflare DNS record lookup failed for $host/$type (HTTP $dns_status)."
+                printf '%s\n' "$dns_body"
+                exit 1
+              fi
+              ids="$(printf '%s' "$dns_body" | jq -r '.result[]?.id')"
+              while IFS= read -r record_id; do
+                [[ -n "$record_id" ]] || continue
+                echo "Removing conflicting $type DNS record for $host before Custom Domain attachment."
+                status="$(curl -sS -o /tmp/cloudflare-dns-delete.json -w '%{http_code}' \
+                  -X DELETE \
+                  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                  -H "Accept: application/json" \
+                  "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$record_id")"
+                if [[ "$status" != "200" ]]; then
+                  if jq -e '.errors[]? | select(.code == 1043)' /tmp/cloudflare-dns-delete.json >/dev/null 2>&1; then
+                    echo "Cloudflare-managed $host/$type record $record_id is read-only (API 1043); preserving it as required for Custom Domain DNS."
+                    echo "Custom Domain deployment will be allowed to reconcile Cloudflare-managed DNS instead of attempting to delete it."
+                    continue
+                  fi
+                  echo "::error::Cloudflare DNS record deletion failed for $host/$type (HTTP $status)."
+                  cat /tmp/cloudflare-dns-delete.json
+                  exit 1
+                fi
+              done <<< "$ids"
+            done
+          done
+          echo "Cloudflare DNS is clear for Worker Custom Domain attachment."
+
+      - name: Remove conflicting Cloudflare routes for production Custom Domain
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo "::error::CLOUDFLARE_API_TOKEN is required for route reconciliation."; exit 1; }
+          [[ "$CLOUDFLARE_ZONE_ID" =~ ^[0-9a-fA-F]{32}$ ]] || { echo "::error::CLOUDFLARE_ZONE_ID is missing or invalid."; exit 1; }
+
+          routes_json="$(curl -sS --fail-with-body \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Accept: application/json" \
+            "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/workers/routes")"
+
+          mapfile -t conflicting_routes < <(jq -r '
+            .result[]?
+            | select(
+                (.pattern == "testagram.site/*" or .pattern == "testagram.site/api/*" or
+                 .pattern == "www.testagram.site/*" or .pattern == "www.testagram.site/api/*")
+                and (.script // "") != "testagram-web"
+              )
+            | [.id, .pattern, (.script // "(disabled route)")] | @tsv
+          ' <<<"$routes_json")
+
+          for route in "${conflicting_routes[@]}"; do
+            [[ -n "$route" ]] || continue
+            IFS=$'\t' read -r route_id pattern script <<<"$route"
+            echo "Removing conflicting route $route_id ($pattern -> $script)..."
+            delete_status="$(curl -sS -o /tmp/cloudflare-route-delete.json -w '%{http_code}' \
+              -X DELETE \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Accept: application/json" \
+              "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/workers/routes/$route_id")"
+            if [[ "$delete_status" != "200" ]] || ! jq -e '.success == true' /tmp/cloudflare-route-delete.json >/dev/null 2>&1; then
+              echo "::error::Failed to remove conflicting Cloudflare route $route_id (HTTP $delete_status)."
+              cat /tmp/cloudflare-route-delete.json
+              exit 1
+            fi
+          done
+
+          echo "Cloudflare route reconciliation passed: no legacy route overrides the Testagram Custom Domain."
+          echo "Cloudflare route API: GET/DELETE /zones/{zone_id}/workers/routes."
+      - name: Reconcile Resend DNS authentication for testagram.site
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || { echo "::error::CLOUDFLARE_API_TOKEN is required for Resend DNS reconciliation."; exit 1; }
+          [[ "${CLOUDFLARE_ZONE_ID:-}" =~ ^[0-9a-fA-F]{32}$ ]] || { echo "::error::CLOUDFLARE_ZONE_ID is missing or invalid."; exit 1; }
+
+          API="https://api.cloudflare.com/client/v4"
+          upsert_dns() {
+            local name="$1" type="$2" content="$3" priority="${4:-}"
+            local encoded_name
+            encoded_name="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$name")"
+            local list
+            list="$(curl -fsS --retry 4 --retry-delay 2               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"               -H "Accept: application/json"               "$API/zones/$CLOUDFLARE_ZONE_ID/dns_records?name=$encoded_name&type=$type&per_page=100")"
+            local count
+            count="$(jq '.result | length' <<<"$list")"
+            local payload
+            if [[ "$type" == "MX" ]]; then
+              payload="$(jq -cn --arg name "$name" --arg content "$content" --argjson priority "$priority" '{name:$name,type:"MX",ttl:1,content:$content,priority:$priority}')"
+            else
+              payload="$(jq -cn --arg name "$name" --arg type "$type" --arg content "$content" '{name:$name,type:$type,ttl:1,content:$content}')"
+            fi
+
+            if [[ "$count" -gt 0 ]]; then
+              local id
+              id="$(jq -r '.result[0].id' <<<"$list")"
+              curl -fsS --retry 4 --retry-delay 2 -X PUT                 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"                 -H "Content-Type: application/json"                 --data "$payload"                 "$API/zones/$CLOUDFLARE_ZONE_ID/dns_records/$id" | jq -e '.success == true' >/dev/null
+              echo "Updated Resend DNS $type $name."
+            else
+              curl -fsS --retry 4 --retry-delay 2 -X POST                 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"                 -H "Content-Type: application/json"                 --data "$payload"                 "$API/zones/$CLOUDFLARE_ZONE_ID/dns_records" | jq -e '.success == true' >/dev/null
+              echo "Created Resend DNS $type $name."
+            fi
+          }
+
+          upsert_dns "resend._domainkey.testagram.site" "TXT" "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDMNrdsGbFD2a2pgCipQ1twW1mwdgZXDFTBOY4J70nhG4Ip9jDk+TkEKpnraQV2HoJ+6qCdWIAW2uQH9sHsVxp6914bVgUNIjjF+A8TAvpLBOOBVGLo8b/LZjDDha3aokzxzITHnDhTVIcW95GUtj0MT0If8a43U1GMURSdMGiSTwIDAQAB"
+          upsert_dns "send.testagram.site" "MX" "feedback-smtp.us-east-1.amazonses.com" "10"
+          upsert_dns "send.testagram.site" "TXT" "v=spf1 include:amazonses.com ~all"
+          upsert_dns "rsend.testagram.site" "CNAME" "send.forge.rmta.net"
+          echo "Resend DNS authentication records reconciled."
+
+      - name: Synchronize Resend runtime secret when provisioned
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_SERVICE_TOKEN: ${{ secrets.EMAIL_SERVICE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RESEND_API_KEY:-}" || -z "${EMAIL_SERVICE_TOKEN:-}" ]]; then
+            echo "NOTICE: Resend runtime secrets are not fully provisioned; transactional email endpoint remains disabled until both are added to the production environment."
+            exit 0
+          fi
+          printf '%s' "$RESEND_API_KEY" | npx wrangler secret put RESEND_API_KEY --name testagram-web
+          printf '%s' "$EMAIL_SERVICE_TOKEN" | npx wrangler secret put EMAIL_SERVICE_TOKEN --name testagram-web
+          echo "Resend runtime secrets synchronized to testagram-web without printing values."
+
+      - name: Deploy Cloudflare Worker and Custom Domains
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.TESTAGRAM_CLOUDFLARE_ACCOUNT_ID }}
+          NPM_CONFIG_LOGLEVEL: error
+          NODE_OPTIONS: --no-deprecation
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo "::error::CLOUDFLARE_API_TOKEN is missing from the production environment."; exit 1; }
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]] || { echo "::error::Cloudflare account ID is missing or invalid. Configure CLOUDFLARE_ACCOUNT_ID or TESTAGRAM_CLOUDFLARE_ACCOUNT_ID in the production environment."; exit 1; }
+          echo "Preparing immutable build-time production revision metadata..."
+          cat > cloudflare/deployment-meta.ts <<'META'
+          export const DEPLOYED_COMMIT_SHA = '${{ steps.target.outputs.sha }}';
+          META
+          grep -F "${{ steps.target.outputs.sha }}" cloudflare/deployment-meta.ts >/dev/null
+          echo "Build-time revision metadata locked to ${{ steps.target.outputs.sha }}."
+          echo "Deploying testagram-web to Cloudflare and applying configured Custom Domains..."
+          npx wrangler deploy --name testagram-web
+          echo "Reasserting the production Custom Domain -> Worker attachment..."
+          domain_status="$(curl -sS -o /tmp/testagram-worker-domain.json -w '%{http_code}' \
+            -X PUT \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            --data '{"hostname":"testagram.site","service":"testagram-web","zone_id":"${{ secrets.CLOUDFLARE_ZONE_ID }}","zone_name":"testagram.site"}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains")"
+          if [[ "$domain_status" != "200" ]] || ! jq -e '.success == true and .result.hostname == "testagram.site" and .result.service == "testagram-web"' /tmp/testagram-worker-domain.json >/dev/null 2>&1; then
+            echo "::error::Cloudflare Custom Domain attachment did not resolve to Worker testagram-web (HTTP $domain_status)."
+            cat /tmp/testagram-worker-domain.json
+            exit 1
+          fi
+          echo "Verified Custom Domain testagram.site is attached to Worker testagram-web."
+          echo "Cloudflare Worker deployment and Custom Domain reconciliation completed."
+
+      - name: Verify Cloudflare production domain
+        shell: bash
+        env:
+          EXPECTED_COMMIT_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          echo "Verifying Testagram production origin at https://testagram.site"
+
+          # Custom Domain attachment and edge DNS activation are asynchronous.
+          # Do not fail the deployment while Cloudflare is still returning DNS
+          # resolution errors or transient 503s during activation.
+          max_attempts=36
+          health_ok=false
+          for attempt in $(seq 1 "$max_attempts"); do
+            rm -f response-headers.txt health.txt
+            dns_line="$(getent ahostsv4 testagram.site 2>&1 | head -n 1 || true)"
+            if [[ -n "$dns_line" ]]; then
+              echo "Attempt $attempt/$max_attempts: DNS resolved: $dns_line"
+            else
+              echo "Attempt $attempt/$max_attempts: DNS has not resolved yet."
+            fi
+
+            status="$(curl -sS --location --connect-timeout 10 --max-time 30               -D response-headers.txt -o health.txt -w '%{http_code}'               "https://testagram.site/api/health" || true)"
+
+            if [[ "$status" == "200" ]]; then
+              if grep -Eiq '^server:[[:space:]]*cloudflare' response-headers.txt; then
+                if node - <<'NODE'
+          const fs=require("node:fs");
+          const body=fs.readFileSync("health.txt","utf8").trim();
+          let p;
+          try { p=JSON.parse(body); } catch { process.exit(1); }
+          const expected = process.env.EXPECTED_COMMIT_SHA;
+          if (p?.ok !== true || p?.service !== "testagram" || p?.edge !== "reachable") process.exit(1);
+          if (p?.commit !== expected) {
+            console.error("Exact-SHA mismatch:", JSON.stringify({ expected, actual: p?.commit }));
+            process.exit(2);
+          }
+          console.log("Production exact-SHA liveness passed:", JSON.stringify(p));
+          NODE
+                then
+                  health_ok=true
+                  break
+                fi
+              else
+                echo "NOTICE:HTTP 200 received but Cloudflare Server header is not yet present."
+              fi
+            else
+              echo "Health endpoint is not ready yet (HTTP $status); waiting for Cloudflare Worker activation."
+              if [[ -s health.txt ]]; then head -c 500 health.txt; echo; fi
+            fi
+
+            if (( attempt < max_attempts )); then
+              sleep 10
+            fi
+          done
+
+          [[ "$health_ok" == true ]] || {
+            echo "::error::testagram.site did not become Cloudflare Worker-backed and healthy within the activation window."
+            echo "Last DNS result:"
+            getent ahostsv4 testagram.site || true
+            echo "Last response headers:"
+            cat response-headers.txt 2>/dev/null || true
+            echo "Last response body:"
+            head -c 2000 health.txt 2>/dev/null || true
+            exit 1
+          }
+
+          ready_ok=false
+          for attempt in $(seq 1 "$max_attempts"); do
+            status="$(curl -sS --location --connect-timeout 10 --max-time 30               -o ready.txt -w '%{http_code}' "https://testagram.site/api/ready" || true)"
+            if [[ "$status" == "200" ]]; then
+              if node - <<'NODE'
+          const fs=require("node:fs");
+          const body=fs.readFileSync("ready.txt","utf8").trim();
+          let p;
+          try { p=JSON.parse(body); } catch { process.exit(1); }
+          if (p?.ok !== true || p?.database !== "reachable") process.exit(1);
+          console.log("Production database readiness passed:", JSON.stringify(p));
+          NODE
+              then
+                ready_ok=true
+                break
+              fi
+            fi
+            echo "Readiness endpoint is not ready yet (HTTP $status); waiting for production database readiness."
+            if (( attempt < max_attempts )); then sleep 10; fi
+          done
+
+          [[ "$ready_ok" == true ]] || {
+            echo "::error::testagram.site/api/ready did not become database-ready within the activation window."
+            head -c 2000 ready.txt 2>/dev/null || true
+            exit 1
+          }
+
+          echo "Cloudflare production domain liveness/readiness passed."
+
+
+# Story media reconciliation CI trigger marker.
+
+# Final story backend reconciliation trigger.
+
+# Final story schema/UI reconciliation trigger v2.
+
+# Live reconciliation trigger: verify the repaired production gate on the next main push.
+# Search reconciliation trigger: deploy the direct-RPC and live-Fediverse search path.
+# Mall canonical-profile typecheck reconciliation: 2026-09-20.
+
+# Poll-card hydration + exact-SHA production reconciliation trigger: 2026-10-01.
