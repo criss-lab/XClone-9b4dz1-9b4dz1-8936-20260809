@@ -1,191 +1,299 @@
-import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { FormEvent, useEffect, useState } from 'react';
+import type { ComponentProps, ComponentType } from 'react';
+import { ArrowLeft, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, Mail, ShieldCheck, Sparkles } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
-import { authService } from '@/lib/auth';
-import { useAuthStore } from '@/stores/authStore';
-import { Loader2 } from 'lucide-react';
+import { authService, finalizeAuthenticatedSession } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { useSEO } from '@/hooks/useSEO';
+import { useAuthStore } from '@/stores/authStore';
+import { LegalAcceptanceGate, readLegalConsent } from '@/components/auth/LegalAcceptanceGate';
+import { identitySignup } from '@/lib/identitySignup';
 
-function AuthAdBanner() {
-  const ref = useRef(false);
-  useEffect(() => {
-    if (ref.current) return;
-    ref.current = true;
-    try { ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({}); } catch (_) {}
-  }, []);
+type AuthMode = 'signin' | 'signup' | 'otp' | 'recover' | 'reset';
+
+function BrandMark() {
   return (
-    <ins
-      className="adsbygoogle"
-      style={{ display: 'block' }}
-      data-ad-client="ca-pub-2458567543017441"
-      data-ad-slot="2031881558"
-      data-ad-format="auto"
-      data-full-width-responsive="true"
-    />
+    <div className="flex items-center gap-3">
+      <img src="/app-icon.jpg" alt="Testagram" className="h-11 w-11 rounded-2xl object-cover shadow-sm" />
+      <div><div className="text-lg font-black tracking-tight">Testagram</div><div className="text-[11px] text-muted-foreground">Connect. Create. Discover.</div></div>
+    </div>
   );
 }
 
+function Field({ icon: Icon, ...props }: ComponentProps<typeof Input> & { icon: ComponentType<{ className?: string }> }) {
+  return <div className="relative"><Icon className="pointer-events-none absolute left-4 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input {...props} className={'h-13 rounded-2xl border-border/70 bg-background/80 pl-11 pr-4 shadow-sm transition focus-visible:ring-2 focus-visible:ring-primary/30 ' + (props.className || '')} /></div>;
+}
+
 export default function AuthPage() {
-  useSEO({ noindex: true, title: 'Sign In', url: '/auth' });
-  // esbuild guard: no explicit generic on useState — infer from initial value
-  const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'verify'
+  useSEO({ noindex: true, title: 'Sign in · Testagram', url: '/auth' });
+  const [mode, setMode] = useState<AuthMode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
   const [otp, setOtp] = useState('');
+  const [otpPurpose, setOtpPurpose] = useState<'signin' | 'signup'>('signin');
+  const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmation, setShowConfirmation] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  // esbuild guard: store initial ref param at module boundary, no useRef generic needed
-  const referrerIdRef = useRef(searchParams.get('ref'));
-  const { login } = useAuthStore();
+  const authUser = useAuthStore((state) => state.user);
+  const login = useAuthStore((state) => state.login);
+  const [legalAccepted, setLegalAccepted] = useState(() => !!readLegalConsent());
 
-  // esbuild guard: ref param is stored in localStorage on mount so it survives OTP redirect
   useEffect(() => {
-    const ref = searchParams.get('ref');
-    if (ref) {
-      localStorage.setItem('ts-pending-ref', ref);
-      if (mode === 'signin') setMode('signup');
-    }
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('reset') === '1') setMode('reset');
+    const ref = params.get('ref')?.trim();
+    if (ref) window.localStorage.setItem('testagram-referral-code', ref);
+
+    const tokenHash = params.get('token_hash')?.trim();
+    const requestedTokenType = params.get('type')?.trim();
+    const allowedTokenTypes = new Set(['email', 'signup', 'magiclink', 'recovery', 'invite', 'email_change']);
+    if (!tokenHash || !requestedTokenType || !allowedTokenTypes.has(requestedTokenType)) return;
+    const tokenType = requestedTokenType as 'email' | 'signup' | 'magiclink' | 'recovery' | 'invite' | 'email_change';
+
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: tokenType });
+        if (error) throw error;
+        if (!data.user) throw new Error('Verification succeeded but no user session was returned');
+        if (cancelled) return;
+        window.history.replaceState({}, document.title, tokenType === 'recovery' ? '/auth?reset=1' : '/auth');
+        await finishLogin(data.user);
+      } catch (error: any) {
+        if (!cancelled) {
+          setLoading(false);
+          toast({ title: 'Verification link failed', description: error?.message || 'Request a new verification email.', variant: 'destructive' });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
+  useEffect(() => {
+    if (authUser && !['otp', 'reset'].includes(mode)) navigate('/', { replace: true });
+  }, [authUser, mode, navigate]);
+
+  const applyPendingReferral = async () => {
+    const code = window.localStorage.getItem('testagram-referral-code');
+    if (!code) return;
+    try {
+      const { error } = await supabase.rpc('apply_referral_code', { p_code: code });
+      if (error && !error.message.includes('REFERRAL_ALREADY_APPLIED')) throw error;
+      await supabase.rpc('complete_referral');
+      window.localStorage.removeItem('testagram-referral-code');
+    } catch { /* Referral rewards never block authentication. */ }
+  };
+
+  const finishLogin = async (user: any) => {
+    const finalized = await finalizeAuthenticatedSession(user);
+    login(finalized);
+    setLoading(false);
+    await applyPendingReferral();
+    const needsIdentityVerification = finalized.identityVerificationStatus && !['not_required', 'approved'].includes(finalized.identityVerificationStatus);
+    navigate(needsIdentityVerification ? '/verify-identity' : '/', { replace: true });
+  };
+
+  const handlePasswordSignIn = async (event: FormEvent) => {
+    event.preventDefault(); setLoading(true);
+    try { await finishLogin(await authService.signInWithPassword(email, password)); }
+    catch (error: any) { setLoading(false); toast({ title: 'Sign-in failed', description: error?.message || 'Check your details and try again.', variant: 'destructive' }); }
+  };
+
+  const startIdentitySignup = async () => {
+    const consent = readLegalConsent();
+    if (!consent?.birthDate) {
+      setLegalAccepted(false);
+      throw new Error('LEGAL_ACCEPTANCE_REQUIRED');
+    }
+    await identitySignup.start({
+      email,
+      birthDate: consent.birthDate,
+      username,
+      legalPolicyVersion: consent.version,
+    });
+    setOtpPurpose('signup');
+    setOtp('');
+    setMode('otp');
+    toast({ title: 'Email verification required', description: 'We sent a 6-digit code. Your Testagram account is not created yet.' });
+  };
+
+  const handlePasswordSignUp = async (event: FormEvent) => {
+    event.preventDefault();
+    if (password.length < 8 || password !== confirmation) {
+      toast({ title: 'Check your password', description: password !== confirmation ? 'Passwords do not match.' : 'Use at least 8 characters.', variant: 'destructive' });
+      return;
+    }
     setLoading(true);
     try {
-      const user = await authService.signInWithPassword(email, password);
-      login(authService.mapUser(user));
-      navigate('/');
+      await startIdentitySignup();
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      setLoading(false);
-    }
+      toast({ title: 'Could not start identity verification', description: error?.message || 'Please try again.', variant: 'destructive' });
+    } finally { setLoading(false); }
   };
 
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const sendEmailOtp = async (event: FormEvent) => {
+    event.preventDefault(); setLoading(true);
+    try {
+      if (mode === 'signup') {
+        await startIdentitySignup();
+      } else {
+        await authService.sendEmailOtp(email, false);
+        setOtpPurpose('signin');
+        setOtp('');
+        setMode('otp');
+        toast({ title: 'Verification code sent', description: 'Enter the 6-digit code we sent to your email.' });
+      }
+    } catch (error: any) {
+      toast({ title: 'Code request failed', description: error?.message || 'We could not send the verification code.', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
+  const verifyEmailOtp = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(otp.trim())) {
+      toast({ title: 'Invalid code', description: 'Enter the 6-digit verification code from your email.', variant: 'destructive' });
+      return;
+    }
     setLoading(true);
     try {
-      await authService.sendOtp(email);
-      setMode('verify');
-      toast({ title: 'Success', description: 'Verification code sent to your email' });
+      if (otpPurpose === 'signup') {
+        await identitySignup.verifyEmail(otp);
+        setLoading(false);
+        navigate('/verify-identity', { replace: true });
+        return;
+      }
+      await finishLogin(await authService.verifyEmailOtp(email, otp, 'email'));
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-    } finally {
       setLoading(false);
+      toast({ title: 'Verification failed', description: error?.message || 'The code is invalid or expired.', variant: 'destructive' });
     }
   };
 
-  const recordReferral = async (newUserId: string) => {
-    // esbuild guard: read from localStorage (survives OTP redirect)
-    const refUsername = localStorage.getItem('ts-pending-ref') ?? referrerIdRef.current;
-    if (!refUsername) return;
-    localStorage.removeItem('ts-pending-ref');
-    // Look up referrer by username (ref param is username, not UUID)
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(refUsername);
-    let referrerId: string | null = null;
-    if (isUuid) {
-      referrerId = refUsername;
-    } else {
-      const { data: refProfile } = await supabase.from('user_profiles').select('id').eq('username', refUsername).maybeSingle();
-      referrerId = refProfile?.id ?? null;
-    }
-    if (!referrerId || referrerId === newUserId) return;
-    const { error } = await supabase
-      .from('referrals')
-      .insert({ invited_by: referrerId, invited_user: newUserId, credits_awarded: 100 })
-      .select()
-      .single();
-    if (error) return;
-    // Award 100 credits to both referrer and new user
-    await supabase.rpc('add_to_wallet', { p_user_id: referrerId, p_amount: 100 }).catch(() => {});
-    await supabase.rpc('add_to_wallet', { p_user_id: newUserId, p_amount: 100 }).catch(() => {});
-  };
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const resendEmailOtp = async () => {
     setLoading(true);
     try {
-      const user = await authService.verifyOtpAndSetPassword(email, otp, password);
-      recordReferral(user.id).catch(() => {});
-      login(authService.mapUser(user));
-      navigate('/');
+      if (otpPurpose === 'signup') {
+        await identitySignup.resendEmail();
+      } else {
+        await authService.sendEmailOtp(email, false);
+      }
+      setOtp('');
+      toast({ title: 'New code sent', description: 'Check your email for the latest 6-digit verification code.' });
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      setLoading(false);
-    }
+      toast({ title: 'Could not resend code', description: error?.message || 'Please try again.', variant: 'destructive' });
+    } finally { setLoading(false); }
   };
 
-  // Pre-compute referral context for display
-  const pendingRef = typeof window !== 'undefined' ? (localStorage.getItem('ts-pending-ref') ?? searchParams.get('ref')) : null;
+  const requestReset = async (event: FormEvent) => {
+    event.preventDefault(); setLoading(true);
+    try {
+      await authService.resetPassword(email);
+      toast({ title: 'Check your email', description: 'If the account exists, we sent a secure password reset link.' });
+    } catch (error: any) {
+      toast({ title: 'Reset request failed', description: error?.message || 'Please check the email and try again.', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
+  const updatePassword = async (event: FormEvent) => {
+    event.preventDefault();
+    if (password.length < 8 || password !== confirmation) {
+      toast({ title: 'Check your new password', description: password !== confirmation ? 'Passwords do not match.' : 'Use at least 8 characters.', variant: 'destructive' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const user = await authService.updatePassword(password);
+      login(await finalizeAuthenticatedSession(user));
+      window.history.replaceState({}, document.title, '/auth');
+      navigate('/', { replace: true });
+    } catch (error: any) {
+      toast({ title: 'Password update failed', description: error?.message || 'Your reset link may have expired. Request a new one.', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
+  if (!legalAccepted) return <div className="min-h-screen bg-gradient-to-b from-background via-background to-primary/5 p-4 flex items-center justify-center"><LegalAcceptanceGate onAccepted={() => setLegalAccepted(true)} /></div>;
+
+  const go = (next: AuthMode) => { setLoading(false); setPassword(''); setConfirmation(''); setMode(next); };
+  const title = mode === 'signin' ? 'Welcome back' : mode === 'signup' ? 'Create your account' : mode === 'otp' ? 'Enter your verification code' : mode === 'recover' ? 'Reset your password' : 'Choose a new password';
+  const subtitle = mode === 'signin' ? 'Sign in to continue your Testagram journey.' : mode === 'signup' ? 'Join Testagram and start sharing what matters.' : mode === 'otp' ? `We sent a 6-digit code to ${email}. Enter it below to continue.` : mode === 'recover' ? 'We’ll send a secure reset link to your email.' : 'Your new password should be at least 8 characters.';
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
-      <AuthAdBanner />
-      <div className="w-full max-w-md space-y-8">
-        <div className="text-center">
-          <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-primary mb-6">
-            <span className="text-4xl font-bold text-primary-foreground">T</span>
-          </div>
-          <h2 className="text-3xl font-bold">
-            {mode === 'signin' ? 'Sign in to T' : mode === 'signup' ? 'Join T today' : 'Verify your email'}
-          </h2>
-          {pendingRef && mode !== 'signin' && (
-            <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20">
-              <span className="text-xs font-bold text-primary">🎁 Invited by @{pendingRef}</span>
-              <span className="text-[10px] text-muted-foreground">· You'll both get 100 credits</span>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_hsl(var(--primary)/.13),_transparent_38%),linear-gradient(180deg,hsl(var(--background)),hsl(var(--muted)/.35))] px-4 py-6 sm:py-10">
+      <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-6xl items-center justify-center">
+        <div className="grid w-full overflow-hidden rounded-[2rem] border border-border/60 bg-card/90 shadow-2xl shadow-primary/5 backdrop-blur-xl lg:grid-cols-[.9fr_1.1fr]">
+          <section className="relative hidden min-h-[680px] overflow-hidden bg-primary p-10 text-primary-foreground lg:flex lg:flex-col lg:justify-between">
+            <div className="absolute -right-24 -top-24 h-72 w-72 rounded-full bg-white/10 blur-2xl" />
+            <div className="absolute -bottom-28 -left-24 h-80 w-80 rounded-full bg-black/10 blur-3xl" />
+            <div className="relative"><BrandMark /></div>
+            <div className="relative max-w-md">
+              <div className="mb-5 inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-bold"><Sparkles className="mr-1.5 h-3.5 w-3.5" /> Built for the Testagram community</div>
+              <h1 className="text-5xl font-black leading-[1.03] tracking-[-.04em]">Your people.<br />Your stories.<br />Your space.</h1>
+              <p className="mt-6 max-w-sm text-sm leading-6 text-primary-foreground/75">A modern home for conversations, live media, creators and the moments you want to keep moving.</p>
             </div>
-          )}
+            <div className="relative flex items-center gap-2 text-xs text-primary-foreground/70"><ShieldCheck className="h-4 w-4" /> Secure authentication · Adults 18+</div>
+          </section>
+
+          <section className="flex min-h-[680px] flex-col p-5 sm:p-8 lg:p-12">
+            <div className="flex items-center justify-between lg:justify-end"><div className="lg:hidden"><BrandMark /></div>{!['signin'].includes(mode) && <button onClick={() => go('signin')} className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Back</button>}</div>
+
+            <div className="mx-auto my-auto w-full max-w-md">
+              <div className="mb-8 mt-8 lg:mt-0"><p className="mb-2 text-xs font-black uppercase tracking-[.18em] text-primary">Testagram account</p><h2 className="text-3xl font-black tracking-tight sm:text-4xl">{title}</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">{subtitle}</p></div>
+
+              {(mode === 'signin' || mode === 'signup') && (
+                <>
+                  <div className="mb-6 grid grid-cols-2 rounded-2xl bg-muted p-1">
+                    <button onClick={() => go('signin')} className={'rounded-xl py-2.5 text-sm font-bold transition ' + (mode === 'signin' ? 'bg-background shadow-sm' : 'text-muted-foreground')}>Log in</button>
+                    <button onClick={() => go('signup')} className={'rounded-xl py-2.5 text-sm font-bold transition ' + (mode === 'signup' ? 'bg-background shadow-sm' : 'text-muted-foreground')}>Create account</button>
+                  </div>
+
+                  <form onSubmit={mode === 'signin' ? handlePasswordSignIn : handlePasswordSignUp} className="space-y-3.5">
+                    {mode === 'signup' && <Field icon={Sparkles} type="text" autoComplete="username" placeholder="Username (optional)" value={username} onChange={e => setUsername(e.target.value)} />}
+                    <Field icon={Mail} type="email" autoComplete="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)} required />
+                    <div className="relative"><Field icon={KeyRound} type={showPassword ? 'text' : 'password'} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} placeholder="Password (8+ characters)" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} /><button type="button" aria-label="Toggle password visibility" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-xl p-2 text-muted-foreground hover:bg-muted">{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div>
+                    {mode === 'signup' && <div className="relative"><Field icon={KeyRound} type={showConfirmation ? 'text' : 'password'} autoComplete="new-password" placeholder="Confirm password" value={confirmation} onChange={e => setConfirmation(e.target.value)} required minLength={8} /><button type="button" aria-label="Toggle confirmation visibility" onClick={() => setShowConfirmation(v => !v)} className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-xl p-2 text-muted-foreground hover:bg-muted">{showConfirmation ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div>}
+                    <Button type="submit" disabled={loading} className="h-13 w-full rounded-2xl text-sm font-black shadow-lg shadow-primary/20">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : mode === 'signin' ? 'Log in with password' : 'Create account'}</Button>
+                  </form>
+
+                  {mode === 'signin' && <button onClick={() => go('recover')} className="mt-4 w-full text-center text-sm font-semibold text-muted-foreground hover:text-primary">Forgot your password?</button>}
+
+                  <div className="my-6 flex items-center gap-3"><div className="h-px flex-1 bg-border" /><span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">or use email code</span><div className="h-px flex-1 bg-border" /></div>
+                  <form onSubmit={sendEmailOtp} className="space-y-3.5">
+                    <Field icon={Mail} type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} required />
+                    <Button disabled={loading} type="submit" variant="outline" className="h-13 w-full rounded-2xl font-black">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Email me a verification code'}</Button>
+                  </form>
+                </>
+              )}
+
+              {mode === 'otp' && <form onSubmit={verifyEmailOtp} className="space-y-4">
+                <div className="rounded-3xl border border-primary/15 bg-primary/5 p-6 text-center">
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10"><Mail className="h-7 w-7 text-primary" /></div>
+                  <p className="text-sm text-muted-foreground">Verification code sent to</p>
+                  <p className="mt-1 font-bold break-all">{email}</p>
+                </div>
+                <Field icon={KeyRound} type="text" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit verification code" value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} required maxLength={6} />
+                <Button disabled={loading || otp.length !== 6} type="submit" className="h-13 w-full rounded-2xl font-black">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Verify code & continue'}</Button>
+                <button type="button" onClick={resendEmailOtp} disabled={loading} className="w-full text-center text-sm font-semibold text-muted-foreground hover:text-primary disabled:opacity-50">Resend verification code</button>
+                <button type="button" onClick={() => go('signin')} disabled={loading} className="w-full text-center text-sm font-semibold text-muted-foreground hover:text-foreground">Use another email</button>
+              </form>}
+
+              {mode === 'recover' && <form onSubmit={requestReset} className="space-y-4"><div className="rounded-2xl border border-primary/15 bg-primary/5 p-4 text-sm leading-6 text-muted-foreground"><KeyRound className="mb-2 h-5 w-5 text-primary" />Enter the email linked to your Testagram account. We’ll send a secure, time-limited reset link.</div><Field icon={Mail} type="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} required /><Button disabled={loading} className="h-13 w-full rounded-2xl font-black">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Send reset link'}</Button></form>}
+
+              {mode === 'reset' && <form onSubmit={updatePassword} className="space-y-3.5"><div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-muted-foreground"><CheckCircle2 className="mb-2 h-5 w-5 text-emerald-600" />You’re using a valid recovery session. Choose a new password below.</div><Field icon={KeyRound} type="password" autoComplete="new-password" placeholder="New password (8+ characters)" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} /><Field icon={KeyRound} type="password" autoComplete="new-password" placeholder="Confirm new password" value={confirmation} onChange={e => setConfirmation(e.target.value)} required minLength={8} /><Button disabled={loading} className="h-13 w-full rounded-2xl font-black">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Update password'}</Button></form>}
+
+              <div className="mt-8 flex items-center justify-center gap-2 text-center text-[11px] leading-5 text-muted-foreground"><ShieldCheck className="h-3.5 w-3.5 shrink-0" /> Your account is protected by Supabase authentication.</div>
+              <p className="mt-3 text-center text-[11px] leading-5 text-muted-foreground">By continuing, you agree to the Terms, Privacy Policy and Community Guidelines. Testagram is for adults 18+.</p>
+            </div>
+          </section>
         </div>
-
-        {mode === 'signin' && (
-          <form onSubmit={handleSignIn} className="space-y-4">
-            <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="h-14" />
-            <Input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required className="h-14" />
-            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Sign in'}
-            </Button>
-            <div className="text-center">
-              <button type="button" onClick={() => setMode('signup')} className="text-primary hover:underline">
-                Don't have an account? Sign up
-              </button>
-            </div>
-          </form>
-        )}
-
-        {mode === 'signup' && (
-          <form onSubmit={handleSendOtp} className="space-y-4">
-            <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="h-14" />
-            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Continue'}
-            </Button>
-            <div className="text-center">
-              <button type="button" onClick={() => setMode('signin')} className="text-primary hover:underline">
-                Already have an account? Sign in
-              </button>
-            </div>
-          </form>
-        )}
-
-        {mode === 'verify' && (
-          <form onSubmit={handleVerifyOtp} className="space-y-4">
-            <p className="text-muted-foreground text-center">Enter the 4-digit code sent to {email}</p>
-            <Input type="text" placeholder="Verification code" value={otp} onChange={(e) => setOtp(e.target.value)} required maxLength={4} className="h-14 text-center text-2xl tracking-widest" />
-            <Input type="password" placeholder="Create password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} className="h-14" />
-            <Button type="submit" className="w-full h-12 rounded-full" disabled={loading}>
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Verify and create account'}
-            </Button>
-            <div className="text-center">
-              <button type="button" onClick={handleSendOtp} className="text-primary hover:underline text-sm" disabled={loading}>
-                Resend code
-              </button>
-            </div>
-          </form>
-        )}
       </div>
-    </div>
+    </main>
   );
 }
