@@ -1,186 +1,111 @@
-// M-Pesa B2C (Business to Customer) Payout
-// Sends money from business account to customer M-Pesa
-import { corsHeaders } from '../_shared/cors.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
-const MPESA_BASE = 'https://api.safaricom.co.ke'; // Production M-Pesa API
+const U = Deno.env.get("SUPABASE_URL") || "";
+const S = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const A = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
+const ENV = (Deno.env.get("MPESA_ENV") || "").toLowerCase();
+const BASE = ENV === "sandbox" ? "https://sandbox.safaricom.co.ke" : ENV === "live" ? "https://api.safaricom.co.ke" : "";
+const KEY = Deno.env.get("MPESA_CONSUMER_KEY") || "";
+const SECRET = Deno.env.get("MPESA_CONSUMER_SECRET") || "";
+const SHORTCODE = Deno.env.get("MPESA_SHORTCODE") || "";
+const INITIATOR = Deno.env.get("MPESA_B2C_INITIATOR") || Deno.env.get("MPESA_INITIATOR_NAME") || "";
+const SECURITY = Deno.env.get("MPESA_SECURITY_CREDENTIAL") || Deno.env.get("MPESA_SECURITY_CRED") || "";
+const RATE = Number(Deno.env.get("MPESA_USD_KES_RATE") || "");
+const RESULT_URL = Deno.env.get("MPESA_B2C_RESULT_URL") || `${U}/functions/v1/mpesa-b2c-result`;
+const TIMEOUT_URL = Deno.env.get("MPESA_B2C_TIMEOUT_URL") || RESULT_URL;
+const admin = createClient(U, S, { auth: { persistSession: false, autoRefreshToken: false } });
 
-async function getMpesaToken(consumerKey: string, consumerSecret: string): Promise<string> {
-  const credentials = btoa(`${consumerKey}:${consumerSecret}`);
-  const res = await fetch(`${MPESA_BASE}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${credentials}` },
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
+  status,
+  headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization,apikey,content-type", "Access-Control-Allow-Methods": "POST,OPTIONS" },
+});
+
+function phone(raw: string) {
+  const d = raw.replace(/\D/g, "");
+  if (d.startsWith("254") && d.length === 12) return d;
+  if (d.startsWith("0") && d.length === 10) return `254${d.slice(1)}`;
+  if ((d.startsWith("7") || d.startsWith("1")) && d.length === 9) return `254${d}`;
+  throw new Error("INVALID_PHONE");
+}
+
+async function user(req: Request) {
+  const authorization = req.headers.get("authorization") || "";
+  if (!authorization || !A) return null;
+  const client = createClient(U, A, { global: { headers: { Authorization: authorization } } });
+  return (await client.auth.getUser(authorization.replace(/^Bearer\s+/i, ""))).data.user || null;
+}
+
+async function token() {
+  const response = await fetch(`${BASE}/oauth/v1/generate?grant_type=client_credentials`, {
+    headers: { Authorization: `Basic ${btoa(`${KEY}:${SECRET}`)}` },
   });
-  if (!res.ok) throw new Error(`Token fetch failed (${res.status})`);
-  const data = await res.json();
-  if (!data.access_token) throw new Error('No access_token in response');
-  return data.access_token;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) throw new Error("MPESA_AUTH_FAILED");
+  return String(data.access_token);
 }
 
-function normalisePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('254') && digits.length === 12) return digits;
-  if (digits.startsWith('0')   && digits.length === 10) return '254' + digits.slice(1);
-  if (digits.startsWith('7')   && digits.length === 9)  return '254' + digits;
-  if (digits.startsWith('1')   && digits.length === 9)  return '254' + digits;
-  throw new Error(`Invalid phone number: "${raw}"`);
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return json({}, 204);
   try {
-    const consumerKey      = Deno.env.get('MPESA_CONSUMER_KEY');
-    const consumerSecret   = Deno.env.get('MPESA_CONSUMER_SECRET');
-    const shortCode        = Deno.env.get('MPESA_B2C_SHORTCODE')    ?? Deno.env.get('MPESA_SHORTCODE') ?? '174379';
-    const initiatorName    = Deno.env.get('MPESA_INITIATOR_NAME')   ?? 'testapi';
-    const securityCred     = Deno.env.get('MPESA_SECURITY_CRED')    ?? '';
-    const resultUrl        = Deno.env.get('MPESA_B2C_RESULT_URL')   ?? `${Deno.env.get('SUPABASE_URL')}/functions/v1/mpesa-callback`;
-    const timeoutUrl       = Deno.env.get('MPESA_B2C_TIMEOUT_URL')  ?? `${Deno.env.get('SUPABASE_URL')}/functions/v1/mpesa-callback`;
+    const u = await user(req);
+    if (!u) return json({ error: "Authentication required" }, 401);
+    if (!BASE || !KEY || !SECRET || !SHORTCODE || !INITIATOR || !SECURITY) return json({ error: "M-Pesa B2C is not fully configured." }, 503);
 
-    if (!consumerKey || !consumerSecret) throw new Error('MPESA_CONSUMER_KEY and MPESA_CONSUMER_SECRET must be set');
-    if (!securityCred) throw new Error('MPESA_SECURITY_CRED must be set for B2C payouts');
+    const body = await req.json().catch(() => ({}));
+    const walletId = String(body.wallet_id || "");
+    const walletQuery = walletId
+      ? admin.from("wallets").select("id,user_id,currency,balance,status,withdrawals_enabled").eq("id", walletId).eq("user_id", u.id).maybeSingle()
+      : admin.from("wallets").select("id,user_id,currency,balance,status,withdrawals_enabled").eq("user_id", u.id).maybeSingle();
+    const { data: wallet, error: walletError } = await walletQuery;
+    if (walletError || !wallet) return json({ error: "Wallet not found" }, 404);
+    if (wallet.status !== "active" || wallet.withdrawals_enabled === false) return json({ error: "Withdrawals are disabled for this wallet." }, 403);
 
-    // Authenticate caller via JWT
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('Unauthorized');
+    const requestedPhone = phone(String(body.phone || ""));
+    const { data: identity, error: identityError } = await admin.from("wallet_phone_identities").select("phone_e164,verified_at").eq("wallet_id", wallet.id).eq("user_id", u.id).maybeSingle();
+    if (identityError) return json({ error: "Unable to verify payout destination." }, 500);
+    if (!identity?.verified_at || identity.phone_e164 !== requestedPhone) return json({ error: "Verify this M-Pesa number in Wallet Security before withdrawing." }, 403);
 
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-    );
+    const walletCurrency = String(body.currency || wallet.currency || "USD").toUpperCase();
+    if (walletCurrency !== String(wallet.currency || "USD").toUpperCase()) return json({ error: "Wallet currency mismatch" }, 400);
+    const hasExplicitKes = body.amount_kes != null;
+    const amountKes = Math.floor(Number(body.amount_kes ?? body.amount));
+    if (!Number.isFinite(amountKes) || amountKes < 10 || amountKes > 150000) return json({ error: "Invalid withdrawal amount. M-Pesa withdrawals must be between KES 10 and KES 150,000." }, 400);
 
-    const jwtToken = authHeader.replace('Bearer ', '');
-    const { data: { user }, error: userErr } = await supabaseAdmin.auth.getUser(jwtToken);
-    if (userErr || !user) throw new Error('Unauthorized — invalid session');
+    let walletAmount: number;
+    if (hasExplicitKes) walletAmount = Number(body.amount);
+    else if (walletCurrency === "KES") walletAmount = amountKes;
+    else {
+      if (!Number.isFinite(RATE) || RATE <= 0) return json({ error: "M-Pesa USD/KES exchange rate is not configured." }, 503);
+      walletAmount = Number((amountKes / RATE).toFixed(2));
+    }
+    if (!Number.isFinite(walletAmount) || walletAmount <= 0) return json({ error: "Invalid wallet withdrawal amount" }, 400);
 
-    const body = await req.json();
-    const { phone, amount, purpose } = body;
-    if (!phone)  throw new Error('phone is required');
-    if (!amount) throw new Error('amount is required');
-
-    const normalisedPhone = normalisePhone(String(phone));
-    const intAmount = Math.floor(Number(amount));
-    if (intAmount < 10) throw new Error('Minimum B2C amount is KES 10');
-
-    // Check user wallet balance
-    const { data: wallet } = await supabaseAdmin
-      .from('user_wallets')
-      .select('balance, daily_spend_limit, spend_limit_enabled')
-      .eq('user_id', user.id)
-      .single();
-
-    if (!wallet) throw new Error('Wallet not found');
-
-    const usdAmount = intAmount / 130; // USD_TO_KES rate
-    if (Number(wallet.balance) < usdAmount) {
-      throw new Error(`Insufficient balance. Available: $${Number(wallet.balance).toFixed(2)}`);
+    const reference = `WD${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
+    const reserved = await admin.rpc("reserve_mpesa_withdrawal", { p_user_id: u.id, p_wallet_id: wallet.id, p_amount: Number(walletAmount.toFixed(2)), p_currency: walletCurrency, p_phone: requestedPhone, p_amount_kes: amountKes, p_client_reference: reference });
+    if (reserved.error || !reserved.data?.ok) {
+      const message = reserved.error?.message || "Withdrawal reservation failed";
+      return json({ error: message.includes("insufficient_balance") ? "Insufficient balance" : message }, 409);
     }
 
-    // Check daily spend limit
-    if (wallet.spend_limit_enabled && wallet.daily_spend_limit !== null) {
-      const since = new Date();
-      since.setHours(0, 0, 0, 0);
-      const { data: todayTxns } = await supabaseAdmin
-        .from('wallet_transactions')
-        .select('amount')
-        .eq('user_id', user.id)
-        .eq('type', 'withdrawal')
-        .gte('created_at', since.toISOString());
-
-      const todaySpent = (todayTxns ?? []).reduce((s: number, t: any) => s + Number(t.amount), 0);
-      const limitUsd = Number(wallet.daily_spend_limit);
-      if (todaySpent + usdAmount > limitUsd) {
-        throw new Error(`Daily spend limit of $${limitUsd.toFixed(2)} exceeded. Already spent $${todaySpent.toFixed(2)} today.`);
+    try {
+      const access = await token();
+      const response = await fetch(`${BASE}/mpesa/b2c/v1/paymentrequest`, { method: "POST", headers: { Authorization: `Bearer ${access}`, "Content-Type": "application/json" }, body: JSON.stringify({ InitiatorName: INITIATOR, SecurityCredential: SECURITY, CommandID: String(Deno.env.get("MPESA_B2C_COMMAND_ID") || "BusinessPayment"), Amount: amountKes, PartyA: SHORTCODE, PartyB: requestedPhone, Remarks: `Testagram withdrawal ${reference}`, QueueTimeOutURL: TIMEOUT_URL, ResultURL: RESULT_URL, Occasion: reference }) });
+      const provider = await response.json().catch(() => ({}));
+      if (!response.ok || String(provider.ResponseCode) !== "0") {
+        await admin.rpc("finalize_mpesa_withdrawal", { p_client_reference: reference, p_provider_order_id: String(provider.ConversationID || provider.OriginatorConversationID || ""), p_result_code: Number(provider.ResponseCode || 1), p_transaction_id: null, p_result_description: String(provider.ResponseDescription || provider.errorMessage || "B2C request rejected"), p_result_data: provider });
+        return json({ error: provider.ResponseDescription || provider.errorMessage || "M-Pesa withdrawal request failed" }, 502);
       }
+      const providerId = String(provider.ConversationID || provider.OriginatorConversationID || "");
+      await admin.from("wallet_transactions").update({ provider_order_id: providerId, provider_status: "PROCESSING", metadata: { client_reference: reference, amount_kes: amountKes, phone: requestedPhone, b2c_response: provider } }).eq("provider_reference", reference).eq("user_id", u.id).eq("status", "pending");
+      await admin.from("wallets").update({ mpesa_phone: requestedPhone }).eq("id", wallet.id).eq("user_id", u.id);
+      return json({ ok: true, status: "pending", client_reference: reference, provider_order_id: providerId, amount_kes: amountKes, wallet_amount: walletAmount, currency: walletCurrency });
+    } catch (error) {
+      await admin.rpc("finalize_mpesa_withdrawal", { p_client_reference: reference, p_provider_order_id: null, p_result_code: 1, p_transaction_id: null, p_result_description: "Provider request failed before acceptance", p_result_data: {} });
+      throw error;
     }
-
-    console.log(`[mpesa-b2c] Initiating B2C: phone=${normalisedPhone} amount=KES${intAmount} user=${user.id}`);
-
-    const token = await getMpesaToken(consumerKey, consumerSecret);
-
-    const b2cPayload = {
-      InitiatorName: initiatorName,
-      SecurityCredential: securityCred,
-      CommandID: 'BusinessPayment',
-      Amount: intAmount,
-      PartyA: shortCode,
-      PartyB: normalisedPhone,
-      Remarks: purpose ?? 'Creator Payout',
-      QueueTimeOutURL: timeoutUrl,
-      ResultURL: resultUrl,
-      Occasion: purpose ?? 'Testagram Payout',
-    };
-
-    const b2cRes = await fetch(`${MPESA_BASE}/mpesa/b2c/v1/paymentrequest`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(b2cPayload),
-    });
-
-    const b2cData = await b2cRes.json();
-    console.log('[mpesa-b2c] Response:', JSON.stringify(b2cData));
-
-    if (!b2cRes.ok || b2cData.ResponseCode !== '0') {
-      const errMsg = b2cData.errorMessage ?? b2cData.ResponseDescription ?? `B2C failed (${b2cRes.status})`;
-      throw new Error(`M-Pesa B2C: ${errMsg}`);
-    }
-
-    // Record transaction
-    const { data: walletRow } = await supabaseAdmin
-      .from('user_wallets')
-      .select('id')
-      .eq('user_id', user.id)
-      .single();
-
-    await supabaseAdmin.from('mpesa_transactions').insert({
-      user_id: user.id,
-      checkout_request_id: b2cData.ConversationID,
-      merchant_request_id: b2cData.OriginatorConversationID,
-      phone_number: normalisedPhone,
-      amount: intAmount,
-      type: 'b2c',
-      purpose: purpose ?? 'creator_payout',
-      status: 'pending',
-    });
-
-    await supabaseAdmin.from('wallet_transactions').insert({
-      wallet_id: walletRow?.id ?? null,
-      user_id: user.id,
-      type: 'withdrawal',
-      amount: usdAmount,
-      payment_method: 'mpesa',
-      status: 'pending',
-      description: `M-Pesa withdrawal — KES ${intAmount.toLocaleString()} to ${normalisedPhone}`,
-    });
-
-    // Save phone to wallet for auto-fill
-    await supabaseAdmin
-      .from('user_wallets')
-      .update({ mpesa_phone: normalisedPhone })
-      .eq('user_id', user.id);
-
-    // Send wallet notification
-    await supabaseAdmin.from('platform_inbox').insert({
-      user_id: user.id,
-      subject: 'Withdrawal Initiated 💸',
-      body: `Your withdrawal of KES ${intAmount.toLocaleString()} ($${usdAmount.toFixed(2)}) to M-Pesa number ${normalisedPhone} has been initiated. Funds typically arrive within 5 minutes.`,
-      type: 'system',
-      icon_emoji: '💸',
-    });
-
-    return new Response(JSON.stringify({
-      success: true,
-      conversation_id: b2cData.ConversationID,
-      originator_id: b2cData.OriginatorConversationID,
-      message: `KES ${intAmount.toLocaleString()} is being sent to your M-Pesa`,
-    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Internal error';
-    console.error('[mpesa-b2c] Error:', message);
-    return new Response(JSON.stringify({ success: false, error: message }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+  } catch (error) {
+    console.error("mpesa-b2c-payout", error);
+    return json({ error: error instanceof Error ? error.message : "M-Pesa withdrawal failed" }, 500);
   }
 });
