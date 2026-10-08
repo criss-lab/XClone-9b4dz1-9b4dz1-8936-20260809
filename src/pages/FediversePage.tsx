@@ -6,10 +6,10 @@ import { supabase } from '@/lib/supabase';
 import * as federation from '@/api/federation';
 import { FediverseBadge } from '@/components/features/FediverseBadge';
 import {
-  Globe, Search, Users, Rss, ExternalLink, UserPlus, UserMinus,
+  Globe, Search, Users, Rss, UserPlus, UserMinus,
   Loader2, AlertCircle, Copy, CheckCircle, Heart, Repeat2,
   MessageCircle, Send, X, Inbox, Radio, BarChart3, Plus, Trash2,
-  RefreshCw, CheckCheck, Activity, Server
+  RefreshCw, CheckCheck, Activity, Server, Sparkles
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -22,13 +22,23 @@ import { formatNumber } from '@/lib/utils';
 import { useSEO, buildOgImageUrl } from '@/hooks/useSEO';
 
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { PostCard } from '@/components/features/PostCard';
+import { FederatedOrganicInjection } from '@/components/features/FederatedOrganicDiscovery';
 function FediverseAdBanner() { return <PageAdBanner />; }
 
 type Tab = 'feed' | 'inbox' | 'relay' | 'analytics' | 'discover' | 'identity' | 'mastodon';
 
 const CHART_COLORS = ['#06b6d4', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#3b82f6'];
 
-export default function FediversePage() {
+type FediversePageProps = { initialTab?: Tab; standalone?: boolean };
+
+async function readJsonResponse<T = any>(response: Response): Promise<T | null> {
+  const raw = await response.text();
+  if (!raw.trim()) return null;
+  try { return JSON.parse(raw) as T; } catch { return null; }
+}
+
+export default function FediversePage({ initialTab = 'feed', standalone = false }: FediversePageProps) {
   useSEO({
     title: 'Fediverse — Connect Across the Open Web | Testagram',
     description: 'Follow and interact with accounts from Mastodon, Pixelfed, and other ActivityPub platforms directly from Testagram. Join the open federated social web.',
@@ -54,13 +64,22 @@ export default function FediversePage() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState<Tab>('feed');
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [searchHandle, setSearchHandle] = useState('');
   const [searchResult, setSearchResult] = useState<any | null>(null);
   const [searching, setSearching] = useState(false);
+  const [activeRemoteProfile, setActiveRemoteProfile] = useState<any | null>(null);
   const [following, setFollowing] = useState(false);
   const [remotePosts, setRemotePosts] = useState<any[]>([]);
+  // Feed is cache-first + stale-while-revalidate. A cached page is always
+  // rendered immediately; network refreshes never take the feed offline or
+  // show a blocking spinner over existing content.
   const [loadingFeed, setLoadingFeed] = useState(false);
+  const [loadingMoreFeed, setLoadingMoreFeed] = useState(false);
+  const [feedCursor, setFeedCursor] = useState<string | null>(null);
+  const [hasMoreFeed, setHasMoreFeed] = useState(true);
+  const feedSentinelRef = useRef<HTMLDivElement | null>(null);
+  const feedRefreshInFlightRef = useRef(false);
   const [cachedAt, setCachedAt] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
   const [federatedFollowing, setFederatedFollowing] = useState<any[]>([]);
@@ -75,8 +94,11 @@ export default function FediversePage() {
   const [keywordSearched, setKeywordSearched] = useState(false);
   const [fedTrendingTags, setFedTrendingTags] = useState<any[]>([]);
   const [loadingFedTags, setLoadingFedTags] = useState(false);
+  const [testagramSuggestions, setTestagramSuggestions] = useState<any[]>([]);
+  const [loadingTestagramSuggestions, setLoadingTestagramSuggestions] = useState(false);
+  const [followingActorUrls, setFollowingActorUrls] = useState<string[]>([]);
 
-  // ── Mastodon tab state ───────────────────────────────────────────────────
+  // Inbound federation is scheduled server-side; this page only reads the local cache.\n  // ── Mastodon tab state ───────────────────────────────────────────────────
   const [mastodonInstance, setMastodonInstance] = useState('mastodon.social');
   const [mastodonPosts, setMastodonPosts] = useState<any[]>([]);
   const [loadingMastodon, setLoadingMastodon] = useState(false);
@@ -122,15 +144,92 @@ export default function FediversePage() {
 
   // (AdSense push handled internally by PageAdBanner / FediverseAdBanner component)
 
-  // Init on mount
+  // Init on mount. Hydrate from the local database cache first, then refresh
+  // remotely in the background so returning users never wait on Mastodon.
   useEffect(() => {
     checkGateway();
-    fetchFederatedFeed();
+    void hydrateFederatedFeed();
     fetchFedTrendingTags();
     if (user) {
       fetchFederationStats();
       fetchMyActor();
     }
+    fetchTestagramSuggestions();
+  }, [user]);
+
+  // Federation state is pushed over Supabase Realtime. Polling remains only as
+  // a slow reconciliation fallback; UI status changes no longer wait 3 seconds.
+  useEffect(() => {
+    if (!user) return;
+    const inboxChannel = supabase.channel(`fediverse-inbox-${user.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'activitypub_inbox',
+        filter: `local_user_id=eq.${user.id}`,
+      }, (payload: any) => {
+        setInboxItems(prev => {
+          if (payload.eventType === 'DELETE') return prev.filter(x => x.id !== payload.old?.id);
+          const next = payload.new;
+          if (!next?.id) return prev;
+          const without = prev.filter(x => x.id !== next.id);
+          return [next, ...without].slice(0, 50);
+        });
+      })
+      .subscribe();
+
+    const outboxChannel = supabase.channel(`fediverse-outbox-${user.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'activitypub_outbox',
+        filter: `local_user_id=eq.${user.id}`,
+      }, (payload: any) => {
+        setOutboxLog(prev => {
+          if (payload.eventType === 'DELETE') return prev.filter(x => x.id !== payload.old?.id);
+          const next = payload.new;
+          if (!next?.id) return prev;
+          const without = prev.filter(x => x.id !== next.id);
+          return [next, ...without].sort((a,b) =>
+            new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+          ).slice(0, 30);
+        });
+      })
+      .subscribe();
+
+    const objectsChannel = supabase.channel(`fediverse-objects-${user.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'federated_objects',
+      }, () => {
+        // Realtime is a wake-up signal only. Never mutate the rendered list here:
+        // doing so can insert/reorder DOM nodes while the user is scrolling.
+        void refreshFederatedFeed();
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'federated_objects',
+      }, () => {
+        // Reconcile silently; the feed merger owns ordering and deduplication.
+        void refreshFederatedFeed();
+      })
+      .subscribe();
+
+    // Background refresh is a slow reconciliation fallback for missed Realtime events.
+    // Realtime federation events still surface new content immediately.
+    const reconcile = window.setInterval(() => {
+      void refreshFederatedFeed();
+      if (tab === 'inbox') void fetchInbox();
+      if (tab === 'relay') void fetchOutboxLog();
+    }, 2 * 60 * 1000);
+    return () => {
+      window.clearInterval(reconcile);
+      void supabase.removeChannel(inboxChannel);
+      void supabase.removeChannel(outboxChannel);
+      void supabase.removeChannel(objectsChannel);
+    };
   }, [user]);
 
   // Load Mastodon timeline when switching to mastodon tab
@@ -149,13 +248,13 @@ export default function FediversePage() {
         body: JSON.stringify({ action: 'public_timeline', instance, limit: 20 }),
       });
       if (res.ok) {
-        const d = await res.json();
+        const d = await readJsonResponse(res);
         const posts = Array.isArray(d) ? d : d?.statuses ?? d?.data ?? [];
         if (posts.length > 0) { setMastodonPosts(posts); setLoadingMastodon(false); return; }
       }
-      const directRes = await fetch(`https://${instance}/api/v1/timelines/public?limit=20&local=true`);
+      const directRes = await fetch(`https://${instance}/api/v1/timelines/public?limit=20`);
       if (!directRes.ok) throw new Error('Direct fetch failed');
-      const data = await directRes.json();
+      const data = await readJsonResponse(directRes);
       setMastodonPosts(Array.isArray(data) ? data : []);
     } catch {
       setMastodonPosts([]);
@@ -168,7 +267,7 @@ export default function FediversePage() {
     try {
       const res = await fetch('https://api.joinmastodon.org/servers?language=&category=&region=&ownership=&registrations=');
       if (!res.ok) throw new Error('API unavailable');
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       const sorted = (Array.isArray(data) ? data : [])
         .filter((s: any) => s.total_users > 200 && s.last_week_users > 50)
         .sort((a: any, b: any) => b.last_week_users - a.last_week_users)
@@ -207,24 +306,27 @@ export default function FediversePage() {
     if (!q.trim()) { setMastodonSearchResults([]); return; }
     setSearchingMastodon(true);
     try {
-      const res = await fetch(`https://${mastodonInstance}/api/v2/search?q=${encodeURIComponent(q)}&type=statuses&limit=20`);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gateway-relay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ action: 'search', instance: mastodonInstance, q, type: 'statuses', limit: 20 }),
+      });
       if (!res.ok) throw new Error();
-      const data = await res.json();
-      setMastodonSearchResults(data.statuses ?? []);
+      const data = await readJsonResponse(res);
+      setMastodonSearchResults(data?.statuses ?? []);
     } catch { setMastodonSearchResults([]); }
     setSearchingMastodon(false);
   };
 
   useEffect(() => {
-    if (tab === 'inbox') {
-      fetchInbox();
-      inboxPollRef.current = setInterval(fetchInbox, 3000);
-    } else {
-      if (inboxPollRef.current) { clearInterval(inboxPollRef.current); inboxPollRef.current = null; }
-    }
+    if (tab === 'inbox') fetchInbox();
     if (tab === 'relay') { fetchRelayConfig(); fetchOutboxLog(); }
     if (tab === 'analytics') fetchAnalytics();
-    return () => { if (inboxPollRef.current) clearInterval(inboxPollRef.current); };
+    return () => {
+      if (inboxPollRef.current) { clearInterval(inboxPollRef.current); inboxPollRef.current = null; }
+    };
   }, [tab, user]);
 
   const checkGateway = async () => {
@@ -242,64 +344,201 @@ export default function FediversePage() {
     setMyActor(actor);
     const { data: keys } = await supabase.from('activitypub_keys').select('id').eq('user_id', user.id).maybeSingle();
     setKeysReady(!!keys);
+    if (!keys) void generateKeys();
   };
 
   const cacheFederatedPosts = async (posts: any[]) => {
     const rows = posts.filter((p: any) => p.uri ?? p.url ?? p.id).map((p: any) => ({
-      object_url: p.uri ?? p.url ?? p.id ?? '',
-      actor_url: p.actor?.id ?? p.actor?.url ?? p.account?.url ?? p.actor_url ?? '',
+      uri: p.uri ?? p.url ?? p.id ?? '',
+      object_type: p.object_type ?? 'Note',
+      actor_uri: (() => {
+        const account = p.account ?? p.remote_account ?? {};
+        return account.uri ?? account.actor_uri ?? account.pleroma?.ap_id ?? account.url
+          ?? p.actor?.id ?? p.actor_url ?? p.actor_uri ?? '';
+      })(),
+      url: p.url ?? p.uri ?? p.id ?? '',
       content: p.content ?? p.text ?? '',
       summary: p.spoiler_text ?? p.summary ?? null,
-      media_urls: p.media_attachments ?? p.media_urls ?? [],
-      likes_count: p.favourites_count ?? p.likes_count ?? 0,
-      replies_count: p.replies_count ?? 0,
-      boosts_count: p.reblogs_count ?? p.boosts_count ?? 0,
+      attachments: p.media_attachments ?? p.attachments ?? [],
+      tags: p.tags ?? [],
+      like_count: p.favourites_count ?? p.likes_count ?? 0,
+      reply_count: p.replies_count ?? 0,
+      announce_count: p.reblogs_count ?? p.boosts_count ?? 0,
       published_at: p.created_at ?? p.published ?? new Date().toISOString(),
       raw_object: p,
-    })).filter((r: any) => r.object_url);
+    })).filter((r: any) => r.uri);
     if (!rows.length) return;
-    await supabase.from('remote_posts').upsert(rows, { onConflict: 'object_url', ignoreDuplicates: false })
+    await supabase.from('federated_objects').upsert(rows, { onConflict: 'uri', ignoreDuplicates: false })
       .then(() => setCachedAt(new Date())).catch(() => {});
   };
+  const mergeFederatedFeedItems = useCallback((current: any[], incoming: any[]) => {
+    const incomingByKey = new Map<string, any>();
+    for (const item of incoming) {
+      const key = String(item?.uri ?? item?.object_url ?? item?.id ?? '');
+      if (key) incomingByKey.set(key, item);
+    }
 
-  const fetchFederatedFeed = async () => {
-    const { data: cached } = await supabase
-      .from('remote_posts')
-      .select('*, remote_accounts(username, domain, display_name, avatar_url)')
+    const existingKeys = new Set<string>();
+    const existing = current
+      .filter(item => !item?.deleted_at && !item?.tombstone)
+      .map(item => {
+        const key = String(item?.uri ?? item?.object_url ?? item?.id ?? '');
+        if (!key) return item;
+        existingKeys.add(key);
+        return incomingByKey.has(key) ? { ...item, ...incomingByKey.get(key) } : item;
+      });
+
+    const unseen = [...incomingByKey.entries()]
+      .filter(([key]) => !existingKeys.has(key))
+      .map(([, item]) => item)
+      .filter(item => !item?.deleted_at && !item?.tombstone)
+      .sort((a, b) => new Date(b?.published_at ?? b?.created_at ?? 0).getTime() - new Date(a?.published_at ?? a?.created_at ?? 0).getTime());
+
+    // Existing rows retain their DOM position. New refresh items are the only
+    // rows allowed to enter at the top, preventing scroll jumps during refresh.
+    return [...unseen, ...existing];
+  }, []);
+
+  const appendFederatedFeedItems = useCallback((current: any[], incoming: any[]) => {
+    const seen = new Set(current.map(item => String(item?.uri ?? item?.object_url ?? item?.id ?? '')));
+    const appended = incoming
+      .filter(item => !item?.deleted_at && !item?.tombstone)
+      .filter(item => {
+        const key = String(item?.uri ?? item?.object_url ?? item?.id ?? '');
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    return [...current, ...appended];
+  }, []);
+
+  const hydrateFederatedFeed = useCallback(async () => {
+    // The database-backed federated_objects table is our durable local cache.
+    // Never put the initial empty state behind a loading spinner.
+    const { data: cached, error } = await supabase
+      .from('federated_objects')
+      .select('id,uri,object_type,actor_uri,url,content,summary,published_at,updated_at,sensitive,in_reply_to_uri,quote_uri,language_code,attachments,tags,like_count,announce_count,reply_count,quote_count,view_count,content_warning,raw_object')
+      .is('deleted_at', null)
+      .eq('tombstone', false)
       .order('published_at', { ascending: false })
-      .limit(30);
-    if (cached && cached.length > 0) {
+      .order('id', { ascending: false })
+      .limit(20);
+
+    if (!error && cached && cached.length > 0) {
       setRemotePosts(cached);
       setCachedAt(new Date());
       setLoadingFeed(false);
-      setIsStale(true);
-    } else {
-      setLoadingFeed(true);
     }
+
+    // Revalidate silently after the cached copy has been painted.
+    void refreshFederatedFeed();
+  }, []);
+
+  const refreshFederatedFeed = useCallback(async () => {
+    // One reconciliation at a time. Realtime can emit bursts when several
+    // federated rows arrive together; overlapping refreshes cause competing
+    // React commits and visible scroll jitter on Android WebView.
+    if (feedRefreshInFlightRef.current) return;
+    feedRefreshInFlightRef.current = true;
+
+    // This is intentionally not tied to loadingFeed. Existing cached content
+    // must remain visible while the remote source is refreshed.
+    setIsStale(true);
+
     try {
-      const res: any = await federation.getFederatedTimeline({ limit: 30 });
-      const fresh = Array.isArray(res) ? res : res?.posts ?? res?.data ?? [];
+      const page = await federation.getFederatedTimelinePage({ limit: 20 });
+      const fresh = Array.isArray(page?.items) ? page.items : [];
+      const nextCursor = page?.pagination?.nextCursor ?? null;
+
+      setFeedCursor(nextCursor);
+      setHasMoreFeed(page?.pagination?.hasMore !== false && Boolean(nextCursor));
+
       if (fresh.length > 0) {
-        setRemotePosts(fresh);
-        cacheFederatedPosts(fresh).catch(() => {});
+        setRemotePosts(prev => mergeFederatedFeedItems(prev, fresh));
+        // Upsert is the cache replacement step: changed remote objects replace
+        // their previous cached representation by canonical URI.
+        void cacheFederatedPosts(fresh);
         setCachedAt(new Date());
       }
     } catch {
-      console.log('[FediversePage] Gateway unreachable, serving from cache');
+      // Cache remains the source of truth for the current render. A remote
+      // failure must never clear already-visible federated posts.
     } finally {
+      feedRefreshInFlightRef.current = false;
       setLoadingFeed(false);
       setIsStale(false);
     }
-  };
+  }, [mergeFederatedFeedItems]);
+
+  const loadMoreFederatedFeed = useCallback(async () => {
+    if (loadingMoreFeed || !hasMoreFeed || !feedCursor) return;
+
+    setLoadingMoreFeed(true);
+    try {
+      const page = await federation.getFederatedTimelinePage({
+        limit: 20,
+        before: feedCursor,
+      });
+      const items = Array.isArray(page?.items) ? page.items : [];
+      const nextCursor = page?.pagination?.nextCursor ?? null;
+
+      if (items.length > 0) {
+        setRemotePosts(prev => appendFederatedFeedItems(prev, items));
+        void cacheFederatedPosts(items);
+        setCachedAt(new Date());
+      }
+
+      setFeedCursor(nextCursor);
+      setHasMoreFeed(page?.pagination?.hasMore !== false && Boolean(nextCursor));
+    } catch {
+      // Keep already-rendered pages and allow a later intersection to retry.
+    } finally {
+      setLoadingMoreFeed(false);
+    }
+  }, [feedCursor, hasMoreFeed, loadingMoreFeed, appendFederatedFeedItems]);
+
+  // Prefetch the next page before the reader reaches the bottom. The
+  // IntersectionObserver is silent: only the small "loading more" affordance
+  // at the feed boundary changes, never the whole feed.
+  useEffect(() => {
+    if (tab !== 'feed') return;
+    const sentinel = feedSentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) void loadMoreFederatedFeed();
+      },
+      { rootMargin: '500px 0px 500px 0px' }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [tab, loadMoreFederatedFeed]);
 
   const fetchFederationStats = async () => {
     if (!user) return;
-    const [fwingRes, fwersRes] = await Promise.all([
-      supabase.from('federated_following').select('*').eq('local_user_id', user.id),
-      supabase.from('federated_followers').select('*').eq('local_user_id', user.id),
+    const [followingRes, followerRes] = await Promise.all([
+      supabase.from('federated_follow_relationships').select('*').eq('local_user_id', user.id).eq('direction','following'),
+      supabase.from('federated_follow_relationships').select('*').eq('local_user_id', user.id).eq('direction','follower'),
     ]);
-    setFederatedFollowing(fwingRes.data ?? []);
-    setFederatedFollowers(fwersRes.data ?? []);
+    // federation-transport writes follows to federated_follow_relationships.
+    // Normalize it to the UI shape used by this page and keep a legacy fallback
+    // for older relationships created before the canonical table was introduced.
+    let followingRows: any[] = [];
+    if (!followingRes.error) {
+      followingRows = (followingRes.data ?? [])
+        .filter((r: any) => r.state === 'active' || (r.state === 'accepted' && r.delivery_state === 'delivered'))
+        .map((r: any) => ({
+          ...r,
+          relationship: 'following',
+          remote_actor_url: r.remote_actor_uri,
+          remote_actor_uri: r.remote_actor_uri,
+        }));
+    }
+    setFederatedFollowing(followingRows);
+    setFollowingActorUrls(followingRows.map((r: any) => r.remote_actor_url ?? r.remote_actor_uri).filter(Boolean));
+    setFederatedFollowers(followerRes.data ?? []);
   };
 
   // ── Inbox ────────────────────────────────────────────────────────────────
@@ -409,7 +648,7 @@ export default function FediversePage() {
       });
       setActivityTypePie(Object.entries(typeCounts).map(([name, value]) => ({ name, value })));
 
-      const { data: accounts } = await supabase.from('remote_accounts').select('domain');
+      const { data: accounts } = await supabase.from('federated_actors').select('domain');
       const domainCounts: Record<string, number> = {};
       (accounts ?? []).forEach((r: any) => {
         domainCounts[r.domain] = (domainCounts[r.domain] ?? 0) + 1;
@@ -429,8 +668,8 @@ export default function FediversePage() {
     if (!q.trim()) { setMultiResults({ posts: [], actors: [] }); return; }
     setSearchingMulti(true);
     const [postsRes, actorsRes] = await Promise.all([
-      supabase.from('remote_posts').select('*').ilike('content', `%${q}%`).order('published_at', { ascending: false }).limit(10),
-      supabase.from('remote_accounts').select('*').or(`username.ilike.%${q}%,display_name.ilike.%${q}%,domain.ilike.%${q}%`).limit(8),
+      supabase.from('federated_objects').select('*').ilike('content', `%${q}%`).order('published_at', { ascending: false }).limit(10),
+      supabase.from('federated_actors').select('*').or(`username.ilike.%${q}%,display_name.ilike.%${q}%,domain.ilike.%${q}%`).limit(8),
     ]);
     setMultiResults({ posts: postsRes.data ?? [], actors: actorsRes.data ?? [] });
     setSearchingMulti(false);
@@ -448,73 +687,58 @@ export default function FediversePage() {
     if (!handle.includes('@')) { toast.error('Use full format: user@mastodon.social'); return; }
     setSearching(true); setSearchResult(null);
     try {
-      const actor = await federation.getUser(handle);
-      if (actor) {
-        setSearchResult({
-          actor_url: actor.id, username: actor.preferredUsername ?? handle.split('@')[0],
-          domain: handle.split('@')[1] ?? '', display_name: actor.name ?? actor.preferredUsername,
-          bio: actor.summary, avatar_url: actor.icon?.url ?? null,
-          followers_url: actor.followers, inbox_url: actor.inbox,
-        });
-      } else { toast.error(`Could not find @${handle}`); }
+      const accounts = await federation.search(handle, 'users');
+      const actor = accounts?.[0];
+      if (!actor) throw new Error('Actor not found');
+      setSearchResult({
+        actor_url: actor.actor_uri ?? actor.url, username: actor.username ?? handle.split('@')[0],
+        domain: actor.domain ?? handle.split('@')[1] ?? '', display_name: actor.display_name ?? actor.username,
+        bio: actor.bio ?? actor.note, avatar_url: actor.avatar_url ?? actor.avatar, followers_url: actor.followers_url,
+        inbox_url: actor.inbox_url,
+      });
     } catch (err: any) { toast.error(`Lookup failed: ${err.message ?? 'unknown error'}`); }
     setSearching(false);
   };
 
   const handleUnfollowFederated = async (remoteActorUrl: string) => {
     if (!user) { navigate('/auth'); return; }
-    await supabase.from('federated_following').delete().eq('local_user_id', user.id).eq('remote_actor_url', remoteActorUrl);
-    toast.success('Unfollowed');
-    fetchFederationStats();
+    const previous = federatedFollowing;
+    const previousUrls = followingActorUrls;
+    setFollowingActorUrls(prev => prev.filter(url => url !== remoteActorUrl));
+    setFederatedFollowing(prev => prev.filter((row: any) => row.remote_actor_url !== remoteActorUrl));
+    setFollowing(false);
+    setSearchResult((prev: any) => prev ? { ...prev, following: false } : prev);
+    setActiveRemoteProfile((prev: any) => prev ? { ...prev, following: false } : prev);
+    try {
+      await federation.unfollow(remoteActorUrl);
+      toast.success('Unfollowed');
+    } catch (err: any) {
+      setFederatedFollowing(previous); setFollowingActorUrls(previousUrls); setFollowing(true);
+      toast.error(`Unfollow failed: ${err.message ?? ''}`);
+    }
   };
 
   const handleFedLike = async (post: any) => {
     if (!user) { navigate('/auth'); return; }
-    const key = post.object_url ?? post.id;
-    if (!key) return;
+    const key = post.object_url ?? post.id; if (!key) return;
     setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !prev[key]?.liked } }));
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/activitypub-federation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'like', object_url: key, user_id: user.id }),
-      });
-    } catch {}
+    try { await federation.favorite(key); } catch { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], liked: !prev[key]?.liked } })); }
   };
 
   const handleFedBoost = async (post: any) => {
     if (!user) { navigate('/auth'); return; }
-    const key = post.object_url ?? post.id;
-    if (!key) return;
+    const key = post.object_url ?? post.id; if (!key) return;
     setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !prev[key]?.boosted } }));
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/activitypub-federation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'boost', object_url: key, user_id: user.id }),
-      });
-    } catch {}
+    try { await federation.boost(key); } catch { setPostStates(prev => ({ ...prev, [key]: { ...prev[key], boosted: !prev[key]?.boosted } })); }
   };
 
   const handleFedReply = async (post: any) => {
     if (!user) { navigate('/auth'); return; }
-    const key = post.object_url ?? post.id;
-    if (!key) return;
-    const text = postStates[key]?.replyText?.trim();
-    if (!text) return;
+    const key = post.object_url ?? post.id; if (!key) return;
+    const text = postStates[key]?.replyText?.trim(); if (!text) return;
     setPostStates(prev => ({ ...prev, [key]: { ...prev[key], sending: true } }));
     try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/activitypub-federation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'reply', object_url: key, content: text, user_id: user.id }),
-      });
+      await federation.reply({ postId: key, content: text });
       toast.success('Reply sent to the Fediverse!');
       setPostStates(prev => ({ ...prev, [key]: { ...prev[key], replyText: '', replyOpen: false, sending: false } }));
     } catch (err: any) {
@@ -525,14 +749,93 @@ export default function FediversePage() {
 
   const handleFollow = async (account: any) => {
     if (!user) { navigate('/auth'); return; }
-    setFollowing(true);
+    const target = account.actor_uri ?? account.actor_url ?? account.uri ?? account.acct;
+    const alreadyFollowing = followingActorUrls.includes(target);
+    if (alreadyFollowing) { await handleUnfollowFederated(target); return; }
     try {
-      const target = account.actor_url ?? `${account.username}@${account.domain}`;
-      await federation.follow(target);
-      toast.success('Follow request sent!');
-      fetchFederationStats();
-    } catch (err: any) { toast.error(`Follow failed: ${err.message ?? ''}`); }
-    setFollowing(false);
+      const result = await federation.follow(target);
+      const confirmed = result?.state === 'active' || result?.deliveryState === 'delivered' || result?.ok === true;
+      if (!confirmed) throw new Error('Follow was not confirmed by the federation transport');
+      const row = {
+        id: result?.id ?? `remote-${target}`,
+        local_user_id: user.id,
+        relationship: 'following',
+        remote_actor_url: target,
+        remote_actor_uri: target,
+        remote_username: account.username,
+        remote_domain: account.domain,
+        state: result?.state ?? 'active',
+        delivery_state: result?.deliveryState ?? 'delivered',
+      };
+      setFederatedFollowing(prev => [row, ...prev.filter((item: any) => item.remote_actor_url !== target && item.remote_actor_uri !== target)]);
+      setFollowingActorUrls(prev => prev.includes(target) ? prev : [...prev, target]);
+      setSearchResult((prev: any) => prev ? { ...prev, following: true } : prev);
+      setActiveRemoteProfile((prev: any) => prev ? { ...prev, following: true } : prev);
+      toast.success('Following');
+    } catch (err: any) {
+      setFollowing(false);
+      setSearchResult((prev: any) => prev ? { ...prev, following: false } : prev);
+      setActiveRemoteProfile((prev: any) => prev ? { ...prev, following: false } : prev);
+      toast.error(`Follow failed: ${err.message ?? 'remote delivery failed'}`);
+    }
+  };
+
+  const fetchTestagramSuggestions = async () => {
+    setLoadingTestagramSuggestions(true);
+    try {
+      // Generate recommendations first, then read them. The previous fire-and-forget
+      // call could race the SELECT and leave this rail empty on a fresh account.
+      if (user) {
+        await supabase.rpc('generate_content_recommendations', { p_user_id: user.id }).catch(() => null);
+        const { data: recs } = await supabase
+          .from('content_recommendations')
+          .select('recommended_post_id, score, reason')
+          .eq('user_id', user.id)
+          .order('score', { ascending: false })
+          .limit(8);
+
+        if (recs?.length) {
+          const ids = recs.map((r: any) => r.recommended_post_id);
+          const { data: posts } = await supabase
+            .from('posts')
+            .select('*, user_profiles:profiles!posts_user_id_fkey(id,username,display_name,avatar_url,bio,verified_tier,follower_count,following_count,protected_account,cover_url,website,location,social_links,created_at)')
+            .in('id', ids)
+            .is('community_id', null);
+
+          if (posts?.length) {
+            const byId = new Map(posts.map((p: any) => [p.id, p]));
+            const ranked = recs
+              .map((r: any) => {
+                const post = byId.get(r.recommended_post_id);
+                return post && typeof post === 'object' ? { ...post, _reason: r.reason } : null;
+              })
+              .filter((p: any) => p?.id);
+            if (ranked.length) {
+              setTestagramSuggestions(ranked);
+              return;
+            }
+          }
+        }
+      }
+
+      // Always provide a native Testagram fallback so the Fediverse page is useful
+      // even before a user has enough interaction history for personalized ranking.
+      const { data: popular, error: popularError } = await supabase
+        .from('posts')
+        .select('*, user_profiles:profiles!posts_user_id_fkey(id,username,display_name,avatar_url,bio,verified_tier,follower_count,following_count,protected_account,cover_url,website,location,social_links,created_at)')
+        .is('community_id', null)
+        .order('likes_count', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(8);
+
+      if (popularError) throw popularError;
+      setTestagramSuggestions(popular ?? []);
+    } catch (err) {
+      console.warn('[fediverse] Testagram suggestions unavailable', err);
+      setTestagramSuggestions([]);
+    } finally {
+      setLoadingTestagramSuggestions(false);
+    }
   };
 
   const fetchFedTrendingTags = async () => {
@@ -546,7 +849,7 @@ export default function FediversePage() {
         body: JSON.stringify({ action: 'trending_tags', limit: 15 }),
       });
       if (!res.ok) throw new Error('Gateway unavailable');
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       const tags = Array.isArray(data) ? data.map((t: any) => ({ tag: t.name ?? t.tag ?? t, count: t.history?.[0]?.uses ?? 0 })) : [];
       if (tags.length > 0) { setFedTrendingTags(tags); setLoadingFedTags(false); return; }
       throw new Error('empty');
@@ -568,12 +871,12 @@ export default function FediversePage() {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ action: 'search', query: q, type: 'statuses', limit: 20 }),
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       const posts = Array.isArray(data) ? data : data?.statuses ?? data?.posts ?? data?.data ?? [];
-      if (posts.length === 0 && !res.ok) throw new Error(data?.error ?? 'No results');
+      if (posts.length === 0 && !res.ok) throw new Error(data?.error ?? `No results (HTTP ${res.status})`);
       setKeywordResults(posts);
     } catch {
-      const { data: cached } = await supabase.from('remote_posts').select('*').ilike('content', `%${q}%`).order('published_at', { ascending: false }).limit(20);
+      const { data: cached } = await supabase.from('federated_objects').select('*').ilike('content', `%${q}%`).order('published_at', { ascending: false }).limit(20);
       setKeywordResults(cached ?? []);
       if ((cached ?? []).length === 0) toast.error(`No results for "${q}"`);
     } finally { setSearchingKeyword(false); }
@@ -589,11 +892,15 @@ export default function FediversePage() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ user_id: user.id }),
       });
-      const data = await res.json();
-      if (data.status === 'created' || data.status === 'exists') { setKeysReady(true); toast.success('RSA keys ready!'); fetchMyActor(); }
-      else toast.error(data.error ?? 'Keygen failed');
+      const data = await readJsonResponse<{ status?: string; error?: string }>(res);
+      if (!res.ok) { toast.error(data?.error ?? `Keygen service unavailable (HTTP ${res.status})`); return; }
+      if (data?.status === 'created' || data?.status === 'exists') { setKeysReady(true); toast.success('RSA keys ready!'); fetchMyActor(); }
+      else toast.error(data?.error ?? `Keygen service returned an empty or invalid response (HTTP ${res.status})`);
     } catch (err: any) { toast.error('Keygen error: ' + err.message); }
   };
+
+  const appMetadata = (user as any)?.app_metadata ?? {};
+  const canBackfillKeys = appMetadata.role === 'admin' || appMetadata.role === 'super_admin' || appMetadata.role === 'owner';
 
   const backfillAllKeys = async () => {
     try {
@@ -604,37 +911,118 @@ export default function FediversePage() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ generate_all_missing: true }),
       });
-      const data = await res.json();
-      if (data.status === 'backfill_complete') toast.success(`Backfill done: ${data.generated} generated, ${data.failed} failed`);
-      else toast.error(data.error ?? 'Backfill failed');
+      const data = await readJsonResponse<{ status?: string; generated?: number; failed?: number; error?: string }>(res);
+      if (!res.ok) { toast.error(data?.error ?? `Key backfill service unavailable (HTTP ${res.status})`); return; }
+      if (data?.status === 'backfill_complete') toast.success(`Backfill done: ${data.generated} generated, ${data.failed} failed`);
+      else toast.error(data?.error ?? `Key backfill returned an empty or invalid response (HTTP ${res.status})`);
     } catch (err: any) { toast.error('Backfill error: ' + err.message); }
   };
 
   // ─── Render helpers ────────────────────────────────────────────────────────
+  function RemotePostMedia({ attachments, compact = false }: { attachments: any[]; compact?: boolean }) {
+    const media = Array.isArray(attachments) ? attachments.filter((a: any) => a && (a.preview_url || a.url || a.remote_url)) : [];
+    if (!media.length) return null;
+
+    const proxy = (value: unknown) => {
+      const raw = String(value || '').trim();
+      if (!/^https:\/\//i.test(raw)) return '';
+      return `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/federated-media-proxy?url=${encodeURIComponent(raw)}&source=${encodeURIComponent(raw)}`;
+    };
+
+    return (
+      <div className={`mt-3 grid gap-1.5 ${media.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+        {media.slice(0, 4).map((attachment: any, index: number) => {
+          const previewRaw = attachment.preview_url || attachment.preview_remote_url || attachment.url || attachment.remote_url;
+          const originalRaw = attachment.remote_url || attachment.url || previewRaw;
+          const preview = proxy(previewRaw);
+          const original = proxy(originalRaw);
+          const type = String(attachment.type || '').toLowerCase();
+          const isVideo = type === 'video' || type === 'gifv' || /\.(?:mp4|webm|mov)(?:[?#]|$)/i.test(originalRaw);
+          const isAudio = type === 'audio' || /\.(?:mp3|ogg|wav|m4a|opus)(?:[?#]|$)/i.test(originalRaw);
+
+          if (isVideo) return <video key={attachment.id ?? index} src={original} poster={preview || undefined} controls playsInline preload="metadata" className="w-full max-h-[420px] rounded-xl bg-black object-contain" />;
+          if (isAudio) return <audio key={attachment.id ?? index} src={original} controls preload="none" className="w-full" />;
+
+          return (
+            <a key={attachment.id ?? index} href={original || previewRaw} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl bg-muted">
+              <img src={preview} alt={attachment.description || ''} loading="lazy" decoding="async" fetchPriority="low"
+                className={`w-full ${media.length === 1 ? 'max-h-[520px]' : 'aspect-square'} object-cover`}
+                onError={(event) => {
+                  const img = event.currentTarget;
+                  const fallback = proxy(attachment.remote_url || attachment.url);
+                  if (fallback && img.src !== fallback) img.src = fallback;
+                  else img.style.display = 'none';
+                }} />
+            </a>
+          );
+        })}
+      </div>
+    );
+  }
+
   function RemotePostRow({ p, compact = false }: { p: any; compact?: boolean }) {
-    const actor = p.remote_accounts ?? p.actor ?? p.account ?? {};
-    const username = actor.preferredUsername ?? actor.username ?? actor.acct?.split('@')[0] ?? 'unknown';
-    const domain = actor.domain ?? (() => { try { return new URL(p.actor_url ?? '').hostname; } catch { return ''; } })();
-    const avatarUrl = actor.avatar_url ?? actor.icon?.url ?? actor.avatar;
+    const rawActor = p.raw_object?.attributedTo;
+    const rawActorUri = typeof rawActor === 'string' ? rawActor : rawActor?.id ?? rawActor?.url ?? '';
+    const rawAccount = p.raw_object?.account ?? {};
+    const actor = p.remote_account ?? p.remote_accounts ?? p.actor ?? p.account ?? rawAccount ?? {};
+    const actorUri = actor.actor_uri ?? actor.uri ?? actor.id ?? actor.pleroma?.ap_id ?? actor.url
+      ?? rawAccount.uri ?? rawAccount.pleroma?.ap_id ?? rawAccount.url
+      ?? p.actor_uri ?? p.actor_url ?? rawActorUri ?? '';
+    const identitySource = actorUri || p.uri || p.url || '';
+    const fallbackIdentity = (() => {
+      try {
+        const parsed = new URL(identitySource);
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        const markerIndex = parts.findIndex((part) => ['statuses', 'objects', 'notes'].includes(part));
+        const handle = markerIndex > 0 ? parts[markerIndex - 1] : (parts.at(-1) || '');
+        return { username: ['ap', 'users', 'actors', 'person'].includes(handle) ? '' : handle, domain: parsed.hostname };
+      } catch { return { username: '', domain: '' }; }
+    })();
+    const username = actor.preferredUsername ?? actor.username ?? actor.acct?.split('@')[0]
+      ?? rawAccount.preferredUsername ?? rawAccount.username ?? rawAccount.acct?.split('@')[0]
+      ?? fallbackIdentity.username ?? 'unknown';
+    const domain = actor.domain ?? fallbackIdentity.domain ?? (() => {
+      try { return new URL(actorUri).hostname; } catch { return ''; }
+    })();
+    const avatarUrl = actor.avatar_url ?? actor.icon?.url ?? actor.avatar
+      ?? rawAccount.avatar_static ?? rawAccount.avatar;
+    const displayName = actor.display_name ?? actor.name
+      ?? rawAccount.display_name ?? rawAccount.name ?? username;
     const content = p.content ?? p.text ?? '';
     const created = p.published_at ?? p.created_at ?? p.published ?? '';
-    const key = p.object_url ?? p.uri ?? p.url ?? p.id ?? Math.random().toString();
+    const key = p.object_url ?? p.uri ?? p.url ?? p.id ?? '';
     const ps = postStates[key] ?? {};
 
     return (
       <div className={`${compact ? 'p-3' : 'p-4'} hover:bg-muted/5 transition-colors`}>
         <div className="flex gap-3">
-          <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden shrink-0`}>
-            {avatarUrl ? <img src={avatarUrl} alt={username} className="w-full h-full object-cover" /> :
-              <div className="w-full h-full flex items-center justify-center font-bold text-xs">{username[0]?.toUpperCase()}</div>}
-          </div>
+          <button
+            type="button"
+            onClick={() => navigate(`/fediverse/profile?actor=${encodeURIComponent(actor.url ?? actor.actor_uri ?? p.actor_uri ?? p.actor_url ?? rawActorUri ?? '')}&handle=${encodeURIComponent('@' + username + (domain ? '@' + domain : ''))}`)}
+            className="shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-primary/30"
+            aria-label={`Open @${username}`}
+          >
+            <div className={`${compact ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-muted overflow-hidden`}>
+              {avatarUrl ? <img src={avatarUrl} alt={username} className="w-full h-full object-cover" /> :
+                <div className="w-full h-full flex items-center justify-center font-bold text-xs">{username[0]?.toUpperCase()}</div>}
+            </div>
+          </button>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-              <span className={`font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>{actor.display_name ?? username}</span>
-              <span className="text-xs text-purple-500 flex items-center gap-0.5"><Globe className="w-3 h-3" />{domain}</span>
+              <button
+                type="button"
+                onClick={() => navigate(`/fediverse/profile?actor=${encodeURIComponent(actor.url ?? actor.actor_uri ?? p.actor_url ?? '')}&handle=${encodeURIComponent('@' + username + (domain ? '@' + domain : ''))}`)}
+                className={`font-semibold text-left hover:underline ${compact ? 'text-xs' : 'text-sm'}`}
+              >{displayName}</button>
+              <button
+                type="button"
+                onClick={() => navigate(`/fediverse/profile?actor=${encodeURIComponent(actor.url ?? actor.actor_uri ?? p.actor_url ?? '')}&handle=${encodeURIComponent('@' + username + (domain ? '@' + domain : ''))}`)}
+                className="text-xs text-purple-500 flex items-center gap-0.5 hover:underline"
+              ><Globe className="w-3 h-3" />{domain}</button>
               {created && <span className="text-xs text-muted-foreground">· {formatDistanceToNow(new Date(created), { addSuffix: true })}</span>}
             </div>
             <div className={`${compact ? 'text-xs' : 'text-sm'} leading-relaxed line-clamp-3`} dangerouslySetInnerHTML={{ __html: content }} />
+            <RemotePostMedia attachments={p.attachments ?? p.media_attachments ?? p.raw_object?.media_attachments ?? []} compact={compact} />
             <div className="mt-2 flex items-center gap-1 flex-wrap">
               <button onClick={() => handleFedLike({ ...p, object_url: key })}
                 className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${ps.liked ? 'bg-pink-500/15 text-pink-600' : 'hover:bg-muted text-muted-foreground hover:text-pink-600'}`}>
@@ -652,12 +1040,11 @@ export default function FediversePage() {
                   <MessageCircle className="w-3 h-3" />{p.replies_count ?? 0}
                 </button>
               )}
-              {(p.object_url ?? p.uri ?? p.url) && (
-                <a href={p.object_url ?? p.uri ?? p.url} target="_blank" rel="noopener noreferrer"
-                  className="ml-auto flex items-center gap-0.5 text-xs text-muted-foreground hover:text-primary px-2 py-1 rounded-full hover:bg-muted transition-colors">
-                  <ExternalLink className="w-2.5 h-2.5" />{domain}
-                </a>
-              )}
+              <button
+                type="button"
+                onClick={() => navigate(`/fediverse/profile?actor=${encodeURIComponent(actor.url ?? actor.actor_uri ?? p.actor_url ?? '')}&handle=${encodeURIComponent('@' + username + (domain ? '@' + domain : ''))}`)}
+                className="ml-auto text-xs text-muted-foreground hover:text-primary px-2 py-1 rounded-full hover:bg-muted transition-colors"
+              >View on Testagram</button>
             </div>
             {user && ps.replyOpen && (
               <div className="mt-1.5 flex items-start gap-1.5">
@@ -690,7 +1077,15 @@ export default function FediversePage() {
   ];
 
   return (
-    <div className="min-h-screen bg-background pb-16 md:pb-0">
+    <div className="fediverse-page min-h-screen bg-background pb-16 md:pb-0">
+      <style>{`
+        .fediverse-page { overflow-anchor: none; overscroll-behavior-y: contain; }
+        .fediverse-feed-list { overflow-anchor: none; contain: layout style; }
+        .fediverse-page img, .fediverse-page video { transform: translateZ(0); }
+        @media (max-width: 640px) {
+          .fediverse-page .fediverse-tabs { backdrop-filter: none; -webkit-backdrop-filter: none; }
+        }
+      `}</style>
       <TopBar title="Fediverse · testagram.site" showBack />
       <FediverseAdBanner />
 
@@ -707,7 +1102,7 @@ export default function FediversePage() {
         </div>
       )}
 
-      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border overflow-x-auto flex scrollbar-hide">
+      {!standalone && <div className="fediverse-tabs sticky top-14 z-30 bg-background border-b border-border overflow-x-auto flex scrollbar-hide">
         {TABS.map(t => {
           const Icon = t.icon;
           const active = tab === t.id;
@@ -727,7 +1122,8 @@ export default function FediversePage() {
             </button>
           );
         })}
-      </div>
+        <button onClick={() => navigate('/fediverse/controls')} className="shrink-0 px-3 py-3 text-xs font-semibold text-primary hover:bg-primary/5 border-l border-border">Controls</button>
+      </div>}
 
       {/* ══════════════════ FEED TAB ══════════════════ */}
       {tab === 'feed' && (
@@ -735,8 +1131,8 @@ export default function FediversePage() {
           {cachedAt && (
             <div className="flex items-center gap-2 px-4 py-1.5 bg-muted/30 border-b border-border text-xs text-muted-foreground">
               {isStale
-                ? <><Loader2 className="w-3 h-3 animate-spin text-primary" />Refreshing feed…</>
-                : <><CheckCircle className="w-3 h-3 text-green-500" />Synced {formatDistanceToNow(cachedAt, { addSuffix: true })}</>}
+                ? <><span className="w-2 h-2 rounded-full bg-primary/70 animate-pulse" />Cached feed · updating silently in background</>
+                : <><CheckCircle className="w-3 h-3 text-green-500" />Local cache updated {formatDistanceToNow(cachedAt, { addSuffix: true })} · remote sync runs every 2 min</>}
             </div>
           )}
 
@@ -766,18 +1162,36 @@ export default function FediversePage() {
               )}
             </div>
           )}
-          {loadingFeed ? (
-            <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
-          ) : remotePosts.length === 0 ? (
+          <FederatedOrganicInjection surface="fediverse" />
+          {(loadingTestagramSuggestions || testagramSuggestions.length > 0) && (
+            <section className="border-y border-border bg-muted/10">
+              <div className="px-4 py-3 flex items-center justify-between">
+                <div><p className="text-sm font-bold flex items-center gap-2"><Sparkles className="w-4 h-4 text-primary" />Suggested from Testagram</p><p className="text-[11px] text-muted-foreground">Native Testagram posts recommended alongside your federated timeline.</p></div>
+                <button onClick={fetchTestagramSuggestions} className="p-1.5 rounded-full hover:bg-muted" aria-label="Refresh Testagram suggestions"><RefreshCw className="w-3.5 h-3.5" /></button>
+              </div>
+              {loadingTestagramSuggestions ? <div className="px-4 pb-4 space-y-2">{[0,1,2].map(i => <div key={i} className="h-24 rounded-xl bg-muted animate-pulse" />)}</div> : <div className="divide-y divide-border">{testagramSuggestions.slice(0, 6).map((post: any) => <PostCard key={post.id} post={post} />)}</div>}
+            </section>
+          )}
+          {remotePosts.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground px-6">
               <Globe className="w-12 h-12 mx-auto mb-3 opacity-30" />
               <p className="font-semibold mb-1">No federated posts yet</p>
               <p className="text-sm">Follow people on Mastodon or Misskey to see their posts here</p>
             </div>
           ) : (
-            <div className="divide-y divide-border">
-              {remotePosts.map((p: any, i: number) => <RemotePostRow key={p.id ?? p.object_url ?? i} p={p} />)}
-            </div>
+            <>
+              <div className="fediverse-feed-list divide-y divide-border">
+                {remotePosts.map((p: any, i: number) => <RemotePostRow key={p.uri ?? p.id ?? p.object_url ?? i} p={p} />)}
+              </div>
+              <div ref={feedSentinelRef} className="min-h-10" aria-hidden="true">
+                {loadingMoreFeed && hasMoreFeed && (
+                  <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading more federated posts…
+                  </div>
+                )}
+                {!loadingMoreFeed && hasMoreFeed && <div className="h-4" />}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -920,12 +1334,30 @@ export default function FediversePage() {
                 return (
                   <div key={toot.id ?? i} className="p-4 hover:bg-muted/5 transition-colors">
                     <div className="flex gap-3">
-                      <div className="w-10 h-10 rounded-full bg-muted overflow-hidden shrink-0">
+                      <button type="button" onClick={() => setActiveRemoteProfile({
+                          actor_url: account.uri ?? account.actor_uri ?? account.actor_url,
+                          username: (account.username ?? username).split('@')[0],
+                          domain: mastodonInstance,
+                          display_name: displayName,
+                          bio: account.note ?? '',
+                          avatar_url: avatarUrl,
+                          followers_count: account.followers_count,
+                          following_count: account.following_count,
+                        })} className="w-10 h-10 rounded-full bg-muted overflow-hidden shrink-0 hover:ring-2 hover:ring-[#6364FF] transition-all">
                         {avatarUrl ? <img src={avatarUrl} alt={username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-sm">{displayName[0]?.toUpperCase()}</div>}
-                      </div>
+                      </button>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                          <span className="font-semibold text-sm">{displayName}</span>
+                          <button type="button" onClick={() => setActiveRemoteProfile({
+                            actor_url: account.uri ?? account.actor_uri ?? account.actor_url,
+                            username: (account.username ?? username).split('@')[0],
+                            domain: mastodonInstance,
+                            display_name: displayName,
+                            bio: account.note ?? '',
+                            avatar_url: avatarUrl,
+                            followers_count: account.followers_count,
+                            following_count: account.following_count,
+                          })} className="font-semibold text-sm hover:text-[#6364FF] hover:underline text-left">{displayName}</button>
                           <span className="text-xs text-[#6364FF] flex items-center gap-0.5">
                             <span className="w-3 h-3 rounded-full bg-[#6364FF] inline-flex items-center justify-center"><span className="text-white text-[7px] font-black">M</span></span>
                             @{username.includes('@') ? username : `${username}@${mastodonInstance}`}
@@ -942,12 +1374,19 @@ export default function FediversePage() {
                             ))}
                           </div>
                         )}
-                        <div className="flex items-center gap-3 mt-2">
-                          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Heart className="w-3 h-3" />{likes}</span>
-                          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Repeat2 className="w-3 h-3" />{boosts}</span>
-                          <span className="flex items-center gap-1 text-xs text-muted-foreground"><MessageCircle className="w-3 h-3" />{replies}</span>
-                          {url && <a href={url} target="_blank" rel="noopener noreferrer" className="ml-auto flex items-center gap-0.5 text-xs text-[#6364FF] hover:underline"><ExternalLink className="w-3 h-3" />View</a>}
+                        <div className="flex items-center gap-2 mt-2">
+                          <button onClick={() => handleFedLike({ ...toot, object_url: toot.uri ?? url })} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium hover:bg-pink-500/10 hover:text-pink-600 transition-colors"><Heart className="w-3 h-3" />{likes + (postStates[toot.uri ?? url]?.liked ? 1 : 0)}</button>
+                          <button onClick={() => handleFedBoost({ ...toot, object_url: toot.uri ?? url })} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium hover:bg-green-500/10 hover:text-green-600 transition-colors"><Repeat2 className="w-3 h-3" />{boosts + (postStates[toot.uri ?? url]?.boosted ? 1 : 0)}</button>
+                          <button onClick={() => setPostStates(prev => ({...prev,[toot.uri ?? url]:{...prev[toot.uri ?? url],replyOpen:!prev[toot.uri ?? url]?.replyOpen}}))} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium hover:bg-primary/10 hover:text-primary transition-colors"><MessageCircle className="w-3 h-3" />{replies}</button>
+                          <button type="button" onClick={() => setPostStates(prev => ({...prev,[toot.uri ?? url]:{...prev[toot.uri ?? url],open:true}}))}
+                            className="ml-auto text-xs text-[#6364FF] hover:underline">Open in Testagram</button>
                         </div>
+                        {user && postStates[toot.uri ?? url]?.replyOpen && (
+                          <div className="mt-2 flex gap-2">
+                            <input value={postStates[toot.uri ?? url]?.replyText ?? ''} onChange={e => setPostStates(prev=>({...prev,[toot.uri ?? url]:{...prev[toot.uri ?? url],replyText:e.target.value}}))} placeholder="Reply to this toot…" className="flex-1 px-3 py-2 rounded-xl border border-border bg-background text-xs" />
+                            <button onClick={() => handleFedReply({...toot,object_url:toot.uri ?? url})} disabled={!postStates[toot.uri ?? url]?.replyText?.trim()} className="px-3 py-2 bg-[#6364FF] text-white rounded-xl text-xs font-semibold disabled:opacity-50"><Send className="w-3 h-3" /></button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1252,14 +1691,14 @@ export default function FediversePage() {
                             <p className="text-[10px] text-muted-foreground">@{a.username}@{a.domain}</p>
                           </div>
                           <div className="flex gap-1">
-                            <button onClick={() => handleFollow(a)} disabled={following}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-primary text-primary-foreground rounded-full text-xs font-semibold disabled:opacity-50 hover:opacity-90">
-                              <UserPlus className="w-3 h-3" />Follow
+                            <button onClick={() => handleFollow(a)}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-primary text-primary-foreground rounded-full text-xs font-semibold hover:opacity-90">
+                              {followingActorUrls.includes(a.actor_uri ?? a.actor_url ?? a.uri ?? a.acct) ? <CheckCircle className="w-3 h-3" /> : <UserPlus className="w-3 h-3" />}{followingActorUrls.includes(a.actor_url ?? `https://${a.domain}/users/${a.username}`) ? 'Following' : 'Follow'}
                             </button>
-                            {a.actor_url && <a href={a.actor_url} target="_blank" rel="noopener noreferrer"
-                              className="p-1.5 border border-border rounded-full hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-                              <ExternalLink className="w-3 h-3" />
-                            </a>}
+                            <button onClick={() => setActiveRemoteProfile({ ...a, actor_url: a.actor_uri ?? a.actor_url ?? a.uri ?? a.acct })}
+                              className="px-2.5 py-1.5 border border-border rounded-full text-xs font-semibold hover:bg-muted transition-colors">
+                              Profile
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -1307,15 +1746,15 @@ export default function FediversePage() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => handleFollow(searchResult)} disabled={following}
-                    className="flex-1 py-2 bg-primary text-primary-foreground rounded-full text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50">
-                    {following ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
-                    {following ? 'Sending…' : 'Follow'}
+                  <button onClick={() => handleFollow(searchResult)}
+                    className="flex-1 py-2 bg-primary text-primary-foreground rounded-full text-sm font-semibold flex items-center justify-center gap-2">
+                    {followingActorUrls.includes(searchResult.actor_url) ? <CheckCircle className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+                    {followingActorUrls.includes(searchResult.actor_url) ? 'Following' : 'Follow'}
                   </button>
-                  <a href={searchResult.actor_url} target="_blank" rel="noopener noreferrer"
-                    className="px-4 py-2 border border-border rounded-full text-sm flex items-center gap-1.5">
-                    <ExternalLink className="w-3.5 h-3.5" />View profile
-                  </a>
+                  <button onClick={() => setActiveRemoteProfile(searchResult)}
+                    className="px-4 py-2 border border-border rounded-full text-sm font-semibold hover:bg-muted transition-colors">
+                    Open in Testagram
+                  </button>
                 </div>
               </div>
             )}
@@ -1413,15 +1852,61 @@ export default function FediversePage() {
                   </button>
                 </div>
               </div>
-              <div className="border border-amber-500/20 rounded-xl p-4 bg-amber-500/5">
-                <h3 className="font-semibold text-sm mb-1 text-amber-700 dark:text-amber-400">Backfill RSA Keys</h3>
-                <p className="text-xs text-muted-foreground mb-3">Generate ActivityPub RSA-2048 key pairs for all existing users.</p>
-                <button onClick={backfillAllKeys} className="w-full py-2 bg-amber-600 text-white rounded-full text-sm font-medium hover:bg-amber-700 transition-colors">
-                  Backfill All Missing Keys
-                </button>
-              </div>
+              {canBackfillKeys && (
+                <div className="border border-amber-500/20 rounded-xl p-4 bg-amber-500/5">
+                  <h3 className="font-semibold text-sm mb-1 text-amber-700 dark:text-amber-400">Backfill RSA Keys</h3>
+                  <p className="text-xs text-muted-foreground mb-3">Generate ActivityPub RSA-2048 key pairs for all existing users.</p>
+                  <button onClick={backfillAllKeys} className="w-full py-2 bg-amber-600 text-white rounded-full text-sm font-medium hover:bg-amber-700 transition-colors">
+                    Backfill All Missing Keys
+                  </button>
+                </div>
+              )}
             </>
           )}
+        </div>
+      )}
+
+      {activeRemoteProfile && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setActiveRemoteProfile(null)}>
+          <div className="w-full sm:max-w-md bg-background border border-border rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <div className="h-20 bg-gradient-to-r from-[#6364FF]/20 via-purple-500/15 to-cyan-500/20" />
+            <div className="px-5 pb-5 -mt-10">
+              <div className="flex items-end justify-between">
+                <div className="w-20 h-20 rounded-full bg-muted border-4 border-background overflow-hidden">
+                  {activeRemoteProfile.avatar_url
+                    ? <img src={activeRemoteProfile.avatar_url} alt="" className="w-full h-full object-cover" />
+                    : <div className="w-full h-full flex items-center justify-center text-2xl font-bold">{activeRemoteProfile.username?.[0]?.toUpperCase()}</div>}
+                </div>
+                <button onClick={() => setActiveRemoteProfile(null)} className="p-2 rounded-full bg-muted hover:bg-muted/80"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="mt-3">
+                <h2 className="text-lg font-bold">{activeRemoteProfile.display_name ?? activeRemoteProfile.username}</h2>
+                <p className="text-sm text-[#6364FF]">@{activeRemoteProfile.username}@{activeRemoteProfile.domain}</p>
+                {activeRemoteProfile.bio && <div className="mt-3 text-sm text-muted-foreground prose prose-sm dark:prose-invert max-w-none" dangerouslySetInnerHTML={{__html: activeRemoteProfile.bio}} />}
+                {Array.isArray(activeRemoteProfile.fields) && activeRemoteProfile.fields.length > 0 && (
+                  <div className="mt-3 space-y-1.5">
+                    {activeRemoteProfile.fields.slice(0, 8).map((field: any, i: number) => (
+                      <div key={i} className="flex gap-2 text-xs rounded-lg bg-muted/50 px-3 py-2">
+                        <span className="font-semibold shrink-0">{field.name}</span>
+                        <span className="text-muted-foreground break-words" dangerouslySetInnerHTML={{__html: field.value}} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-4 mt-4 text-xs text-muted-foreground">
+                  {activeRemoteProfile.followers_count != null && <span><b className="text-foreground">{formatNumber(activeRemoteProfile.followers_count)}</b> followers</span>}
+                  {activeRemoteProfile.following_count != null && <span><b className="text-foreground">{formatNumber(activeRemoteProfile.following_count)}</b> following</span>}
+                  <span className="ml-auto">Federated via Testagram</span>
+                </div>
+                <button onClick={() => handleFollow(activeRemoteProfile)}
+                  className="w-full mt-5 py-2.5 rounded-full bg-[#6364FF] text-white font-semibold">
+                  {followingActorUrls.includes(activeRemoteProfile.actor_url) ? 'Following' : 'Follow'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { TopBar } from '@/components/layout/TopBar';
 import { useIsRegulator, FEATURE_KEYS, FEATURE_LABELS, type FeatureKey } from '@/hooks/useFeatureUnlock';
+import { useGovernance } from '@/lib/governance';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Shield, Users, Unlock, Lock, Check, X, Loader2, Search,
   UserPlus, Briefcase, Trash2, Crown, Settings, ChevronRight,
@@ -90,9 +91,17 @@ function getTopCategory(cats: any): { key: string; score: number } | null {
 export default function RegulatorPanel() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const isReg = useIsRegulator();
-
-  const [activeTab, setActiveTab] = useState<RegTab>('employees');
+  const { loading: governanceLoading } = useGovernance();
+  const activeTab = (() => {
+    const section = location.pathname.split('/').filter(Boolean).pop()?.toLowerCase();
+    const byPath: Record<string, RegTab> = {
+      employees: 'employees', features: 'features', wallets: 'wallets', moderation: 'moderation',
+      platform: 'platform', announce: 'announce', reports: 'reports', audit: 'audit', analytics: 'analytics',
+    };
+    return byPath[section ?? ''] ?? 'employees';
+  })();
   const [loading, setLoading] = useState(true);
 
   const [employees, setEmployees] = useState<any[]>([]);
@@ -179,11 +188,12 @@ export default function RegulatorPanel() {
   const [verifyingAd, setVerifyingAd] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isReg) { navigate('/'); return; }
-    fetchEmployees();
-    fetchPlatformStats();
+    if (governanceLoading) return;
+    if (!isReg) { navigate('/admin/governance', { replace: true }); return; }
+    void fetchEmployees();
+    void fetchPlatformStats();
     setLoading(false);
-  }, [isReg]);
+  }, [isReg, governanceLoading]);
 
   useEffect(() => {
     if (activeTab === 'wallets' && topWallets.length === 0) fetchTopWallets();
@@ -210,13 +220,13 @@ export default function RegulatorPanel() {
     if (!user) return;
     supabase.from('regulator_audit_logs').insert({
       regulator_id: user.id, action_type, target_user_id: target_user_id ?? null, notes,
-    }).then(() => {}).catch(() => {});
+    }).then(() => {}).then(() => {}).catch(() => {});
   }, [user]);
 
   const fetchEmployees = useCallback(async () => {
     const { data } = await supabase
       .from('employee_assignments')
-      .select('*, user_profiles:user_id(id, username, avatar_url, verified, followers_count)')
+      .select('*, user_profiles:user_id(id, username, avatar_url, verified, follower_count)')
       .eq('is_active', true)
       .order('created_at', { ascending: false });
     setEmployees(data ?? []);
@@ -224,7 +234,7 @@ export default function RegulatorPanel() {
 
   const fetchPlatformStats = useCallback(async () => {
     const [usersRes, postsRes, spacesRes] = await Promise.all([
-      supabase.from('user_profiles').select('*', { count: 'exact', head: true }),
+      supabase.from('profiles').select('*', { count: 'exact', head: true }),
       supabase.from('posts').select('*', { count: 'exact', head: true }),
       supabase.from('spaces').select('*', { count: 'exact', head: true }).eq('is_live', true),
     ]);
@@ -236,7 +246,7 @@ export default function RegulatorPanel() {
     const { data: earningsData } = await supabase.from('creator_earnings').select('amount').eq('status', 'paid');
     const total = (earningsData ?? []).reduce((s: number, e: any) => s + Number(e.amount ?? 0), 0);
     setPlatformRevenue(total);
-    const { data: recent } = await supabase.from('user_profiles')
+    const { data: recent } = await supabase.from('profiles')
       .select('id, username, avatar_url, verified, created_at')
       .order('created_at', { ascending: false }).limit(10);
     setRecentUsers(recent ?? []);
@@ -255,8 +265,8 @@ export default function RegulatorPanel() {
 
   const searchUsersToHire = useCallback(async (q: string) => {
     if (!q.trim()) { setHireResults([]); return; }
-    const { data } = await supabase.from('user_profiles')
-      .select('id, username, avatar_url, verified, followers_count')
+    const { data } = await supabase.from('profiles')
+      .select('id, username, avatar_url, verified, follower_count')
       .ilike('username', `${q}%`).limit(8);
     setHireResults(data ?? []);
   }, []);
@@ -277,7 +287,7 @@ export default function RegulatorPanel() {
       subject: `🎉 You've been hired on Testagram!`,
       body: `The platform regulator has assigned you the role of "${hireForm.job_title}" in ${hireForm.department}.${hireForm.notes ? '\n\nNote: ' + hireForm.notes : ''}${revPct > 0 ? `\n\n💰 Revenue share: ${revPct}%` : ''} Welcome to the team!`,
       type: 'update', icon_emoji: '🎉', cta_label: 'Open Team Chat', cta_url: '/team-chat',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`@${selectedHireUser.username} hired!`);
     await logAudit('hire_employee', selectedHireUser.id, 'Hired as ' + hireForm.job_title + ' in ' + hireForm.department);
     setShowHireDialog(false); setSelectedHireUser(null);
@@ -294,14 +304,14 @@ export default function RegulatorPanel() {
   }, [fetchEmployees]);
 
   const handleGrantVerified = useCallback(async (empUserId: string, username: string, isVerified: boolean) => {
-    await supabase.from('user_profiles').update({ verified: !isVerified }).eq('id', empUserId);
+    await supabase.from('profiles').update({ verified: !isVerified }).eq('id', empUserId);
     if (!isVerified) {
       await supabase.from('platform_inbox').insert({
         user_id: empUserId,
         subject: '✅ You are now verified on Testagram!',
         body: 'The platform regulator has granted you a verified badge. Your profile now shows the blue checkmark ✓',
         type: 'update', icon_emoji: '✅',
-      }).catch(() => {});
+      }).then(() => {}).catch(() => {});
       toast.success(`@${username} verified!`);
       await logAudit('grant_verified', empUserId, 'Granted verified badge to @' + username);
     } else {
@@ -341,7 +351,7 @@ export default function RegulatorPanel() {
       subject: `💰 Revenue share updated: ${pct}%`,
       body: `The platform regulator has set your revenue share to ${pct}% of platform earnings.`,
       type: 'update', icon_emoji: '💰',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`Revenue share set to ${pct}% for @${username}`);
     setEditingRevShare(null); setRevShareInput(''); setSavingRevShare(false);
     fetchEmployees();
@@ -349,7 +359,7 @@ export default function RegulatorPanel() {
 
   const searchUsersToManage = useCallback(async (q: string) => {
     if (!q.trim()) { setUnlockResults([]); return; }
-    const { data } = await supabase.from('user_profiles')
+    const { data } = await supabase.from('profiles')
       .select('id, username, avatar_url, verified').ilike('username', `${q}%`).limit(8);
     setUnlockResults(data ?? []);
   }, []);
@@ -382,7 +392,7 @@ export default function RegulatorPanel() {
         subject: `🔒 Feature access updated`,
         body: `${lockedFeatures.length} feature(s) restricted: ${lockedFeatures.map(k => FEATURE_LABELS[k] ?? k).join(', ')}.`,
         type: 'update', icon_emoji: '🔒',
-      }).catch(() => {});
+      }).then(() => {}).catch(() => {});
     }
     toast.success(`Feature locks saved for @${selectedUnlockUser.username}`);
     setSavingLocks(false);
@@ -390,7 +400,7 @@ export default function RegulatorPanel() {
 
   const searchWalletUsers = useCallback(async (q: string) => {
     if (!q.trim()) { setWalletSearchResults([]); return; }
-    const { data } = await supabase.from('user_profiles')
+    const { data } = await supabase.from('profiles')
       .select('id, username, avatar_url, verified').ilike('username', `${q}%`).limit(8);
     setWalletSearchResults(data ?? []);
   }, []);
@@ -423,14 +433,14 @@ export default function RegulatorPanel() {
       await supabase.from('wallet_transactions').insert({
         wallet_id: walletRow.id, user_id: selectedWalletUser.id, type: 'credit', amount,
         description: topUpNote.trim() || `Regulator top-up by @${user.username}`, status: 'completed',
-      }).catch(() => {});
+      }).then(() => {}).catch(() => {});
     }
     await supabase.from('platform_inbox').insert({
       user_id: selectedWalletUser.id,
       subject: `💰 Wallet top-up: +$${amount.toFixed(2)}`,
       body: `The platform regulator has added $${amount.toFixed(2)} to your wallet.${topUpNote ? '\n\nNote: ' + topUpNote : ''}`,
       type: 'update', icon_emoji: '💰',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`$${amount.toFixed(2)} added to @${selectedWalletUser.username}'s wallet!`);
     setShowTopUp(false); setTopUpAmount(''); setTopUpNote('');
     setToppingUp(false);
@@ -474,8 +484,8 @@ export default function RegulatorPanel() {
   const searchPlatformUsers = useCallback(async (q: string) => {
     if (!q.trim()) { setPlatformSearchResults([]); return; }
     const { data } = await supabase
-      .from('user_profiles')
-      .select('id, username, email, avatar_url, verified, is_blocked, strike_count, created_at, followers_count')
+      .from('profiles')
+      .select('id, username, email, avatar_url, verified, is_blocked, strike_count, created_at, follower_count')
       .or(`username.ilike.${q}%,email.ilike.${q}%`)
       .limit(8);
     setPlatformSearchResults(data ?? []);
@@ -533,7 +543,7 @@ export default function RegulatorPanel() {
       user_id: adUserId, subject: '✅ Your advertisement is approved!',
       body: `Your ad "${adTitle}" has been approved by the platform regulator and is now live.`,
       type: 'update', icon_emoji: '✅',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`Ad approved!`);
     await logAudit('approve_ad', adUserId, 'Ad approved: "' + adTitle.slice(0, 60) + '"');
     fetchAdQueue();
@@ -545,7 +555,7 @@ export default function RegulatorPanel() {
       user_id: adUserId, subject: '❌ Your advertisement was rejected',
       body: `Your ad "${adTitle}" was rejected for not meeting platform content guidelines. Please review our policies and resubmit.`,
       type: 'update', icon_emoji: '❌', cta_label: 'Create New Ad', cta_url: '/create-ad',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success('Ad rejected');
     await logAudit('reject_ad', adUserId, 'Ad rejected: "' + adTitle.slice(0, 60) + '"');
     fetchAdQueue();
@@ -590,24 +600,24 @@ export default function RegulatorPanel() {
   const handleLiftBan = useCallback(async (banId: string, userId: string, username: string) => {
     if (!user) return;
     await supabase.from('user_bans').update({ is_active: false, lifted_at: new Date().toISOString(), lifted_by: user.id }).eq('id', banId);
-    await supabase.from('user_profiles').update({ is_blocked: false }).eq('id', userId);
+    await supabase.from('profiles').update({ is_blocked: false }).eq('id', userId);
     await supabase.from('platform_inbox').insert({
       user_id: userId, subject: '✅ Your account restriction has been lifted',
       body: 'The platform regulator has reviewed your case and lifted your account restriction.',
       type: 'update', icon_emoji: '✅',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`@${username}'s ban lifted`);
     await logAudit('lift_ban', userId, 'Ban lifted for @' + username);
     fetchModeration();
   }, [user, fetchModeration]);
 
   const handleResetStrikes = useCallback(async (userId: string, username: string) => {
-    await supabase.from('user_profiles').update({ strike_count: 0 }).eq('id', userId);
+    await supabase.from('profiles').update({ strike_count: 0 }).eq('id', userId);
     await supabase.from('platform_inbox').insert({
       user_id: userId, subject: '🔄 Strike count reset',
       body: 'The platform regulator has reset your strike count to 0, giving you a clean slate.',
       type: 'update', icon_emoji: '🔄',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`Strikes reset for @${username}`);
     await logAudit('reset_strikes', userId, 'Strike count reset to 0 for @' + username);
     fetchModeration();
@@ -621,7 +631,7 @@ export default function RegulatorPanel() {
     }).eq('id', appealId);
     if (decision === 'approved' && appeal.ban_id) {
       await supabase.from('user_bans').update({ is_active: false, lifted_at: new Date().toISOString(), lifted_by: user.id }).eq('id', appeal.ban_id);
-      await supabase.from('user_profiles').update({ is_blocked: false }).eq('id', appeal.user_id);
+      await supabase.from('profiles').update({ is_blocked: false }).eq('id', appeal.user_id);
     }
     const msgBody = decision === 'approved'
       ? `Great news! Your appeal has been approved. Your account restriction has been lifted.${note ? '\n\nNote: ' + note : ''}`
@@ -630,7 +640,7 @@ export default function RegulatorPanel() {
       user_id: appeal.user_id,
       subject: decision === 'approved' ? '✅ Appeal Approved' : '❌ Appeal Denied',
       body: msgBody, type: 'update', icon_emoji: decision === 'approved' ? '✅' : '❌',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`Appeal ${decision}`);
     setAppealNote(prev => { const n = { ...prev }; delete n[appealId]; return n; });
     fetchModeration();
@@ -648,7 +658,7 @@ export default function RegulatorPanel() {
   const handleManualBan = useCallback(async (userId: string, username: string) => {
     if (!user) return;
     if (!window.confirm(`Manually ban @${username} for 24 hours?`)) return;
-    await supabase.from('user_profiles').update({ is_blocked: true }).eq('id', userId);
+    await supabase.from('profiles').update({ is_blocked: true }).eq('id', userId);
     const expires = new Date(Date.now() + 24 * 3600000).toISOString();
     await supabase.from('user_bans').insert({
       user_id: userId, banned_by: user.id, reason: 'Manual ban by regulator',
@@ -658,7 +668,7 @@ export default function RegulatorPanel() {
       user_id: userId, subject: '🚫 Your account has been temporarily restricted',
       body: 'A platform moderator has temporarily restricted your account for 24 hours due to a policy violation.',
       type: 'update', icon_emoji: '🚫',
-    }).catch(() => {});
+    }).then(() => {}).catch(() => {});
     toast.success(`@${username} banned for 24h`);
     await logAudit('manual_ban', userId, 'Manual 24h ban applied to @' + username);
     fetchModeration();
@@ -669,7 +679,7 @@ export default function RegulatorPanel() {
     const dayKeys = buildAnalyticsDayKeys();
     const since = dayKeys[0];
     const [usersRes, postsRes, earningsRes, hashtagsRes] = await Promise.all([
-      supabase.from('user_profiles').select('created_at').gte('created_at', since + 'T00:00:00Z'),
+      supabase.from('profiles').select('created_at').gte('created_at', since + 'T00:00:00Z'),
       supabase.from('posts').select('created_at').gte('created_at', since + 'T00:00:00Z'),
       supabase.from('creator_earnings').select('amount, created_at').eq('status', 'paid').gte('created_at', since + 'T00:00:00Z'),
       supabase.from('hashtags').select('tag, usage_count').order('usage_count', { ascending: false }).limit(10),
@@ -783,7 +793,7 @@ export default function RegulatorPanel() {
       <div className="sticky top-14 z-20 bg-background border-b border-border overflow-x-auto">
         <div className="flex min-w-max">
           {REG_TAB_DEFS.map(t => (
-            <button key={t.key} onClick={() => setActiveTab(t.key as RegTab)}
+            <button key={t.key} onClick={() => navigate(`/regulator/${t.key}`)}
               className={`px-4 py-3 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap relative ${
                 activeTab === t.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'
               }`}>
@@ -1525,7 +1535,7 @@ export default function RegulatorPanel() {
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-xs">
                     <div className="p-2 bg-muted/40 rounded-xl text-center">
-                      <p className="font-black text-base">{formatNumber(platformSelectedUser.followers_count ?? 0)}</p>
+                      <p className="font-black text-base">{formatNumber(platformSelectedUser.follower_count ?? 0)}</p>
                       <p className="text-muted-foreground">Followers</p>
                     </div>
                     <div className="p-2 bg-muted/40 rounded-xl text-center">
@@ -1966,7 +1976,7 @@ export default function RegulatorPanel() {
                 { label: 'Appeals Queue',        icon: '📋', path: '/appeals', tab: undefined },
               ].map(r => (
                 <button key={r.label}
-                  onClick={() => r.path ? navigate(r.path) : r.tab ? setActiveTab(r.tab) : undefined}
+                  onClick={() => r.path ? navigate(r.path) : r.tab ? navigate(`/regulator/${r.tab}`) : undefined}
                   className="w-full flex items-center gap-3 px-4 py-3 bg-card border border-border rounded-xl hover:border-primary/20 transition-colors text-left">
                   <span className="text-xl shrink-0">{r.icon}</span>
                   <span className="font-semibold text-sm flex-1">{r.label}</span>
