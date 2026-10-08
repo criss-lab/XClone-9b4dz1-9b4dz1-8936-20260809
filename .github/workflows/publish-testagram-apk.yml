@@ -1,0 +1,74 @@
+name: Publish Testagram APK
+
+on:
+  workflow_run:
+    workflows:
+      - Testagram Android Release
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Resolve verified Android build
+        id: build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${WORKFLOW_RUN_ID}" ]; then
+            run_id="${WORKFLOW_RUN_ID}"
+          else
+            run_id="$(gh api "repos/${REPOSITORY}/actions/workflows/android-release.yml/runs?status=success&per_page=20" --jq '.workflow_runs | map(select(.head_branch == "main" or (.head_branch | startswith("release/")))) | .[0].id')"
+          fi
+          test -n "${run_id}" && test "${run_id}" != "null"
+          run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
+          test "$(jq -r '.conclusion' <<<"${run_json}")" = "success"
+          head_sha="$(jq -r '.head_sha' <<<"${run_json}")"
+          created_at="$(jq -r '.run_started_at // .created_at' <<<"${run_json}")"
+          artifact_name="testagram-android-release-${head_sha}"
+          artifact_json="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")"
+          artifact_id="$(jq -r --arg name "${artifact_name}" '.artifacts[] | select(.name == $name and .expired == false) | .id' <<<"${artifact_json}" | head -n 1)"
+          test -n "${artifact_id}" && test "${artifact_id}" != "null"
+          {
+            echo "run_id=${run_id}"
+            echo "head_sha=${head_sha}"
+            echo "created_at=${created_at}"
+            echo "artifact_name=${artifact_name}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Download the verified Android release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: /tmp/testagram-artifact
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.build.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify release artifact
+        shell: bash
+        env:
+          BUILD_RUN_ID: "${{ steps.build.outputs.run_id }}"
+          BUILD_COMMIT: "${{ steps.build.outputs.head_sha }}"
+        run: |
+          set -euo pipefail
+          APK="$(find /tmp/testagram-artifact -type f -name "app-release.apk" -print -quit)"
+          test -n "$APK"
+          test -s "$APK"
+          sha256sum "$APK"
+          echo "Verified APK artifact from Android run ${BUILD_RUN_ID} (${BUILD_COMMIT})."
+          echo "The GitHub Release produced by Testagram Android Release is the canonical download surface; this workflow intentionally does not mutate main."
