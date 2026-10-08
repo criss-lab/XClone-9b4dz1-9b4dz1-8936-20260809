@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Heart, MessageCircle, Repeat2, Share, MoreHorizontal, BadgeCheck, Trash2, TrendingUp, Zap, Eye, BarChart3, Users, History, X, Languages, Loader2 as TransLoader, DollarSign, Flag, Check as CheckIcon, ChevronDown, ChevronUp, Send as SendIcon, Crown, Megaphone, Quote, Activity } from 'lucide-react';
-import { sendActivityNotification } from '@/components/layout/AuthProvider';
+import { VerifiedTick } from '@/components/ui/VerifiedTick';
+import { Heart, MessageCircle, Repeat2, Share, MoreHorizontal, Trash2, TrendingUp, Zap, Eye, BarChart3, Users, History, X, Languages, Loader2 as TransLoader, DollarSign, Flag, Check as CheckIcon, Send as SendIcon, Crown, Megaphone, Quote, Activity, Globe } from 'lucide-react';
 import { Post } from '@/types/app-types';
 import { formatDistanceToNow } from 'date-fns';
 import { supabase } from '@/lib/supabase';
@@ -24,7 +24,16 @@ import {
 } from '@/components/ui/dialog';
 import { VideoMonetizationAd } from './VideoMonetizationAd';
 import { EmbedRenderer, PostContentEmbeds } from './EmbedRenderer';
+import { InlineTvSuggestion } from './InlineTvSuggestion';
+import { FediverseRichText } from './FediverseRichText';
+import { InlineRssSuggestion } from './InlineRssSuggestion';
+import { QuotedPostPreview } from './QuotedPostPreview';
+import { mediaCandidates } from '@/lib/mediaUrl';
 import { updateInterestSignal } from '@/services/recommendations';
+import { togglePostLike, togglePostRepost, createFederatedReply, getFederatedInteractionState, getFederatedInteractionCounts, getFederatedReplies, getInteractionCounts, recordPostView, recordPostShare } from '@/services/postInteractionService';
+import { backendCapabilities } from '@/services/backendClient';
+import * as federation from '@/api/federation';
+// Canonical social interaction reads/writes stay behind backend capabilities.
 
 // esbuild guard: no 'as const' on module-level objects/arrays used in .map() render
 const REPORT_CATEGORIES = [
@@ -48,19 +57,48 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const remoteStatusUri = (post as any).remote_status_uri || ((post as any).uri?.startsWith?.('https://') ? (post as any).uri : '');
+  const interactionPostId = remoteStatusUri || post.id;
+  const isFederatedPost = Boolean(remoteStatusUri || (post as any).is_federated || (post as any).federation_id);
+  // Supabase profile joins are returned as `profiles` in several profile-page
+  // queries, while federation uses `user_profiles`. Resolve both shapes once
+  // so every post surface renders the canonical author identity.
+  const authorProfile = { ...(((post as any).user_profiles || (post as any).profiles || (post as any).author || {}) as any) };
+  const authorUsername = String(authorProfile.preferredUsername || authorProfile.username || authorProfile.acct || '').replace(/^@/, '');
+  const authorDisplayName = String(authorProfile.display_name || authorProfile.displayName || authorProfile.name || authorUsername || '').trim();
+  const authorAvatarUrl = authorProfile.avatar_url || authorProfile.avatar || '';
   const [isAuthorPremium, setIsAuthorPremium] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
+  const [repliesCount, setRepliesCount] = useState(post.replies_count ?? 0);
   const [isReposted, setIsReposted] = useState(false);
   const [likesCount, setLikesCount] = useState(post.likes_count);
   const [repostsCount, setRepostsCount] = useState(post.reposts_count);
+  const [quoteCount, setQuoteCount] = useState((post as any).quote_count ?? 0);
+  const [viewsCount, setViewsCount] = useState(post.views_count ?? 0);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
+  const [deleteMenuPosition, setDeleteMenuPosition] = useState({ top: 0, right: 16 });
+  const deleteMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const toggleDeleteMenu = useCallback(() => {
+    if (!showDeleteMenu) {
+      const rect = deleteMenuButtonRef.current?.getBoundingClientRect();
+      if (rect) {
+        const menuHeight = 300;
+        setDeleteMenuPosition({
+          top: Math.min(rect.bottom + 8, Math.max(12, window.innerHeight - menuHeight - 12)),
+          right: Math.max(12, window.innerWidth - rect.right),
+        });
+      }
+    }
+    setShowDeleteMenu(value => !value);
+  }, [showDeleteMenu]);
   const [poll, setPoll] = useState<any>(null);
   const [showBoostDialog, setShowBoostDialog] = useState(false);
   const [showOneClickBoost, setShowOneClickBoost] = useState(false);
   const [showRewardedBoost, setShowRewardedBoost] = useState(false);
-  const [shareCount, setShareCount] = useState(0);
+  const [shareCount, setShareCount] = useState((post as any).shares_count ?? 0);
+  const [bookmarksCount, setBookmarksCount] = useState((post as any).bookmarks_count ?? 0);
   // Engagement tooltip
   const [showEngagement, setShowEngagement] = useState(false);
   const [analytics, setAnalytics] = useState<any>(null);
@@ -94,7 +132,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
 
   // Post Reactions
   // esbuild guard: no 'as const' on arrays used in .map() inside component
-  const REACTIONS: string[] = ['❤️', '😂', '😮', '😢', '🔥'];
+  const REACTIONS: string[] = ['❤️'];
   // Reaction counts — parallel arrays (esbuild guard: no Record<string,number> in state)
   const [reactionEmojis, setReactionEmojis] = useState<string[]>([]);
   const [reactionNums, setReactionNums] = useState<number[]>([]);
@@ -105,99 +143,28 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
   };
 
   const [userReaction, setUserReaction] = useState<string | null>(null);
-  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const [userReactions, setUserReactions] = useState<string[]>([]);
 
   const fetchReactions = useCallback(async () => {
-    const { data } = await supabase
-      .from('post_reactions')
-      .select('emoji, user_id')
-      .eq('post_id', post.id);
-    if (data) {
-      const emojis: string[] = [];
-      const nums: number[] = [];
-      let myReaction: string | null = null;
-      data.forEach(r => {
-        const idx = emojis.indexOf(r.emoji);
-        if (idx >= 0) nums[idx]++;
-        else { emojis.push(r.emoji); nums.push(1); }
-        if (r.user_id === user?.id) myReaction = r.emoji;
-      });
-      setReactionEmojis(emojis);
-      setReactionNums(nums);
-      setUserReaction(myReaction);
-    }
-  }, [post.id, user?.id]);
+    const counts = await getInteractionCounts(interactionPostId);
+    const emojis = Object.keys(counts.reactions || {});
+    setReactionEmojis(emojis);
+    setReactionNums(emojis.map(emoji => Number(counts.reactions[emoji] ?? 0)));
+    setUserReactions(counts.user_reactions);
+    setUserReaction(counts.user_reactions[0] ?? null);
+    setIsLiked(counts.is_liked);
+    setIsReposted(counts.is_reposted);
+    setLikesCount(counts.likes);
+    setRepostsCount(counts.reposts);
+    setRepliesCount(counts.replies);
+    setQuoteCount(counts.quotes);
+    setViewsCount(counts.views);
+    setShareCount(counts.shares);
+    setBookmarksCount(counts.bookmarks);
+  }, [interactionPostId, user?.id]);
 
-  useEffect(() => { fetchReactions(); }, [post.id]);
+  useEffect(() => { void fetchReactions(); }, [fetchReactions]);
 
-  const handleReact = async (emoji: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!user) { navigate('/auth'); return; }
-    setShowReactionPicker(false);
-    const prevReaction = userReaction;
-
-    if (prevReaction === emoji) {
-      setUserReaction(null);
-      setReactionEmojis(prev => {
-        const idx = prev.indexOf(emoji);
-        if (idx < 0) return prev;
-        const next = [...prev];
-        const nextNums = [...reactionNums];
-        nextNums[idx] = Math.max(0, (nextNums[idx] ?? 1) - 1);
-        if (nextNums[idx] === 0) { next.splice(idx, 1); nextNums.splice(idx, 1); }
-        setReactionNums(nextNums);
-        return next;
-      });
-      await supabase.from('post_reactions').delete().eq('post_id', post.id).eq('user_id', user.id);
-      if (emoji === '❤️' && isLiked) {
-        const newCount = Math.max(0, likesCount - 1);
-        setIsLiked(false);
-        setLikesCount(newCount);
-        await supabase.from('likes').delete().eq('user_id', user.id).eq('post_id', post.id);
-        await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
-      }
-    } else {
-      setUserReaction(emoji);
-      setReactionEmojis(prev => {
-        const nextEmojis = [...prev];
-        const nextNums = [...reactionNums];
-        if (prevReaction) {
-          const pi = nextEmojis.indexOf(prevReaction);
-          if (pi >= 0) {
-            nextNums[pi] = Math.max(0, (nextNums[pi] ?? 1) - 1);
-            if (nextNums[pi] === 0) { nextEmojis.splice(pi, 1); nextNums.splice(pi, 1); }
-          }
-        }
-        const ei = nextEmojis.indexOf(emoji);
-        if (ei >= 0) nextNums[ei]++;
-        else { nextEmojis.push(emoji); nextNums.push(1); }
-        setReactionNums(nextNums);
-        return nextEmojis;
-      });
-      await supabase.from('post_reactions').upsert(
-        { post_id: post.id, user_id: user.id, emoji },
-        { onConflict: 'post_id,user_id' }
-      );
-      if (emoji === '❤️' && !isLiked) {
-        const newCount = likesCount + 1;
-        setIsLiked(true);
-        setLikesCount(newCount);
-        await supabase.from('likes').insert({ user_id: user.id, post_id: post.id }).catch(() => {});
-        await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
-        if (post.user_id !== user.id) {
-          await supabase.from('notifications').insert({ user_id: post.user_id, type: 'like', from_user_id: user.id, post_id: post.id });
-          sendActivityNotification({ recipientUserId: post.user_id, title: 'New Reaction', body: `${user.username} reacted ❤️ to your post`, data: { route: `/post/${post.id}`, type: 'like' } });
-        }
-      } else if (prevReaction === '❤️' && emoji !== '❤️' && isLiked) {
-        const newCount = Math.max(0, likesCount - 1);
-        setIsLiked(false);
-        setLikesCount(newCount);
-        await supabase.from('likes').delete().eq('user_id', user.id).eq('post_id', post.id);
-        await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
-      }
-    }
-    onUpdate?.();
-  };
 
   // Multi-language Post Translation
   const LANGUAGES = [
@@ -271,14 +238,10 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
   const fetchAnalytics = useCallback(async () => {
     if (analytics) return;
     setLoadingAnalytics(true);
-    const { data } = await supabase
-      .from('post_analytics')
-      .select('views, unique_viewers, engagement_rate, shares')
-      .eq('post_id', post.id)
-      .maybeSingle();
-    setAnalytics(data ?? { views: post.views_count ?? 0, unique_viewers: 0, engagement_rate: 0, shares: 0 });
+    const counts = await getInteractionCounts(interactionPostId);
+    setAnalytics({ views: counts.views, unique_viewers: 0, engagement_rate: 0, shares: 0 });
     setLoadingAnalytics(false);
-  }, [post.id, analytics, post.views_count]);
+  }, [interactionPostId, analytics]);
 
   const openTooltip = useCallback(() => {
     setShowEngagement(true);
@@ -296,56 +259,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
   };
 
-  // ── Inline Comment Thread ─────────────────────────────────────────────────
-  const [showComments, setShowComments] = useState(false);
-  const [inlineReplies, setInlineReplies] = useState<any[]>([]);
-  const [inlineLoading, setInlineLoading] = useState(false);
-  const [inlineReplyText, setInlineReplyText] = useState('');
-  const [inlinePosting, setInlinePosting] = useState(false);
-  const [replyingToId, setReplyingToId] = useState<string | null>(null);
-  const [replyText, setReplyText] = useState('');
-  // esbuild guard: parallel arrays replace Set<string> state (no Set in useState)
-  const [expandedRepliesIds, setExpandedRepliesIds] = useState<string[]>([]);
-
-  const fetchInlineReplies = async () => {
-    setInlineLoading(true);
-    const { data } = await supabase
-      .from('replies')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
-      .eq('post_id', post.id)
-      .order('created_at', { ascending: true })
-      .limit(50);
-    setInlineReplies(data ?? []);
-    setInlineLoading(false);
-  };
-
-  const toggleComments = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!showComments) fetchInlineReplies();
-    setShowComments(v => !v);
-  };
-
-  const postInlineReply = async (parentId?: string) => {
-    const text = parentId ? replyText.trim() : inlineReplyText.trim();
-    if (!text || !user) return;
-    if (parentId) { setReplyText(''); setReplyingToId(null); }
-    else setInlineReplyText('');
-    setInlinePosting(true);
-    await supabase.from('replies').insert({ post_id: post.id, user_id: user.id, content: text });
-    await fetchInlineReplies();
-    setInlinePosting(false);
-  };
-
-  const nestReplies = (flat: any[]) => flat;
-
-  // Helper: check if 'all' is in expandedRepliesIds (replaces Set.has)
-  const isAllExpanded = expandedRepliesIds.includes('all');
-  const toggleAllExpanded = () => {
-    setExpandedRepliesIds(prev =>
-      prev.includes('all') ? prev.filter(x => x !== 'all') : [...prev, 'all']
-    );
-  };
-
   // Tip dialog state
   const [showTipDialog, setShowTipDialog] = useState(false);
   const [tipAmount, setTipAmount] = useState<number | null>(null);
@@ -357,26 +270,15 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     if (!tipAmount || tipAmount <= 0) return;
     setTippingLoading(true);
     try {
-      const { error: tipErr } = await supabase.rpc('send_tip_with_platform_cut', {
-        p_from_user_id: user.id,
+      const { error: tipErr } = await supabase.rpc('send_wallet_tip', {
         p_to_user_id: post.user_id,
         p_amount: tipAmount,
-        p_message: tipMessage.trim() || null,
-        p_post_id: post.id,
+        p_note: tipMessage.trim() || `Tip on post ${post.id}`,
+        p_idempotency_key: `post-tip:${post.id}:${user.id}:${crypto.randomUUID()}`,
       });
-      if (tipErr) {
-        const { data: wallet } = await supabase.from('user_wallets').select('id,balance').eq('user_id', user.id).maybeSingle();
-        if (!wallet || Number(wallet.balance) < tipAmount) {
-          toast({ title: 'Insufficient balance', description: 'Top up your wallet to send tips', variant: 'destructive' }); return;
-        }
-        await supabase.from('user_wallets').update({ balance: Number(wallet.balance) - tipAmount }).eq('user_id', user.id);
-        await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: post.user_id, amount: tipAmount, message: tipMessage.trim() || null, post_id: post.id });
-        await supabase.from('notifications').insert({ user_id: post.user_id, type: 'payment_sent', from_user_id: user.id, post_id: post.id });
-        await supabase.from('creator_earnings').insert({ user_id: post.user_id, source: 'tips', amount: tipAmount, post_id: post.id, status: 'paid' }).catch(() => {});
-      } else {
-        await supabase.from('notifications').insert({ user_id: post.user_id, type: 'payment_sent', from_user_id: user.id, post_id: post.id });
-      }
-      toast({ title: `Tip of $${tipAmount} sent!`, description: `You tipped @${post.user_profiles?.username}` });
+      if (tipErr) throw tipErr;
+      await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'payment_sent', actor_id: user.id, post_id: post.id });
+      toast({ title: `Tip of $${tipAmount} sent!`, description: `You tipped @${authorUsername}` });
       setShowTipDialog(false);
       setTipAmount(null);
       setTipMessage('');
@@ -406,7 +308,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     // 7-day daily view counts from browsing_history
     const since = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
     const [historyRes, analyticsRes] = await Promise.all([
-      supabase.from('browsing_history').select('created_at').eq('post_id', post.id).eq('view_type', 'post').gte('created_at', since),
+      supabase.from('browsing_history').select('created_at').eq('entity_id', post.id).eq('entity_type', 'post').gte('created_at', since),
       supabase.from('post_analytics').select('views, unique_viewers, engagement_rate, shares').eq('post_id', post.id).maybeSingle(),
     ]);
     // Build 7-day chart — parallel arrays, no index-sig (esbuild guard)
@@ -433,7 +335,8 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     const { data: reactData } = await supabase
       .from('post_reactions')
       .select('emoji')
-      .eq('post_id', post.id);
+      .eq('post_id', post.id)
+      .eq('emoji', '❤️');
     const emojiList: string[] = [];
     const countList: number[] = [];
     for (const row of (reactData ?? [])) {
@@ -453,14 +356,24 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
   const handleSubmitReport = async () => {
     if (!user || !reportCategory) return;
     setReportSubmitting(true);
-    await supabase.from('post_reports').upsert(
-      { post_id: post.id, reporter_id: user.id, category: reportCategory },
-      { onConflict: 'post_id,reporter_id' }
-    ).catch(() => {});
-    toast({ title: 'Report submitted', description: 'Thanks for helping keep the community safe.' });
-    setShowReportDialog(false);
-    setReportCategory('');
-    setReportSubmitting(false);
+    try {
+      if (isFederatedPost) {
+        await federation.flagStatus(interactionPostId, reportCategory);
+      } else {
+        const { error } = await supabase.from('post_reports').upsert(
+          { post_id: post.id, reporter_id: user.id, category: reportCategory },
+          { onConflict: 'post_id,reporter_id' }
+        );
+        if (error) throw error;
+      }
+      toast({ title: 'Report submitted', description: 'Thanks for helping keep the community safe.' });
+      setShowReportDialog(false);
+      setReportCategory('');
+    } catch (error) {
+      toast({ title: 'Report failed', description: error instanceof Error ? error.message : 'Could not submit report', variant: 'destructive' });
+    } finally {
+      setReportSubmitting(false);
+    }
   };
 
   // Video monetization pre-roll
@@ -481,104 +394,106 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     videoRef2.current?.play().catch(() => {});
   };
 
-  const mediaUrls = post.media_urls && post.media_urls.length > 0
-    ? post.media_urls
-    : post.image_url
-      ? [post.image_url]
-      : [];
+  const rawMedia = (post as any).media_urls ?? (post as any).mediaUrls ?? (post as any).attachments ?? [];
+  const mediaUrls: string[] = Array.isArray(rawMedia)
+    ? rawMedia.map((item: any) => typeof item === 'string' ? item : (item?.url ?? item?.media_url ?? item?.mediaUrl)).filter(Boolean)
+    : [];
+  const resolvedImageUrls = mediaUrls.length
+    ? mediaUrls.filter((url: string) => !/\.(mp4|webm|mov|m4v|ogv)(?:[?#].*)?$/i.test(url))
+    : ((post as any).image_url ? [String((post as any).image_url)] : []);
+  const resolvedVideoUrl = (post as any).video_url
+    ? String((post as any).video_url)
+    : mediaUrls.find((url: string) => /\.(mp4|webm|mov|m4v|ogv)(?:[?#].*)?$/i.test(url));
+  const hasVideo = Boolean((post as any).is_video || resolvedVideoUrl);
 
-  const boostLabel = post.is_boosted
-    ? post.boost_type === 'paid' ? 'Sponsored Content' : 'Boosted Content'
-    : null;
+  const boostLabel = (post as any).is_credit_boosted
+    ? 'Boosted Content'
+    : post.is_boosted
+      ? post.boost_type === 'paid' ? 'Sponsored Content' : 'Boosted Content'
+      : null;
 
   useEffect(() => {
+    let cancelled = false;
     const fetchPoll = async () => {
+      // Home/profile/feed endpoints may already embed the poll relation.
+      // Use it immediately and avoid an extra request per post.
+      const embedded = (post as any).poll;
+      if (embedded?.id) {
+        if (!cancelled) setPoll(embedded);
+        return;
+      }
       const { data } = await supabase
         .from('polls')
-        .select('*, options:poll_options(*)')
+        .select('id,post_id,question,description,status,ends_at,allow_multiple,visibility')
         .eq('post_id', post.id)
         .maybeSingle();
-      if (data) setPoll(data);
+      if (!cancelled && data) setPoll(data);
     };
-    fetchPoll();
-  }, [post.id]);
+    void fetchPoll();
+    return () => { cancelled = true; };
+  }, [post.id, (post as any).poll?.id]);
 
   useEffect(() => {
-    if (!user) return;
-    const checkUserInteractions = async () => {
-      try {
-        const { data: likeData } = await supabase
-          .from('likes').select('id').eq('user_id', user.id).eq('post_id', post.id).maybeSingle();
-        setIsLiked(!!likeData);
-        const { data: repostData } = await supabase
-          .from('reposts').select('id').eq('user_id', user.id).eq('post_id', post.id).maybeSingle();
-        setIsReposted(!!repostData);
-      } catch (error) {
-        console.error('Error checking user interactions:', error);
-      }
-    };
-    checkUserInteractions();
-  }, [user, post.id]);
+    let cancelled = false;
+    const key = 'testagram:viewed:' + interactionPostId;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, '1');
+    } catch {}
+    recordPostView(interactionPostId)
+      .then(count => { if (!cancelled) setViewsCount(count); })
+      .catch(error => console.warn('[engagement] view record failed', error));
+    return () => { cancelled = true; };
+  }, [interactionPostId]);
 
   const handleLike = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!user) { navigate('/auth'); return; }
-    const newIsLiked = !isLiked;
-    const newCount = newIsLiked ? likesCount + 1 : Math.max(0, likesCount - 1);
-    setIsLiked(newIsLiked);
-    setLikesCount(newCount);
+    const previousIsLiked = isLiked;
+    const previousLikesCount = likesCount;
+    const optimisticIsLiked = !previousIsLiked;
+    setIsLiked(optimisticIsLiked);
     try {
-      if (newIsLiked) {
-        await supabase.from('likes').insert({ user_id: user.id, post_id: post.id });
-        await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
-        if (post.user_id !== user.id) {
-          await supabase.from('notifications').insert({ user_id: post.user_id, type: 'like', from_user_id: user.id, post_id: post.id });
-          sendActivityNotification({ recipientUserId: post.user_id, title: 'New Like', body: `${user.username} liked your post`, data: { route: `/post/${post.id}`, type: 'like' } });
-        }
-        // Update interest signal — fire-and-forget (esbuild guard: called outside render)
+      const state = await togglePostLike(interactionPostId, previousIsLiked);
+      setIsLiked(state.is_liked);
+      if (!isFederatedPost) setLikesCount(state.likes_count);
+      else setLikesCount(prev => Math.max(0, prev + (state.is_liked === previousIsLiked ? 0 : (state.is_liked ? 1 : -1))));
+      if (state.is_liked) {
         updateInterestSignal(user.id, post.id, 'like').catch(() => {});
-      } else {
-        await supabase.from('likes').delete().eq('user_id', user.id).eq('post_id', post.id);
-        await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
       }
-      onUpdate?.();
-    } catch (error: any) {
+      if (!isFederatedPost) onUpdate?.();
+    } catch (error) {
       console.error('Like error:', error);
-      toast({ title: 'Error', description: error.message || 'Failed to like post', variant: 'destructive' });
-      setIsLiked(!newIsLiked);
-      setLikesCount(likesCount);
+      setIsLiked(previousIsLiked);
+      setLikesCount(previousLikesCount);
+      toast({ title: 'Error', description: error instanceof Error ? error.message : 'Failed to like post', variant: 'destructive' });
     }
   };
 
   const handleRepost = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!user) { navigate('/auth'); return; }
-    const newIsReposted = !isReposted;
-    const newCount = newIsReposted ? repostsCount + 1 : Math.max(0, repostsCount - 1);
-    setIsReposted(newIsReposted);
-    setRepostsCount(newCount);
+    const previousIsReposted = isReposted;
+    const previousRepostsCount = repostsCount;
+    const optimisticIsReposted = !previousIsReposted;
+    setIsReposted(optimisticIsReposted);
     try {
-      if (newIsReposted) {
-        await supabase.from('reposts').insert({ user_id: user.id, post_id: post.id });
-        await supabase.from('posts').update({ reposts_count: newCount }).eq('id', post.id);
-        if (post.user_id !== user.id) {
-          await supabase.from('notifications').insert({ user_id: post.user_id, type: 'repost', from_user_id: user.id, post_id: post.id });
-          sendActivityNotification({ recipientUserId: post.user_id, title: 'New Repost', body: `${user.username} reposted your post`, data: { route: `/post/${post.id}`, type: 'repost' } });
-        }
-        toast({ title: 'Reposted successfully' });
-        // Update interest signal — fire-and-forget
+      const state = await togglePostRepost(interactionPostId, previousIsReposted);
+      setIsReposted(state.is_reposted);
+      if (!isFederatedPost) setRepostsCount(state.reposts_count);
+      else setRepostsCount(prev => Math.max(0, prev + (state.is_reposted === previousIsReposted ? 0 : (state.is_reposted ? 1 : -1))));
+      if (state.is_reposted) {
+        if (!isFederatedPost) toast({ title: 'Reposted successfully' });
         updateInterestSignal(user.id, post.id, 'repost').catch(() => {});
-      } else {
-        await supabase.from('reposts').delete().eq('user_id', user.id).eq('post_id', post.id);
-        await supabase.from('posts').update({ reposts_count: newCount }).eq('id', post.id);
+      } else if (!isFederatedPost) {
         toast({ title: 'Repost removed' });
       }
-      onUpdate?.();
-    } catch (error: any) {
+      if (!isFederatedPost) onUpdate?.();
+    } catch (error) {
       console.error('Repost error:', error);
-      toast({ title: 'Error', description: error.message || 'Failed to repost', variant: 'destructive' });
-      setIsReposted(!newIsReposted);
-      setRepostsCount(repostsCount);
+      setIsReposted(previousIsReposted);
+      setRepostsCount(previousRepostsCount);
+      toast({ title: 'Error', description: error instanceof Error ? error.message : 'Failed to repost', variant: 'destructive' });
     }
   };
 
@@ -586,17 +501,19 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     e.stopPropagation();
     const url = `${window.location.origin}/post/${post.id}`;
     const shareText = `${post.content.slice(0, 150)}${post.content.length > 150 ? '\u2026' : ''}`;
-    const trackShare = () => {
-      setShareCount(c => c + 1);
-      supabase.from('post_analytics').select('id, shares').eq('post_id', post.id).maybeSingle().then(({ data }) => {
-        if (data?.id) supabase.from('post_analytics').update({ shares: (data.shares || 0) + 1 }).eq('id', data.id).catch(() => {});
-        else supabase.from('post_analytics').insert({ post_id: post.id, shares: 1 }).catch(() => {});
-      });
+    const trackShare = async () => {
+      if (isFederatedPost) return;
+      try {
+        const count = await recordPostShare(post.id);
+        setShareCount(count);
+      } catch (error) {
+        console.warn('[engagement] share record failed', error);
+      }
     };
     if (navigator.share) {
       try {
-        await navigator.share({ title: `@${post.user_profiles?.username} on Tsocial`, text: shareText, url });
-        trackShare();
+        await navigator.share({ title: `@${authorUsername} on Tsocial`, text: shareText, url });
+        void trackShare();
       } catch (err: any) {
         if (err?.name !== 'AbortError') setShowShareDialog(true);
       }
@@ -611,7 +528,36 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
     }
   };
 
-  const handlePostClick = () => { navigate(`/post/${post.id}`); };
+  const federatedProfilePath = () => {
+    const actor = (post as any).actor_uri || (post as any).remote_account?.actor_uri || authorProfile.actor_uri || '';
+    // Merge cached/local identity with the remote account so partial remote data never erases fields already present on the post.
+    const profile = { ...authorProfile, ...((post as any).remote_account || {}) };
+    const username = String(profile.preferredUsername || profile.username || profile.acct || '').replace(/^@/, '');
+    let domain = String(profile.domain || '');
+    if (!domain && actor) {
+      try { domain = new URL(actor).hostname; } catch {}
+    }
+    const handle = username && domain ? `${username}@${domain}` : username;
+    return actor
+      ? `/fediverse/profile?actor=${encodeURIComponent(actor)}&handle=${encodeURIComponent(handle)}`
+      : handle
+        ? `/fediverse/profile?handle=${encodeURIComponent(handle)}`
+        : '/fediverse';
+  };
+
+  const handlePostClick = () => {
+    if (isFederatedPost) {
+      navigate(federatedProfilePath());
+      return;
+    }
+    navigate(`/post/${post.id}`);
+  };
+
+  const federatedProfile = { ...authorProfile, ...((post as any).remote_account || {}) };
+  const authorDomain = String(federatedProfile.domain || '').trim();
+  const authorHandle = isFederatedPost
+    ? (authorUsername ? `@${authorUsername}${authorDomain ? `@${authorDomain}` : ''}` : '')
+    : (authorUsername ? `@${authorUsername}` : '');
 
   const handleDelete = async () => {
     if (!window.confirm('Are you sure you want to delete this post? This action cannot be undone.')) return;
@@ -631,23 +577,32 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
       className="border-b border-border p-4 hover:bg-muted/5 transition-colors cursor-pointer"
       onClick={handlePostClick}
     >
-      {boostLabel && (
-        <div className={`flex items-center gap-1.5 text-xs font-semibold mb-2 px-1 ${boostLabel === 'Sponsored Content' ? 'text-blue-500' : 'text-amber-500'}`}>
-          {boostLabel === 'Sponsored Content'
-            ? <><TrendingUp className="w-3 h-3" /> Sponsored Content</>
-            : <><Zap className="w-3 h-3" /> Boosted Content</>}
+      {(boostLabel || isFederatedPost) && (
+        <div className="flex items-center gap-2 text-[11px] font-semibold mb-2 px-1">
+          {boostLabel && (
+            <span className={boostLabel === 'Sponsored Content' ? 'text-blue-500' : 'text-amber-500'}>
+              {boostLabel === 'Sponsored Content'
+                ? <><TrendingUp className="w-3 h-3 inline mr-1" /> Sponsored Content</>
+                : <><Zap className="w-3 h-3 inline mr-1" /> Boosted Content</>}
+            </span>
+          )}
+          {isFederatedPost && (
+            <span className="text-muted-foreground">
+              <Globe className="w-3 h-3 inline mr-1" /> Fediverse
+            </span>
+          )}
         </div>
       )}
       <div className="flex space-x-3">
         <div
           className="w-10 h-10 rounded-full bg-muted flex-shrink-0 overflow-hidden cursor-pointer"
-          onClick={(e) => { e.stopPropagation(); navigate(`/profile/${post.user_profiles?.username}`); }}
+          onClick={(e) => { e.stopPropagation(); navigate(isFederatedPost ? federatedProfilePath() : `/profile/${authorUsername}`); }}
         >
-          {post.user_profiles?.avatar_url ? (
-            <img src={post.user_profiles.avatar_url} alt={post.user_profiles.username} className="w-full h-full object-cover" />
+          {authorAvatarUrl ? (
+            <img src={authorAvatarUrl} alt={authorDisplayName || authorUsername || 'User'} className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-sm font-semibold">
-              {post.user_profiles?.username[0]?.toUpperCase()}
+              {authorDisplayName[0]?.toUpperCase() || authorUsername[0]?.toUpperCase() || '?'}
             </div>
           )}
         </div>
@@ -656,16 +611,16 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
           <div className="flex items-center justify-between">
             <div
               className="flex items-center space-x-1 min-w-0 cursor-pointer"
-              onClick={(e) => { e.stopPropagation(); navigate(`/profile/${post.user_profiles?.username}`); }}
+              onClick={(e) => { e.stopPropagation(); navigate(isFederatedPost ? federatedProfilePath() : `/profile/${post.user_profiles?.username}`); }}
             >
-              <span className="font-bold text-foreground truncate">{post.user_profiles?.username}</span>
-              {post.user_profiles?.verified && (
-                <BadgeCheck className="w-4 h-4 text-primary flex-shrink-0" fill="currentColor" />
+              <span className="font-bold text-foreground truncate">{authorDisplayName}</span>
+              {authorProfile.verified && (
+                <VerifiedTick className="w-4 h-4 text-primary flex-shrink-0" />
               )}
               {isAuthorPremium && (
-                <Crown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="currentColor" title="Premium Member" />
+                <Crown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="currentColor" aria-label="Premium Member" />
               )}
-              <span className="text-muted-foreground text-sm truncate">@{post.user_profiles?.username}</span>
+              <span className="text-muted-foreground text-sm truncate">{authorHandle}</span>
               <span className="text-muted-foreground text-sm flex-shrink-0">·</span>
               <span className="text-muted-foreground text-sm flex-shrink-0">
                 {formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}
@@ -683,16 +638,16 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 {showDeleteMenu && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setShowDeleteMenu(false); }} />
-                    <div className="absolute right-0 mt-2 w-48 bg-background border border-border rounded-lg shadow-lg z-50">
+                    <div role="menu" aria-label="Post options" style={{ top: deleteMenuPosition.top, right: deleteMenuPosition.right }} className="fixed w-56 max-h-[min(70vh,24rem)] overflow-y-auto bg-background border border-border rounded-lg shadow-2xl z-[100]">
                       <button
                         onClick={(e) => { e.stopPropagation(); setShowEditDialog(true); setShowDeleteMenu(false); }}
-                        className="w-full text-left px-4 py-3 hover:bg-muted flex items-center gap-2 rounded-t-lg"
+                        role="menuitem" className="w-full text-left px-4 py-3 hover:bg-muted flex items-center gap-2 rounded-t-lg"
                       >
                         <MoreHorizontal className="w-4 h-4" /> Edit post
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setShowDeleteMenu(false); navigate(`/create-ad?from_post=${post.id}&title=${encodeURIComponent(post.content.slice(0, 80))}&desc=${encodeURIComponent(post.content.slice(0, 200))}&img=${encodeURIComponent((post as any).image_url ?? '')}&vid=${encodeURIComponent((post as any).video_url ?? '')}`); }}
-                        className="w-full text-left px-4 py-3 hover:bg-muted flex items-center gap-2"
+                        role="menuitem" className="w-full text-left px-4 py-3 hover:bg-muted flex items-center gap-2"
                       >
                         <Megaphone className="w-4 h-4 text-amber-500" /> Boost as Ad
                       </button>
@@ -718,7 +673,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setShowDeleteMenu(false); handleDelete(); }}
-                        className="w-full text-left px-4 py-3 hover:bg-destructive/10 text-destructive flex items-center gap-2 rounded-b-lg"
+                        role="menuitem" className="w-full text-left px-4 py-3 hover:bg-destructive/10 text-destructive flex items-center gap-2 rounded-b-lg"
                       >
                         <Trash2 className="w-4 h-4" /> Delete post
                       </button>
@@ -731,9 +686,21 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
 
           <div
             className="post-content text-foreground mt-1 whitespace-pre-wrap break-words"
-            dangerouslySetInnerHTML={{ __html: parseContent(showTranslation && translatedContent ? translatedContent : post.content) }}
             onClick={(e) => { const target = e.target as HTMLElement; if (target.tagName === 'A') e.stopPropagation(); }}
-          />
+          >
+            {isFederatedPost ? (
+              <FediverseRichText html={showTranslation && translatedContent ? translatedContent : post.content} tags={(post as any).tags ?? []} className="text-sm leading-relaxed break-words" />
+            ) : (
+              <div dangerouslySetInnerHTML={{ __html: parseContent(showTranslation && translatedContent ? translatedContent : post.content) }} />
+            )}
+          </div>
+
+          {!isFederatedPost && (post as any).quoted_post_id && (
+            <QuotedPostPreview quotedPostId={(post as any).quoted_post_id} />
+          )}
+
+          <InlineTvSuggestion content={post.content || ''} seed={post.id} type="post" />
+          <InlineRssSuggestion content={post.content || ''} seed={`${post.id}-rss`} type="post" />
 
           {/* Translate button with multi-language picker */}
           {post.content && post.content.length > 20 && (
@@ -777,7 +744,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
           )}
 
           {/* Video Player with monetization pre-roll */}
-          {post.is_video && post.video_url && (
+          {hasVideo && resolvedVideoUrl && (
             <div className="mt-3 relative rounded-2xl overflow-hidden bg-black max-h-[600px]" onClick={e => e.stopPropagation()}>
               {showVideoAd && (
                 <VideoMonetizationAd
@@ -800,54 +767,51 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 preload="metadata"
                 onPlay={handleVideoPlay}
               >
-                <source src={post.video_url} type="video/mp4" />
-                <source src={post.video_url} type="video/webm" />
-                <source src={post.video_url} type="video/ogg" />
+                <source src={resolvedVideoUrl} type="video/mp4" />
+                <source src={resolvedVideoUrl} type="video/webm" />
+                <source src={resolvedVideoUrl} type="video/ogg" />
                 Your browser does not support the video tag.
               </video>
             </div>
           )}
 
           {/* Multi-Image Grid */}
-          {!post.is_video && mediaUrls.length > 0 && (
+          {!hasVideo && resolvedImageUrls.length > 0 && (
             <div className={`mt-3 gap-2 rounded-2xl overflow-hidden ${
-              mediaUrls.length === 1 ? 'grid grid-cols-1' :
-              mediaUrls.length === 2 ? 'grid grid-cols-2' :
+              resolvedImageUrls.length === 1 ? 'grid grid-cols-1' :
+              resolvedImageUrls.length === 2 ? 'grid grid-cols-2' :
               'grid grid-cols-2'
             }`}>
-              {mediaUrls.map((url: string, index: number) => (
-                <div key={index} className={`relative overflow-hidden ${mediaUrls.length === 3 && index === 0 ? 'col-span-2' : ''}`}>
-                  <img src={url} alt={`Post media ${index + 1}`} className="w-full h-full object-cover max-h-96" />
+              {resolvedImageUrls.map((url: string, index: number) => (
+                <div key={index} className={`relative overflow-hidden ${resolvedImageUrls.length === 3 && index === 0 ? 'col-span-2' : ''}`}>
+                  <img
+                  src={mediaCandidates(url)[0] || url}
+                  alt={`Post media ${index + 1}`}
+                  className="w-full h-full object-cover max-h-96"
+                  loading={index === 0 ? 'eager' : 'lazy'}
+                  decoding="async"
+                  fetchPriority={index === 0 ? 'high' : 'auto'}
+                  onError={(event) => {
+                    const candidates = mediaCandidates(url);
+                    const current = event.currentTarget.currentSrc || event.currentTarget.src;
+                    const index = candidates.indexOf(current);
+                    const next = candidates[index >= 0 ? index + 1 : 1];
+                    if (next && event.currentTarget.dataset.fallback !== next) {
+                      event.currentTarget.dataset.fallback = next;
+                      event.currentTarget.src = next;
+                    }
+                  }}
+                />
                 </div>
               ))}
             </div>
           )}
 
-          {poll && <PollCard poll={poll} postId={post.id} />}
+          {poll && <PollCard poll={poll} postId={post.id} repliesCount={post.replies_count ?? 0} />}
 
           {/* Embeds — YouTube, Spotify, SoundCloud, etc. */}
           {!post.is_video && <EmbedRenderer content={post.content} />}
 
-          {/* Reaction bubbles */}
-          {reactionEmojis.length > 0 && (
-            <div className="flex gap-1.5 mt-2 flex-wrap" onClick={e => e.stopPropagation()}>
-              {REACTIONS.filter(e => getReactionCount(e) > 0).map(emoji => (
-                <button
-                  key={emoji}
-                  onClick={(e) => handleReact(emoji, e)}
-                  className={cn(
-                    'flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs border transition-all duration-100 hover:scale-105 active:scale-95',
-                    userReaction === emoji
-                      ? 'bg-primary/10 border-primary/30 text-primary font-semibold'
-                      : 'bg-muted/50 border-border text-muted-foreground hover:border-primary/20 hover:bg-primary/5'
-                  )}
-                >
-                  <span>{emoji}</span>
-                  <span className="font-medium">{formatNumber(getReactionCount(emoji))}</span>
-                </button>
-              ))}
-            </div>
-          )}
 
           {/* Views count with Engagement Tooltip */}
           <div className="relative inline-block mt-2">
@@ -862,7 +826,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors cursor-pointer select-none"
             >
               <Eye className="w-3.5 h-3.5" />
-              <span>{formatNumber(post.views_count || 0)} views</span>
+              <span>{formatNumber(viewsCount)} views</span>
               <BarChart3 className="w-3 h-3 opacity-40" />
             </button>
 
@@ -882,7 +846,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
                 ) : analytics ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-blue-500/8 rounded-xl p-2 text-center">
-                      <p className="text-sm font-bold text-blue-600">{formatNumber(analytics.views ?? post.views_count ?? 0)}</p>
+                      <p className="text-sm font-bold text-blue-600">{formatNumber(analytics.views ?? viewsCount)}</p>
                       <p className="text-[9px] text-muted-foreground mt-0.5 flex items-center justify-center gap-0.5"><Eye className="w-2.5 h-2.5" />Views</p>
                     </div>
                     <div className="bg-purple-500/8 rounded-xl p-2 text-center">
@@ -904,16 +868,18 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
             )}
           </div>
 
+          <div className="flex gap-4 mt-1 text-[11px] text-muted-foreground"><button onClick={(e) => { e.stopPropagation(); isFederatedPost ? navigate(federatedProfilePath()) : navigate(`/post/${interactionPostId}/likes`); }} className="hover:text-primary">{formatNumber(likesCount)} likes</button><button onClick={(e) => { e.stopPropagation(); isFederatedPost ? navigate(federatedProfilePath()) : navigate(`/post/${interactionPostId}/reposts`); }} className="hover:text-primary">{formatNumber(repostsCount)} reposts</button><button onClick={(e) => { e.stopPropagation(); isFederatedPost ? navigate(federatedProfilePath()) : navigate(`/post/${interactionPostId}/quotes`); }} className="hover:text-primary">{formatNumber(quoteCount)} quotes</button></div>
+
           <div className="flex justify-between mt-3 max-w-md">
             <button
               className="flex items-center space-x-2 text-muted-foreground hover:text-primary transition-colors group"
-              onClick={toggleComments}
+              onClick={(e) => { e.stopPropagation(); navigate(`/post/${encodeURIComponent(interactionPostId)}`); }}
             >
               <div className="p-2 rounded-full group-hover:bg-primary/10 transition-colors">
                 <MessageCircle className="w-5 h-5" />
               </div>
-              <span className="text-sm">{formatNumber(post.replies_count)}</span>
-              {showComments ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3 opacity-50" />}
+              <span onClick={(e) => { e.stopPropagation(); navigate(`/post/${encodeURIComponent(interactionPostId)}`); }} className="text-sm cursor-pointer">{formatNumber(repliesCount)}</span>
+              
             </button>
 
             <button
@@ -923,55 +889,32 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               <div className="p-2 rounded-full group-hover:bg-green-500/10 transition-colors">
                 <Repeat2 className="w-5 h-5" />
               </div>
-              <span className="text-sm">{formatNumber(repostsCount)}</span>
+              <span onClick={(e) => { e.stopPropagation(); isFederatedPost ? navigate(federatedProfilePath()) : navigate(`/post/${interactionPostId}/reposts`); }} className="text-sm cursor-pointer">{formatNumber(repostsCount)}</span>
             </button>
 
-            {/* Reaction button + picker */}
+            {/* Single canonical reaction: heart like */}
             <div className="relative">
               <button
-                onClick={(e) => { e.stopPropagation(); setShowReactionPicker(p => !p); }}
-                onMouseEnter={() => setShowReactionPicker(true)}
-                onMouseLeave={() => setShowReactionPicker(false)}
+                onClick={handleLike}
                 className={cn('flex items-center space-x-1.5 transition-colors group', userReaction ? 'text-pink-600' : 'text-muted-foreground hover:text-pink-600')}
               >
                 <div className="p-2 rounded-full group-hover:bg-pink-600/10 transition-colors">
-                  {userReaction ? <span className="text-base leading-none">{userReaction}</span> : <Heart className="w-5 h-5" />}
+                  <Heart className="w-5 h-5" fill={isLiked ? 'currentColor' : 'none'} />
                 </div>
                 <span className="text-sm">{formatNumber(likesCount)}</span>
               </button>
-              {showReactionPicker && (
-                <div
-                  className="absolute bottom-full mb-1 left-0 flex gap-0.5 bg-background border border-border rounded-full px-2 py-1.5 shadow-xl z-50"
-                  onMouseEnter={() => setShowReactionPicker(true)}
-                  onMouseLeave={() => setShowReactionPicker(false)}
-                  onClick={e => e.stopPropagation()}
-                >
-                  {REACTIONS.map(emoji => (
-                    <button
-                      key={emoji}
-                      onClick={(e) => handleReact(emoji, e)}
-                      className={cn(
-                        'text-xl transition-all duration-100 hover:scale-125 active:scale-90 rounded-full w-9 h-9 flex items-center justify-center',
-                        userReaction === emoji ? 'bg-primary/10 scale-110 ring-2 ring-primary/20' : 'hover:bg-muted'
-                      )}
-                      title={emoji}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+           </div>
 
             {/* Quote Tweet */}
             <button
-              title="Quote Tweet"
+              title={'Quote Tweet' + (quoteCount ? ' · ' + quoteCount : '')}
               className="flex items-center space-x-2 text-muted-foreground hover:text-blue-500 transition-colors group"
-              onClick={e => { e.stopPropagation(); navigate(`/?quote_post_id=${post.id}&quote_preview=${encodeURIComponent(post.content.slice(0, 100))}`); }}
+              onClick={e => { e.stopPropagation(); navigate(`/post/${encodeURIComponent(interactionPostId)}/quote`); }}
             >
               <div className="p-2 rounded-full group-hover:bg-blue-500/10 transition-colors">
                 <Quote className="w-4 h-4" />
               </div>
+              <span className="text-sm tabular-nums">{formatNumber(quoteCount)}</span>
             </button>
 
             <button
@@ -981,12 +924,13 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               <div className="p-2 rounded-full group-hover:bg-primary/10 transition-colors">
                 <Share className="w-5 h-5" />
               </div>
-              {shareCount > 0 && <span className="text-sm tabular-nums">{shareCount}</span>}
+              <span className="text-sm tabular-nums">{formatNumber(shareCount)}</span>
             </button>
 
-            <div onClick={(e) => e.stopPropagation()}>
-              <BookmarkButton postId={post.id} />
-              {user && post.user_id !== user.id && (post as any).user_id && (
+            <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-0.5">
+              <BookmarkButton postId={interactionPostId} onChange={(bookmarked) => setBookmarksCount(prev => Math.max(0, prev + (bookmarked ? 1 : -1)))} />
+              <span className="text-sm tabular-nums">{formatNumber(bookmarksCount)}</span>
+              {user && !isFederatedPost && post.user_id !== user.id && (post as any).user_id && (
                 <TipButton
                   postId={post.id}
                   creatorId={(post as any).user_id}
@@ -997,7 +941,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               )}
             </div>
 
-            {user && user.id !== post.user_id && (
+            {user && !isFederatedPost && user.id !== post.user_id && (
               <button
                 className="flex items-center space-x-2 text-muted-foreground hover:text-amber-500 transition-colors group"
                 onClick={(e) => { e.stopPropagation(); setShowTipDialog(true); }}
@@ -1045,116 +989,6 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
           </div>
         </div>
       </div>
-
-      {/* ── Inline Comment Thread ──────────────────────────────────── */}
-      {showComments && (
-        <div className="mt-2 border-t border-border pt-3 space-y-3" onClick={e => e.stopPropagation()}>
-          {user && (
-            <div className="flex items-start gap-2 px-1">
-              <div className="w-7 h-7 rounded-full bg-muted overflow-hidden shrink-0 mt-1">
-                {user.avatar
-                  ? <img src={user.avatar} alt={user.username} className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center text-xs font-bold">{user.username[0]?.toUpperCase()}</div>}
-              </div>
-              <div className="flex-1 flex items-center gap-2 bg-muted/50 border border-border rounded-xl px-3 py-1.5">
-                <input
-                  type="text"
-                  value={inlineReplyText}
-                  onChange={e => setInlineReplyText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postInlineReply(); } }}
-                  placeholder="Add a comment…"
-                  className="flex-1 bg-transparent text-sm focus:outline-none placeholder:text-muted-foreground/60"
-                  maxLength={280}
-                />
-                <button
-                  onClick={() => postInlineReply()}
-                  disabled={!inlineReplyText.trim() || inlinePosting}
-                  className="text-primary disabled:opacity-30 hover:opacity-80 transition-opacity"
-                >
-                  {inlinePosting ? <TransLoader className="w-4 h-4 animate-spin" /> : <SendIcon className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {inlineLoading ? (
-            <div className="flex justify-center py-3">
-              <TransLoader className="w-5 h-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : inlineReplies.length === 0 ? (
-            <p className="text-xs text-muted-foreground text-center py-3">No comments yet. Be the first!</p>
-          ) : (
-            <div className="space-y-0.5">
-              {nestReplies(inlineReplies).slice(0, isAllExpanded ? 999 : 5).map((reply: any) => (
-                <div key={reply.id} className="flex gap-2 px-1 py-2 rounded-xl hover:bg-muted/30 transition-colors group">
-                  <button onClick={() => navigate(`/profile/${reply.user_profiles?.username}`)} className="shrink-0">
-                    <div className="w-7 h-7 rounded-full bg-muted overflow-hidden">
-                      {reply.user_profiles?.avatar_url
-                        ? <img src={reply.user_profiles.avatar_url} alt={reply.user_profiles.username} className="w-full h-full object-cover" />
-                        : <div className="w-full h-full flex items-center justify-center text-[10px] font-bold">{reply.user_profiles?.username?.[0]?.toUpperCase()}</div>}
-                    </div>
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-bold">{reply.user_profiles?.username}</span>
-                      {reply.user_profiles?.verified && <BadgeCheck className="w-3 h-3 text-primary shrink-0" fill="currentColor" />}
-                      <span className="text-[10px] text-muted-foreground">
-                        {formatDistanceToNow(new Date(reply.created_at), { addSuffix: true })}
-                      </span>
-                    </div>
-                    <p className="text-sm leading-relaxed mt-0.5 break-words">{reply.content}</p>
-                    <EmbedRenderer content={reply.content} />
-                    <PostContentEmbeds content={reply.content} />
-                    {user && (
-                      <button
-                        onClick={() => setReplyingToId(replyingToId === reply.id ? null : reply.id)}
-                        className="text-[11px] text-muted-foreground hover:text-primary mt-1 transition-colors"
-                      >
-                        Reply
-                      </button>
-                    )}
-                    {replyingToId === reply.id && (
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <input
-                          type="text"
-                          value={replyText}
-                          onChange={e => setReplyText(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') postInlineReply(reply.id); if (e.key === 'Escape') setReplyingToId(null); }}
-                          placeholder={`Reply to @${reply.user_profiles?.username}…`}
-                          className="flex-1 text-xs bg-muted/50 border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                          autoFocus
-                          maxLength={280}
-                        />
-                        <button onClick={() => postInlineReply(reply.id)} disabled={!replyText.trim()} className="text-primary disabled:opacity-30">
-                          <SendIcon className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {inlineReplies.length > 5 && (
-                <button
-                  onClick={toggleAllExpanded}
-                  className="w-full text-xs text-primary font-semibold py-2 hover:bg-primary/5 rounded-xl transition-colors flex items-center justify-center gap-1"
-                >
-                  {isAllExpanded
-                    ? <><ChevronUp className="w-3.5 h-3.5" /> Show less</>
-                    : <><ChevronDown className="w-3.5 h-3.5" /> View all {inlineReplies.length} comments</>}
-                </button>
-              )}
-              {inlineReplies.length > 0 && (
-                <button
-                  onClick={() => navigate(`/post/${post.id}`)}
-                  className="w-full text-xs text-muted-foreground py-1 hover:text-primary transition-colors text-center"
-                >
-                  View full thread →
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       <SharePostDialog open={showShareDialog} onOpenChange={setShowShareDialog} post={post} />
 
@@ -1208,7 +1042,7 @@ export function PostCard({ post, onUpdate }: PostCardProps) {
               <div className="w-10 h-10 rounded-full overflow-hidden bg-muted">
                 {post.user_profiles?.avatar_url
                   ? <img src={post.user_profiles.avatar_url} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center font-bold text-sm">{post.user_profiles?.username?.[0]?.toUpperCase()}</div>}
+                  : <div className="w-full h-full flex items-center justify-center font-bold text-sm">{authorUsername?.[0]?.toUpperCase() || '?'}</div>}
               </div>
               <div>
                 <p className="font-bold">Tip @{post.user_profiles?.username}</p>

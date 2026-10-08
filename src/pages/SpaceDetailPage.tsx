@@ -52,17 +52,17 @@ export default function SpaceDetailPage() {
   const handleSuperChat = async () => {
     if (!user || !space || !superChatAmt || !superChatMsg.trim()) return;
     setSendingSuperChat(true);
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: superChatAmt });
-    if (deductErr) { toast.error('Insufficient wallet balance'); setSendingSuperChat(false); return; }
-    const pinnedUntil = new Date(Date.now() + 60000);
-    await supabase.from('space_superchats').insert({
-      space_id: space.id,
-      user_id: user.id,
-      message: superChatMsg.trim(),
-      amount: superChatAmt,
-      color: 'gold',
-      pinned_until: pinnedUntil.toISOString(),
+    const { error: superChatError } = await supabase.rpc('send_space_superchat', {
+      p_space_id: space.id,
+      p_amount: superChatAmt,
+      p_message: superChatMsg.trim(),
     });
+    if (superChatError) {
+      const message = superChatError.message?.includes('INSUFFICIENT_FUNDS') ? 'Insufficient wallet balance' : superChatError.message || 'Unable to send Super Chat';
+      toast.error(message);
+      setSendingSuperChat(false);
+      return;
+    }
     toast.success(`💬 SuperChat $${superChatAmt} sent!`);
     setSuperChatMsg('');
     setSuperChatAmt(null);
@@ -72,6 +72,7 @@ export default function SpaceDetailPage() {
   };
 
   const [space, setSpace] = useState<any>(null);
+  const [channelHandle, setChannelHandle] = useState<string | null>(null);
   const [recordings, setRecordings] = useState<any[]>([]);
   const [participants, setParticipants] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -143,6 +144,7 @@ export default function SpaceDetailPage() {
       .eq('id', id!)
       .single();
     setSpace(data);
+    if (data?.id) { const { data: channel } = await supabase.from('channel_profiles').select('handle').eq('channel_key', 'audio:' + data.id).maybeSingle(); setChannelHandle(channel?.handle ?? null); }
     setLoading(false);
   };
 
@@ -158,7 +160,7 @@ export default function SpaceDetailPage() {
   const fetchParticipants = async () => {
     const { data } = await supabase
       .from('space_participants')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('space_id', id!)
       .limit(20);
     setParticipants(data ?? []);
@@ -191,6 +193,7 @@ export default function SpaceDetailPage() {
           <Radio className="w-16 h-16 mx-auto mb-4 opacity-20" />
           <p className="font-bold text-xl mb-2">Space not found</p>
           <p className="text-sm mb-6">This space may have ended or been removed.</p>
+          {channelHandle && <Button variant="outline" size="sm" onClick={() => navigate('/channel/' + channelHandle)}>Channel profile</Button>}
           <Button onClick={() => navigate('/spaces')} className="rounded-full">
             <ArrowLeft className="w-4 h-4 mr-2" /> Back to Spaces
           </Button>
