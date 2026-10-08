@@ -13,6 +13,8 @@ import {
 import { toast } from 'sonner';
 import { formatNumber } from '@/lib/utils';
 import { useSEO, buildHashtagLD, buildOgImageUrl } from '@/hooks/useSEO';
+import { backendCapabilities } from '@/services/testagramCapabilityClient';
+import { FederatedHashtagDiscovery } from '@/components/features/FederatedOrganicDiscovery';
 
 import { PageAdBanner } from '@/components/features/AdSenseAd';
 function HashtagAdBanner() { return <PageAdBanner />; }
@@ -22,6 +24,7 @@ export default function HashtagPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [posts, setPosts] = useState<Post[]>([]);
+  const [federatedPosts, setFederatedPosts] = useState<any[]>([]);
   const [hashtag, setHashtag] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [sortMode, setSortMode] = useState<'recent' | 'top'>('recent');
@@ -39,7 +42,7 @@ export default function HashtagPage() {
       ? `#${tag} — ${formatNumber(hashtag.usage_count ?? posts.length)} posts on Testagram`
       : tag ? `#${tag} on Testagram` : 'Hashtag',
     description: hashtag
-      ? `Browse ${hashtag.usage_count?.toLocaleString() ?? '0'} posts tagged with #${tag} on Testagram. Join the conversation and follow this hashtag to see it in your feed.`
+      ? `Browse ${(Number(hashtag.usage_count ?? 0) + Number(hashtag.federated_post_count ?? 0)).toLocaleString()} posts tagged with #${tag} on Testagram. Join the conversation and follow this hashtag to see it in your feed.`
       : `Posts tagged with #${tag} on Testagram.`,
     image: tag ? buildOgImageUrl({ tag }) : undefined,
     url: `/hashtag/${tag}`,
@@ -48,13 +51,28 @@ export default function HashtagPage() {
     structuredData: hashtag ? buildHashtagLD(tag ?? '', hashtag.usage_count ?? 0) : undefined,
   });
 
+  // Hashtag content is keyed only by the route. Do not refetch the entire
+  // page when auth hydration changes the user object; that previously caused
+  // duplicate failing requests/toasts during initial navigation.
   useEffect(() => {
-    if (tag) {
-      fetchHashtagAndPosts();
-      if (user) checkFollowStatus();
-      fetchRelatedSuggestions(tag);
-    }
-  }, [tag, user]);
+    if (!tag) return;
+    let cancelled = false;
+    void fetchHashtagAndPosts();
+    void fetchRelatedSuggestions(tag);
+    const normalized = String(tag).replace(/^#/,'').trim().toLowerCase();
+    const channel = supabase.channel(`hashtag-live:${normalized}`)
+      .on('postgres_changes',{event:'*',schema:'public',table:'post_hashtags'},()=>{if(!cancelled)void fetchHashtagAndPosts();})
+      .on('postgres_changes',{event:'*',schema:'public',table:'federated_hashtag_mentions'},()=>{if(!cancelled)void fetchHashtagAndPosts();})
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'federated_objects'},()=>{if(!cancelled)void fetchHashtagAndPosts();})
+      .subscribe();
+    return () => { cancelled=true; void supabase.removeChannel(channel); };
+  }, [tag]);
+
+  // Follow state is the only part of this page that depends on auth.
+  useEffect(() => {
+    if (user && hashtag?.id) checkFollowStatus();
+    else if (!user) setIsFollowing(false);
+  }, [user?.id, hashtag?.id]);
 
   const fetchRelatedSuggestions = useCallback(async (tagName: string) => {
     // Related live spaces: search title for the hashtag keyword
@@ -102,10 +120,10 @@ export default function HashtagPage() {
   const fetchTopPosts = async (hashtagId: string) => {
     const { data } = await supabase
       .from('post_hashtags')
-      .select('post_id, posts(*, user_profiles(*))')
+      .select('post_id, posts(*, user_profiles:profiles!posts_author_id_fkey(*))')
       .eq('hashtag_id', hashtagId);
     if (!data) return;
-    const allPosts = data.map((item: any) => item.posts).filter(Boolean);
+    const allPosts = data.map((item: any) => item.posts).filter(Boolean).slice(0, 30);
     const sorted = [...allPosts].sort((a, b) => {
       const scoreA = (a.likes_count || 0) + (a.reposts_count || 0) + (a.replies_count || 0);
       const scoreB = (b.likes_count || 0) + (b.reposts_count || 0) + (b.replies_count || 0);
@@ -116,26 +134,107 @@ export default function HashtagPage() {
 
   const fetchHashtagAndPosts = async () => {
     try {
-      const { data: hashtagData, error: hashtagError } = await supabase
+      // Resolve the canonical local hashtag directly from Postgres first. This
+      // keeps hashtag pages independent from the capability search gateway and
+      // also normalizes routes such as /hashtag/#PostgreSQL.
+      const normalizedTag = String(tag ?? '').replace(/^#/, '').trim().toLowerCase();
+      if (!normalizedTag) throw new Error('HASHTAG_NOT_FOUND');
+
+      const { data: directHashtag, error: hashtagError } = await supabase
         .from('hashtags')
-        .select('*')
-        .eq('tag', tag?.toLowerCase())
-        .single();
+        .select('id, tag, usage_count, post_count, follower_count, last_used_at, created_at, federated_post_count')
+        .ilike('tag', normalizedTag)
+        .maybeSingle();
       if (hashtagError) throw hashtagError;
+
+      // Fall back to the authenticated capability search only if the direct
+      // canonical lookup misses. This preserves the existing gateway path for
+      // unusual/migrating hashtag records without making it a hard dependency.
+      let hashtagData = directHashtag as any;
+      if (!hashtagData) {
+        const hashtagResult = await backendCapabilities.searchHashtags(normalizedTag, 20);
+        hashtagData = hashtagResult.items?.find((item: any) =>
+          String(item?.tag ?? '').replace(/^#/, '').trim().toLowerCase() === normalizedTag
+        );
+      }
+      if (!hashtagData) throw new Error('HASHTAG_NOT_FOUND');
       setHashtag(hashtagData);
 
-      const { count: fCount } = await supabase.from('hashtag_follows').select('*', { count: 'exact', head: true }).eq('hashtag_id', hashtagData.id);
+      const { count: fCount } = await supabase
+        .from('hashtag_follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('hashtag_id', hashtagData.id);
       setFollowerCount(fCount ?? 0);
 
+      // post_hashtags has no created_at column in production. Order by the
+      // joined post timestamp after hydration instead of issuing an invalid
+      // PostgREST order against the junction table.
       const { data: postsData, error: postsError } = await supabase
         .from('post_hashtags')
-        .select('post_id, posts(*, user_profiles(*))')
+        .select('post_id, posts(*, user_profiles:profiles!posts_author_id_fkey(*))')
         .eq('hashtag_id', hashtagData.id)
-        .order('created_at', { ascending: false });
+        .range(0, 29);
       if (postsError) throw postsError;
-      const formattedPosts = (postsData || []).map((item: any) => item.posts).filter(Boolean);
+      const formattedPosts = (postsData || [])
+        .map((item: any) => item.posts)
+        .filter(Boolean)
+        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
       setPosts(formattedPosts);
-      fetchTopPosts(hashtagData.id);
+      // Query the indexed relationship through a database function rather than
+      // relying on PostgREST's nested FK embedding. This makes the hashtag page
+      // deterministic even when relationship metadata/cache differs between
+      // environments, while preserving the same public-read visibility rules.
+      let remoteRows: any[] = [];
+      const { data: remoteJson, error: remotePostsError } = await supabase
+        .rpc('get_federated_posts_for_hashtag_json', { p_hashtag_id: hashtagData.id, p_limit: 30 });
+      if (remotePostsError) {
+        console.warn('Federated hashtag RPC unavailable; trying direct indexed fallback:', remotePostsError);
+        const { data: mentions, error: mentionError } = await supabase
+          .from('federated_hashtag_mentions')
+          .select('object_id')
+          .eq('hashtag_id', hashtagData.id)
+          .limit(30);
+        if (!mentionError && mentions?.length) {
+          const ids = mentions.map((m: any) => m.object_id).filter(Boolean);
+          const { data: objects, error: objectError } = await supabase
+            .from('federated_objects')
+            .select('*')
+            .in('id', ids)
+            .is('deleted_at', null)
+            .eq('tombstone', false);
+          if (!objectError) remoteRows = objects ?? [];
+        }
+      } else {
+        try {
+          remoteRows = Array.isArray(remoteJson) ? remoteJson : [];
+        } catch {
+          remoteRows = [];
+        }
+      }
+
+      // A non-zero indexed count with an empty response is a retrieval failure,
+      // not an empty hashtag. Keep the page truthful and surface a diagnostic.
+      if (remoteRows.length === 0 && Number(hashtagData.federated_post_count ?? 0) > 0) {
+        console.warn('Federated hashtag count/rows mismatch', {
+          tag: normalizedTag,
+          hashtagId: hashtagData.id,
+          expected: hashtagData.federated_post_count,
+        });
+      }
+
+      setFederatedPosts(remoteRows.map((p: any) => ({
+        ...p,
+        id: p.id ?? p.uri,
+        uri: p.uri,
+        user_id: p.actor_uri,
+        author_id: p.actor_uri,
+        created_at: p.published_at ?? p.updated_at,
+        content: p.content ?? p.summary ?? '',
+        remote_status_uri: p.uri,
+        user_profiles: p.remote_account ?? { actor_uri: p.actor_uri, username: p.actor_uri?.split('/').pop() ?? 'unknown', display_name: p.actor_uri?.split('/').pop() ?? 'Fediverse account', avatar_url: null },
+        is_federated: true,
+      })));
+      setLoading(false);
     } catch (error) {
       console.error('Error fetching hashtag data:', error);
       toast.error('Failed to load hashtag');
@@ -151,6 +250,10 @@ export default function HashtagPage() {
       .eq('user_id', user.id).eq('hashtag_id', hashtag.id).maybeSingle();
     setIsFollowing(!!data);
   };
+
+  useEffect(() => {
+    if (sortMode === 'top' && hashtag?.id) void fetchTopPosts(hashtag.id);
+  }, [sortMode, hashtag?.id]);
 
   const handleFollow = async () => {
     if (!user) { navigate('/auth'); return; }
@@ -192,6 +295,7 @@ export default function HashtagPage() {
     <div className="min-h-screen bg-background pb-16 md:pb-0">
       <TopBar title={`#${tag}`} showBack />
       <HashtagAdBanner />
+      <FederatedHashtagDiscovery surface="hashtag" />
 
       {/* Hashtag Header */}
       <div className="border-b border-border p-6 bg-gradient-to-br from-primary/10 to-primary/5">
@@ -202,7 +306,7 @@ export default function HashtagPage() {
               <h1 className="text-3xl font-bold">#{tag}</h1>
             </div>
             <div className="flex items-center gap-4 text-sm text-muted-foreground">
-              <span><strong className="text-foreground">{formatNumber(hashtag.usage_count)}</strong> posts</span>
+              <span><strong className="text-foreground">{formatNumber(Number(hashtag.usage_count ?? 0) + Number(hashtag.federated_post_count ?? 0))}</strong> posts</span>
               <span className="flex items-center gap-1">
                 <Users className="w-3.5 h-3.5" />
                 <strong className="text-foreground">{formatNumber(followerCount)}</strong> followers
@@ -304,14 +408,22 @@ export default function HashtagPage() {
 
       {/* Posts */}
       <div>
-        {(sortMode === 'recent' ? posts : topPosts).length === 0 ? (
+        {(sortMode === 'recent'
+          ? [...posts, ...federatedPosts].sort((a: any, b: any) => Date.parse(String(b.created_at ?? '')) - Date.parse(String(a.created_at ?? '')))
+          : [...topPosts, ...federatedPosts].sort((a: any, b: any) => (
+              (Number(b.likes_count ?? b.like_count ?? 0) + Number(b.reposts_count ?? b.announce_count ?? 0) * 2 + Number(b.replies_count ?? b.reply_count ?? 0))
+              - (Number(a.likes_count ?? a.like_count ?? 0) + Number(a.reposts_count ?? a.announce_count ?? 0) * 2 + Number(a.replies_count ?? a.reply_count ?? 0))
+            ))).length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
             <Flame className="w-12 h-12 mx-auto mb-3 opacity-20" />
             <p>No posts found with this hashtag</p>
           </div>
         ) : (
-          (sortMode === 'recent' ? posts : topPosts).map(post => (
-            <PostCard key={post.id} post={post} onUpdate={fetchHashtagAndPosts} />
+          (sortMode === 'recent' ? [...posts, ...federatedPosts] : [...topPosts, ...federatedPosts]).sort((a:any,b:any) => new Date(b.created_at ?? b.published_at ?? 0).getTime() - new Date(a.created_at ?? a.published_at ?? 0).getTime()).map((post:any) => (
+            <div key={post.id ?? post.uri}>
+              <div className="px-4 pt-2"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold ${post.is_federated ? 'border-sky-500/20 bg-sky-500/5 text-sky-600 dark:text-sky-400' : 'border-primary/20 bg-primary/5 text-primary'}`}>{post.is_federated ? 'Fediverse' : 'Testagram'}</span></div>
+              <PostCard post={post} onUpdate={fetchHashtagAndPosts} />
+            </div>
           ))
         )}
       </div>

@@ -1,0 +1,60 @@
+name: Cloudflare CDN Contract Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare/cdn-worker/**"
+      - ".github/workflows/cloudflare-cdn.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "cloudflare/cdn-worker/**"
+      - ".github/workflows/cloudflare-cdn.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-cdn-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Validate canonical CDN contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install Worker dependencies
+        run: npm ci
+
+      - name: Build-only Worker validation
+        run: npx wrangler deploy --dry-run --config cloudflare/cdn-worker/wrangler.toml
+
+      - name: Verify canonical ownership
+        run: |
+          set -euo pipefail
+          grep -Fq 'name = "testagram-cdn"' cloudflare/cdn-worker/wrangler.toml
+          grep -Fq 'pattern = "cdn.testagram.site"' cloudflare/cdn-worker/wrangler.toml
+          grep -Fq 'pattern = "media.testagram.site/*"' cloudflare/cdn-worker/wrangler.toml
+          grep -Fq 'bucket_name = "testagram-media"' cloudflare/cdn-worker/wrangler.toml
+          grep -Fq 'MEDIA_BUCKET' cloudflare/cdn-worker/src/index.ts
+          grep -Fq 'x-testagram-cdn-version' cloudflare/cdn-worker/src/index.ts
+
+      - name: Verify live CDN contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for host in cdn.testagram.site media.testagram.site; do
+            status="$(curl -ksS --connect-timeout 5 --max-time 15 -o /tmp/body -D /tmp/headers -w '%{http_code}' "https://$host/healthz" || true)"
+            [[ "$status" == "200" ]] || { echo "::error::$host /health returned HTTP $status"; cat /tmp/body; exit 1; }
+            grep -qi '^x-testagram-cdn:' /tmp/headers || { echo "::error::$host is not proving CDN execution"; cat /tmp/headers; exit 1; }
+            grep -qi '^x-testagram-cdn-version:' /tmp/headers || { echo "::error::$host is missing the immutable CDN version marker"; cat /tmp/headers; exit 1; }
+          done
