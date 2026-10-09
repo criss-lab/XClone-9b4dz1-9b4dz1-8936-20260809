@@ -47,7 +47,6 @@ try {
 
 const root = __dirname;
 const src  = path.join(root, 'src');
-const stub = path.join(src, 'lib', 'capacitor-stub.ts');
 
 /* ─── Helper: resolve extensionless path to a real file ───────────────────── */
 const TS_EXTS = ['.tsx', '.ts', '.jsx', '.js'];
@@ -96,9 +95,6 @@ const resolveTypescriptExtensions = {
   },
 
   load(id) {
-    // Safety-net: if Rollup asks us to load an extensionless absolute path
-    // (happens when Vite's alias plugin expands @/ AFTER our resolveId ran),
-    // try appending extensions before the load-fallback plugin errors out.
     if (!id || id.startsWith('\0')) return null;
     if (/\.[jt]sx?(\?.*)?$/.test(id)) return null;
     if (!path.isAbsolute(id)) return null;
@@ -115,10 +111,7 @@ const resolveTypescriptExtensions = {
   },
 };
 
-/* ─── Explicit aliases for every layout + feature component in App.tsx ───── *
- * Belt-and-suspenders: even if the plugin fails, these direct aliases ensure
- * Vite can always find the critical entry-point imports.
- */
+/* ─── Explicit aliases for every layout + feature component in App.tsx ───── */
 function a(rel) { return path.join(src, rel); }
 
 const layoutAliases = {
@@ -163,25 +156,8 @@ module.exports = defineConfig({
     extensions: ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.json'],
     dedupe: ['react', 'react-dom'],
     alias: {
-      // Capacitor / Vercel stubs
-      '@capacitor/core':                          stub,
-      '@capacitor/status-bar':                    stub,
-      '@capacitor/app':                           stub,
-      '@capacitor/device':                        stub,
-      '@capacitor/filesystem':                    stub,
-      '@capacitor/network':                       stub,
-      '@capacitor/push-notifications':            stub,
-      '@capacitor/share':                         stub,
-      '@capacitor-community/admob':               stub,
-      '@capacitor-community/firebase-analytics':  stub,
-      '@capacitor-community/media':               stub,
-      '@capgo/capacitor-updater':                 stub,
-      '@vercel/analytics/react':                  stub,
-
-      // Explicit layout / hook aliases (belt-and-suspenders)
+      '@vercel/analytics/react':                  a('lib/analytics-stub.ts'),
       ...layoutAliases,
-
-      // Generic @ path alias — must come LAST so specific aliases win
       '@': src,
     },
   },
@@ -204,7 +180,14 @@ module.exports = defineConfig({
           },
         },
       ],
-      output: { interop: 'auto' },
+      output: {
+        interop: 'auto',
+        // Keep the SPA code-split in production. The previous monolithic build
+        // hid stale-chunk failures by shipping the entire application as one
+        // JavaScript payload, which made the homepage unnecessarily huge.
+        // Vite's dynamic-import preload handling plus vite:preloadError recovery
+        // below keeps route chunks resilient without sacrificing performance.
+      },
       onwarn(warning, warn) {
         if (warning.code === 'MODULE_LEVEL_DIRECTIVE') return;
         if (warning.code === 'MISSING_EXPORT') return;

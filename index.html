@@ -6,6 +6,7 @@
     <!-- App icon favicons -->
     <link rel="icon" type="image/jpeg" href="/app-icon.jpg" />
     <link rel="apple-touch-icon" href="/app-icon.jpg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
 
     <!-- Performance: preconnect critical origins -->
     <link rel="preconnect" href="https://lrqqpudyrkmitbeilrqq.backend.onspace.ai" crossorigin />
@@ -14,8 +15,6 @@
     <link rel="preconnect" href="https://api.qrserver.com" crossorigin />
     <link rel="dns-prefetch" href="https://images.unsplash.com" />
     <link rel="dns-prefetch" href="https://lrqqpudyrkmitbeilrqq.backend.onspace.ai" />
-    <!-- Prefetch the SPA entry immediately after first paint -->
-    <link rel="modulepreload" href="/src/main.jsx" />
 
     <!-- Mobile App Settings -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -26,8 +25,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
     <!-- Essential SEO -->
-    <title>Testagram – Social Media, Short Videos & Global Conversations</title>
-    <meta name="description" content="Testagram is a social platform for short videos, breaking news, trending stories, communities, live spaces, and global conversations. Post, share, earn." />
+    <title>Testagram — Social Media, Short Videos & Communities</title>
+    <meta name="description" content="Testagram is a social platform for short videos, communities, live conversations, trending topics and creators. Discover, post, share and connect." />
     <meta name="keywords" content="testagram, social media, short videos, reels, tiktok style, breaking news, trending, communities, live spaces, creator monetization, kenya, africa" />
     <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
     <meta name="googlebot" content="index, follow" />
@@ -37,13 +36,13 @@
     <meta name="format-detection" content="telephone=no" />
 
     <!-- Canonical URL -->
-    <link rel="canonical" href="https://testagram.site" />
+    <link rel="canonical" href="https://testagram.site/" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://testagram.site" />
+    <meta property="og:url" content="https://testagram.site/" />
     <meta property="og:title" content="Testagram – Social Media, Short Videos & Global Conversations" />
-    <meta property="og:description" content="Post short videos, join communities, earn from your content, and connect with people worldwide on Testagram." />
+    <meta property="og:description" content="Discover short videos, join communities, follow trending topics and connect with people worldwide on Testagram." />
     <meta property="og:image" content="https://testagram.site/og-image.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -54,10 +53,11 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@testagram" />
-    <meta name="twitter:url" content="https://testagram.site" />
+    <meta name="twitter:url" content="https://testagram.site/" />
     <meta name="twitter:title" content="Testagram – Social Media, Short Videos & Global Conversations" />
     <meta name="twitter:description" content="Post short videos, join communities, earn from your content, and connect worldwide on Testagram." />
     <meta name="twitter:image" content="https://testagram.site/og-image.jpg" />
+
 
     <!-- Schema.org WebSite -->
     <script type="application/ld+json">
@@ -108,6 +108,7 @@
       src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2458567543017441"
       crossorigin="anonymous"
     ></script>
+      <style>.seo-crawl-nav{position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden}.seo-crawl-nav a{display:block}</style>
   </head>
 
   <body>
@@ -129,5 +130,52 @@
 
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Install the same-origin offline shell used by the Android WebView.
+      // Feed data itself is cached per-user by the app in IndexedDB so personalized
+      // API responses are never placed in a shared Service Worker cache.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+        });
+      }
+    </script>
+
+    <!-- Search engines can render the app, but this crawlable fallback also exposes the site's core public information and links in the initial HTML. -->
+    <nav aria-label="Explore Testagram" class="seo-crawl-nav">
+      <a href="/">Testagram Home</a>
+      <a href="/explore">Explore</a>
+      <a href="/videos">Videos</a>
+      <a href="/threads">Threads</a>
+      <a href="/communities">Communities</a>
+      <a href="/spaces">Live Spaces</a>
+      <a href="/discover">Discover</a>
+      <a href="/fediverse">Fediverse</a>
+      <a href="/news">News</a>
+      <a href="/leaderboard">Leaderboard</a>
+      <a href="/hashtags">Hashtags</a>
+      <a href="/products">Products</a>
+      <a href="/help">Help</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+    </nav>
+
+    <noscript>
+      <main>
+        <h1>Testagram — social media, short videos, live conversations and communities</h1>
+        <p>Testagram is a social platform for short videos, public profiles, communities, live spaces, trending topics and global conversations. Discover creators, follow topics, join communities and share your voice.</p>
+        <nav aria-label="Testagram public pages">
+          <a href="/">Home</a>
+          <a href="/explore">Explore</a>
+          <a href="/videos">Videos</a>
+          <a href="/communities">Communities</a>
+          <a href="/spaces">Live Spaces</a>
+          <a href="/discover">Discover</a>
+          <a href="/fediverse">Fediverse</a>
+          <a href="/search">Search</a>
+          <a href="/help">Help</a>
+        </nav>
+      </main>
+    </noscript>
   </body>
 </html>

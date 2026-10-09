@@ -10,6 +10,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { formatDistanceToNow } from 'date-fns';
 import { formatNumber } from '@/lib/utils';
 import { toast } from 'sonner';
+import { warmOfflineVideos, writeOfflineVideoFeed, readOfflineVideoFeed } from '@/lib/offlineMediaCache';
 
 // esbuild-safe module-level constants
 // esbuild guard: no 'as const' on module-level arrays used in .map() render
@@ -36,7 +37,7 @@ function VideoCommentDrawer({ post, onClose }: { post: Post; onClose: () => void
 
   useEffect(() => {
     supabase.from('replies')
-      .select('*, user_profiles(id,username,avatar_url,verified)')
+      .select('*, profiles(id,username,avatar_url,verified)')
       .eq('post_id', post.id)
       .order('created_at', { ascending: false })
       .limit(50)
@@ -290,7 +291,7 @@ export default function VideosPage() {
     if (!q.trim()) { setSearchResults([]); return; }
     searchDebounce.current = setTimeout(async () => {
       setSearchLoading(true);
-      const { data } = await supabase.from('posts').select('*, user_profiles(*)')
+      const { data } = await supabase.from('posts').select('*, user_profiles:profiles!posts_user_id_fkey(*)')
         .eq('is_video', true).ilike('content', `%${q}%`).order('views_count', { ascending: false }).limit(20);
       setSearchResults(data ?? []);
       setSearchLoading(false);
@@ -307,7 +308,7 @@ export default function VideosPage() {
     setDuetsLoading(true);
     supabase
       .from('posts')
-      .select('*, user_profiles(*)')
+      .select('*, user_profiles:profiles!posts_user_id_fkey(*)')
       .eq('is_video', true)
       .ilike('content', '%Duet with @%')
       .order('created_at', { ascending: false })
@@ -366,7 +367,7 @@ export default function VideosPage() {
     try {
       let query = supabase
         .from('posts')
-        .select('*, user_profiles (*)')
+        .select('*, user_profiles:profiles!posts_user_id_fkey(*)')
         .eq('is_video', true)
         .order('created_at', { ascending: false })
         .range(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE - 1);
@@ -379,7 +380,7 @@ export default function VideosPage() {
         }
         query = supabase
           .from('posts')
-          .select('*, user_profiles (*)')
+          .select('*, user_profiles:profiles!posts_user_id_fkey(*)')
           .eq('is_video', true)
           .in('user_id', followingIds)
           .order('created_at', { ascending: false })
@@ -390,6 +391,13 @@ export default function VideosPage() {
       if (error) throw error;
 
       const newVideos = data || [];
+      // Persist the first five playable videos locally. Keep the downloads sequential
+      // inside the cache helper so a feed refresh never opens a burst of large transfers.
+      if (pageNum === 0) {
+        const feedKey = `${activeTab}:${user?.id ?? 'guest'}`;
+        void writeOfflineVideoFeed(feedKey, newVideos);
+        void warmOfflineVideos(newVideos.map((video: any) => video.video_url).filter(Boolean), 5);
+      }
       if (newVideos.length < PAGE_SIZE) setHasMore(false);
 
       if (pageNum === 0) {
@@ -405,6 +413,18 @@ export default function VideosPage() {
       setPage(pageNum);
     } catch (err) {
       console.error('fetchVideos error:', err);
+      if (pageNum === 0) {
+        const feedKey = `${activeTab}:${user?.id ?? 'guest'}`;
+        const cached = await readOfflineVideoFeed(feedKey);
+        if (cached?.length) {
+          setVideos(cached);
+          const init: any = {};
+          for (let i = 0; i < Math.min(4, cached.length); i++) init[i] = true;
+          setPreloadMap(init);
+          setCancelMap({});
+          setHasMore(false);
+        }
+      }
     } finally {
       setLoading(false);
     }
