@@ -10,7 +10,7 @@ export interface SEOProps {
   description?: string;
   image?: string;
   url?: string;
-  type?: 'website' | 'article' | 'profile';
+  type?: 'website' | 'article' | 'profile' | 'video.other';
   /** Raw JSON-LD object(s) to inject as structured data */
   structuredData?: object | object[];
   /** Noindex this page (auth pages, private routes, etc.) */
@@ -23,7 +23,10 @@ const OG_IMAGE_BASE = 'https://lrqqpudyrkmitbeilrqq.backend.onspace.ai/functions
 const DEFAULT_IMAGE = `${BASE_URL}/og-image.jpg`;
 const SITE_NAME = 'Testagram';
 
-/** Build a dynamic OG image URL served by the edge function */
+function isPrivateRoute(pathname: string): boolean {
+  return /^\/(?:auth|messages|notifications|wallet|settings|bookmarks|history|scheduled|payouts|creator-studio|monetization|analytics|verify|referral|rewards|platform-inbox|interests|notification-preferences|lists|my-ads|create-ad|start-stream|ad-analytics|ad-performance|post-analytics|boost-analytics|boost-create|admin|fraud-detection|seo-audit|staff|regulator|team-chat|appeals|orders|sessions|blocked|daily-rewards|wishlist|call)(?:\/|$)/.test(pathname);
+}
+
 export function buildOgImageUrl(params: { username?: string; thread?: string; community?: string; tag?: string; post?: string }): string {
   const p = new URLSearchParams();
   if (params.username) p.set('username', params.username);
@@ -34,29 +37,22 @@ export function buildOgImageUrl(params: { username?: string; thread?: string; co
   return `${OG_IMAGE_BASE}?${p.toString()}`;
 }
 
-function setMeta(attr: 'name' | 'property', key: string, value: string): HTMLMetaElement {
+function setMeta(attr: 'name' | 'property', key: string, value: string): { el: HTMLMetaElement; previous: string | null; created: boolean } {
   let el = document.querySelector(`meta[${attr}="${key}"]`) as HTMLMetaElement | null;
-  if (!el) {
-    el = document.createElement('meta');
-    el.setAttribute(attr, key);
-    document.head.appendChild(el);
-    el.dataset.seoManaged = '1';
-  }
+  const created = !el;
+  const previous = el?.getAttribute('content') ?? null;
+  if (!el) { el = document.createElement('meta'); el.setAttribute(attr, key); document.head.appendChild(el); }
   el.setAttribute('content', value);
-  return el;
+  return { el, previous, created };
 }
 
-function setLink(rel: string, href: string): HTMLLinkElement {
+function setLink(rel: string, href: string): { el: HTMLLinkElement; previous: string | null; created: boolean } {
   let el = document.querySelector(`link[rel="${rel}"]`) as HTMLLinkElement | null;
-  const wasExisting = !!el;
-  if (!el) {
-    el = document.createElement('link');
-    el.setAttribute('rel', rel);
-    document.head.appendChild(el);
-  }
-  if (!wasExisting) el.dataset.seoManaged = '1';
+  const created = !el;
+  const previous = el?.getAttribute('href') ?? null;
+  if (!el) { el = document.createElement('link'); el.setAttribute('rel', rel); document.head.appendChild(el); }
   el.setAttribute('href', href);
-  return el;
+  return { el, previous, created };
 }
 
 function addJsonLd(data: object): HTMLScriptElement {
@@ -67,238 +63,102 @@ function addJsonLd(data: object): HTMLScriptElement {
   document.head.appendChild(script);
   return script;
 }
-
-export function useSEO({
-  title,
-  description,
-  image,
-  url,
-  type = 'website',
-  structuredData,
-  noindex = false,
-  keywords,
-}: SEOProps) {
+export function useSEO({ title, description, image, url, type = 'website', structuredData, noindex = false, keywords }: SEOProps) {
   useEffect(() => {
     const prevTitle = document.title;
-    const managedEls: Array<HTMLElement> = [];
-
+    const metaStates: Array<{ el: HTMLMetaElement; previous: string | null; created: boolean }> = [];
+    const linkStates: Array<{ el: HTMLLinkElement; previous: string | null; created: boolean }> = [];
     const fullTitle = title ? `${title} | ${SITE_NAME}` : `${SITE_NAME} – Social Media, Short Videos & Global Conversations`;
     const fullDesc = description || 'Post short videos, join communities, earn from your content, and connect with people worldwide on Testagram.';
     const fullImage = image || DEFAULT_IMAGE;
     const fullUrl = url ? (url.startsWith('http') ? url : `${BASE_URL}${url}`) : BASE_URL;
-    const robots = noindex ? 'noindex, nofollow' : 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1';
-
-    // ── Title ──────────────────────────────────────────────────────────────
+    const effectiveNoindex = noindex || (typeof window !== 'undefined' && isPrivateRoute(window.location.pathname));
+    const robots = effectiveNoindex ? 'noindex, nofollow' : 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1';
     document.title = fullTitle;
-
-    // ── Core meta ─────────────────────────────────────────────────────────
-    managedEls.push(setMeta('name', 'description', fullDesc));
-    managedEls.push(setMeta('name', 'robots', robots));
-    if (keywords) managedEls.push(setMeta('name', 'keywords', keywords));
-
-    // ── Canonical ─────────────────────────────────────────────────────────
-    managedEls.push(setLink('canonical', fullUrl));
-
-    // ── Open Graph ────────────────────────────────────────────────────────
-    managedEls.push(setMeta('property', 'og:type', type));
-    managedEls.push(setMeta('property', 'og:url', fullUrl));
-    managedEls.push(setMeta('property', 'og:title', fullTitle));
-    managedEls.push(setMeta('property', 'og:description', fullDesc));
-    managedEls.push(setMeta('property', 'og:image', fullImage));
-    managedEls.push(setMeta('property', 'og:image:width', '1200'));
-    managedEls.push(setMeta('property', 'og:image:height', '630'));
-    managedEls.push(setMeta('property', 'og:site_name', SITE_NAME));
-
-    // ── Twitter Card ─────────────────────────────────────────────────────
-    managedEls.push(setMeta('name', 'twitter:card', 'summary_large_image'));
-    managedEls.push(setMeta('name', 'twitter:site', '@testagram'));
-    managedEls.push(setMeta('name', 'twitter:url', fullUrl));
-    managedEls.push(setMeta('name', 'twitter:title', fullTitle));
-    managedEls.push(setMeta('name', 'twitter:description', fullDesc));
-    managedEls.push(setMeta('name', 'twitter:image', fullImage));
-
-    // ── JSON-LD Structured Data ───────────────────────────────────────────
+    const putMeta = (attr: 'name' | 'property', key: string, value: string) => metaStates.push(setMeta(attr, key, value));
+    putMeta('name', 'description', fullDesc); putMeta('name', 'robots', robots);
+    if (keywords) putMeta('name', 'keywords', keywords);
+    linkStates.push(setLink('canonical', fullUrl));
+    putMeta('property', 'og:type', type); putMeta('property', 'og:url', fullUrl); putMeta('property', 'og:title', fullTitle);
+    putMeta('property', 'og:description', fullDesc); putMeta('property', 'og:image', fullImage); putMeta('property', 'og:image:width', '1200');
+    putMeta('property', 'og:image:height', '630'); putMeta('property', 'og:site_name', SITE_NAME);
+    putMeta('name', 'twitter:card', 'summary_large_image'); putMeta('name', 'twitter:site', '@testagram'); putMeta('name', 'twitter:url', fullUrl);
+    putMeta('name', 'twitter:title', fullTitle); putMeta('name', 'twitter:description', fullDesc); putMeta('name', 'twitter:image', fullImage);
     const ldScripts: HTMLScriptElement[] = [];
-    if (structuredData) {
-      const items = Array.isArray(structuredData) ? structuredData : [structuredData];
-      items.forEach(item => {
-        const script = addJsonLd(item);
-        ldScripts.push(script);
-        managedEls.push(script);
-      });
-    }
-
+    if (structuredData) { const items = Array.isArray(structuredData) ? structuredData : [structuredData]; items.forEach(item => ldScripts.push(addJsonLd(item))); }
     return () => {
-      // Restore title
       document.title = prevTitle;
-      // Remove only tags we added (not the global static ones)
-      managedEls.forEach(el => {
-        if (el.dataset?.seoManaged === '1') {
-          el.parentNode?.removeChild(el);
-        }
-      });
-    };
-  // The eslint-disable-next-line comment is for ESLint, not a TypeScript syntax error.
-  // We remove it because the prompt asks to fix "syntax errors", and this is not one.
-  // If the linter is configured to treat this as an error, removing the directive makes the linter complain.
-  // However, the request is specifically about "TypeScript syntax errors".
-  }, [title, description, image, url, type, noindex, keywords, structuredData]); // structuredData was missing here
+      metaStates.forEach(({ el, previous, created }) => { if (created) el.remove(); else if (previous === null) el.removeAttribute('content'); else el.setAttribute('content', previous); });
+      linkStates.forEach(({ el, previous, created }) => { if (created) el.remove(); else if (previous === null) el.removeAttribute('href'); else el.setAttribute('href', previous); });
+      ldScripts.forEach(script => script.remove());
+    };  }, [title, description, image, url, type, noindex, keywords, structuredData]);
 }
-
-// ── Pre-built structured data builders ──────────────────────────────────────
 
 export function buildProfileLD(profile: {
+  id?: string;
   username: string;
+  display_name?: string;
+  full_name?: string;
   bio?: string;
   avatar_url?: string;
-  followers_count?: number;
+  follower_count?: number;
+  following_count?: number;
+  posts_count?: number;
   verified?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  website?: string;
+  location?: string;
+  social_links?: Record<string, unknown>;
 }) {
-  return {
-    '@context': 'https://schema.org',
+  const profileUrl = `https://testagram.site/profile/${encodeURIComponent(profile.username)}`;
+  const name = profile.display_name || profile.full_name || profile.username;
+  const person: Record<string, unknown> = {
     '@type': 'Person',
-    name: profile.username,
+    '@id': `${profileUrl}#person`,
+    name,
     alternateName: `@${profile.username}`,
-    description: profile.bio || '',
-    image: profile.avatar_url || '',
-    url: `https://testagram.site/profile/${profile.username}`,
-    interactionStatistic: {
-      '@type': 'InteractionCounter',
-      interactionType: 'https://schema.org/FollowAction',
-      userInteractionCount: profile.followers_count ?? 0,
-    },
+    identifier: profile.id || profile.username,
+    url: profileUrl,
+    description: profile.bio || undefined,
+    image: profile.avatar_url || undefined,
+    ...(profile.website ? { url: profileUrl, sameAs: [profile.website] } : {}),
+    ...(profile.location ? { homeLocation: { '@type': 'Place', name: profile.location } } : {}),
+    interactionStatistic: [
+      { '@type': 'InteractionCounter', interactionType: 'https://schema.org/FollowAction', userInteractionCount: profile.follower_count ?? 0 },
+      { '@type': 'InteractionCounter', interactionType: 'https://schema.org/WriteAction', userInteractionCount: profile.posts_count ?? 0 },
+    ],
     ...(profile.verified ? { award: 'Verified Creator' } : {}),
   };
-}
-
-export function buildPostLD(post: {
-  id: string;
-  content: string;
-  image_url?: string;
-  video_url?: string;
-  created_at: string;
-  user_profiles?: { username?: string; avatar_url?: string };
-}) {
-  const base = {
-    '@context': 'https://schema.org',
-    '@type': post.video_url ? 'VideoObject' : 'SocialMediaPosting',
-    url: `https://testagram.site/post/${post.id}`,
-    datePublished: post.created_at,
-    author: {
-      '@type': 'Person',
-      name: post.user_profiles?.username ?? 'Unknown',
-      url: post.user_profiles?.username
-        ? `https://testagram.site/profile/${post.user_profiles.username}`
-        : 'https://testagram.site',
-    },
-    publisher: {
-      '@type': 'Organization',
-      name: 'Testagram',
-      logo: { '@type': 'ImageObject', url: 'https://testagram.site/tsocial-logo.png' },
-    },
-  };
-  if (post.video_url) {
-    return {
-      ...base,
-      name: post.content.slice(0, 100),
-      description: post.content.slice(0, 200),
-      contentUrl: post.video_url,
-      thumbnailUrl: post.image_url || 'https://testagram.site/og-image.jpg',
-    };
-  }
   return {
-    ...base,
-    headline: post.content.slice(0, 110),
-    articleBody: post.content,
-    image: post.image_url || 'https://testagram.site/og-image.jpg',
+    '@context': 'https://schema.org',
+    '@type': 'ProfilePage',
+    '@id': profileUrl,
+    url: profileUrl,
+    name: `@${profile.username} on Testagram`,
+    dateCreated: profile.created_at,
+    dateModified: profile.updated_at || profile.created_at,
+    mainEntity: person,
   };
 }
 
-export function buildThreadLD(thread: {
-  id: string;
-  title: string;
-  content: string;
-  cover_image?: string;
-  media_url?: string;
-  created_at: string;
-  updated_at?: string;
-  user_id?: string;
-  views_count?: number;
-  likes_count?: number;
-  user_profiles?: { username?: string; avatar_url?: string; verified?: boolean };
-}) {
-  const author = thread.user_profiles?.username
-    ? {
-        '@type': 'Person',
-        name: thread.user_profiles.username,
-        url: `https://testagram.site/profile/${thread.user_profiles.username}`,
-        ...(thread.user_profiles.avatar_url ? { image: thread.user_profiles.avatar_url } : {}),
-      }
-    : { '@type': 'Organization', name: 'Testagram', url: 'https://testagram.site' };
+export function buildPostLD(post: { id: string; content: string; image_url?: string; video_url?: string; created_at: string; user_profiles?: { username?: string; avatar_url?: string } }) {
+  const base = { '@context': 'https://schema.org', '@type': post.video_url ? 'VideoObject' : 'SocialMediaPosting', url: `https://testagram.site/post/${post.id}`, datePublished: post.created_at, author: { '@type': 'Person', name: post.user_profiles?.username ?? 'Unknown', url: post.user_profiles?.username ? `https://testagram.site/profile/${post.user_profiles.username}` : 'https://testagram.site' }, publisher: { '@type': 'Organization', name: 'Testagram', logo: { '@type': 'ImageObject', url: 'https://testagram.site/tsocial-logo.png' } } };
+  if (post.video_url) return { ...base, name: post.content.slice(0, 100), description: post.content.slice(0, 200), contentUrl: post.video_url, thumbnailUrl: post.image_url || 'https://testagram.site/og-image.jpg' };
+  return { ...base, headline: post.content.slice(0, 110), articleBody: post.content, image: post.image_url || 'https://testagram.site/og-image.jpg' };
+}
 
+export function buildThreadLD(thread: { id: string; title: string; content: string; cover_image?: string; media_url?: string; created_at: string; updated_at?: string; user_id?: string; views_count?: number; likes_count?: number; user_profiles?: { username?: string; avatar_url?: string; verified?: boolean } }) {
+  const author = thread.user_profiles?.username ? { '@type': 'Person', name: thread.user_profiles.username, url: `https://testagram.site/profile/${thread.user_profiles.username}`, ...(thread.user_profiles.avatar_url ? { image: thread.user_profiles.avatar_url } : {}) } : { '@type': 'Organization', name: 'Testagram', url: 'https://testagram.site' };
   const plainText = thread.content.replace(/<[^>]*>/g, '');
   const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
-
-  return {
-    '@context': 'https://schema.org',
-    '@type': 'Article',
-    headline: thread.title.slice(0, 110),
-    description: plainText.slice(0, 200),
-    articleBody: plainText.slice(0, 1000),
-    wordCount,
-    url: `https://testagram.site/thread/${thread.id}`,
-    mainEntityOfPage: {
-      '@type': 'WebPage',
-      '@id': `https://testagram.site/thread/${thread.id}`,
-    },
-    datePublished: thread.created_at,
-    dateModified: thread.updated_at || thread.created_at,
-    author,
-    image: thread.cover_image || thread.media_url || 'https://testagram.site/og-image.jpg',
-    publisher: {
-      '@type': 'Organization',
-      name: 'Testagram',
-      logo: { '@type': 'ImageObject', url: 'https://testagram.site/tsocial-logo.png' },
-    },
-    interactionStatistic: [
-      { '@type': 'InteractionCounter', interactionType: 'https://schema.org/ViewAction',  userInteractionCount: thread.views_count ?? 0 },
-      { '@type': 'InteractionCounter', interactionType: 'https://schema.org/LikeAction',  userInteractionCount: thread.likes_count ?? 0 },
-    ],
-  };
+  return { '@context': 'https://schema.org', '@type': 'Article', headline: thread.title.slice(0, 110), description: plainText.slice(0, 200), articleBody: plainText.slice(0, 1000), wordCount, url: `https://testagram.site/thread/${thread.id}`, mainEntityOfPage: { '@type': 'WebPage', '@id': `https://testagram.site/thread/${thread.id}` }, datePublished: thread.created_at, dateModified: thread.updated_at || thread.created_at, author, image: thread.cover_image || thread.media_url || 'https://testagram.site/og-image.jpg', publisher: { '@type': 'Organization', name: 'Testagram', logo: { '@type': 'ImageObject', url: 'https://testagram.site/tsocial-logo.png' } }, interactionStatistic: [{ '@type': 'InteractionCounter', interactionType: 'https://schema.org/ViewAction', userInteractionCount: thread.views_count ?? 0 }, { '@type': 'InteractionCounter', interactionType: 'https://schema.org/LikeAction', userInteractionCount: thread.likes_count ?? 0 }] };
 }
 
-export function buildCommunityLD(community: {
-  name: string;
-  display_name: string;
-  description?: string;
-  icon_url?: string;
-  member_count?: number;
-}) {
-  return {
-    '@context': 'https://schema.org',
-    '@type': 'Organization',
-    name: community.display_name,
-    alternateName: `c/${community.name}`,
-    description: community.description || '',
-    url: `https://testagram.site/c/${community.name}`,
-    logo: community.icon_url || 'https://testagram.site/tsocial-logo.png',
-    numberOfEmployees: { '@type': 'QuantitativeValue', value: community.member_count ?? 0 },
-  };
+export function buildCommunityLD(community: { name: string; display_name: string; description?: string; icon_url?: string; member_count?: number }) {
+  return { '@context': 'https://schema.org', '@type': 'Organization', name: community.display_name, alternateName: `c/${community.name}`, description: community.description || '', url: `https://testagram.site/c/${community.name}`, logo: community.icon_url || 'https://testagram.site/tsocial-logo.png', numberOfEmployees: { '@type': 'QuantitativeValue', value: community.member_count ?? 0 } };
 }
 
 export function buildHashtagLD(tag: string, postCount: number) {
-  return {
-    '@context': 'https://schema.org',
-    '@type': 'WebPage',
-    name: `#${tag} on Testagram`,
-    description: `Browse ${postCount.toLocaleString()} posts tagged with #${tag} on Testagram.`,
-    url: `https://testagram.site/hashtag/${tag}`,
-    breadcrumb: {
-      '@type': 'BreadcrumbList',
-      itemListElement: [
-        { '@type': 'ListItem', position: 1, name: 'Home', item: 'https://testagram.site' },
-        { '@type': 'ListItem', position: 2, name: `#${tag}`, item: `https://testagram.site/hashtag/${tag}` },
-      ],
-    },
-  };
+  return { '@context': 'https://schema.org', '@type': 'WebPage', name: `#${tag} on Testagram`, description: `Browse ${postCount.toLocaleString()} posts tagged with #${tag} on Testagram.`, url: `https://testagram.site/hashtag/${tag}`, breadcrumb: { '@type': 'BreadcrumbList', itemListElement: [{ '@type': 'ListItem', position: 1, name: 'Home', item: 'https://testagram.site' }, { '@type': 'ListItem', position: 2, name: `#${tag}`, item: `https://testagram.site/hashtag/${tag}` }] } };
 }

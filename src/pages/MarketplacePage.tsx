@@ -1,6 +1,7 @@
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { readPublicExpansion } from '@/lib/dataPlane';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { useSEO } from '@/hooks/useSEO';
@@ -10,139 +11,27 @@ import {
   Search, MapPin, Tag, Star, Heart, ExternalLink, Loader2,
   ShoppingBag, Filter, X, ChevronRight, BadgeCheck, SlidersHorizontal,
   Package, TrendingUp, Sparkles, Grid3x3, LayoutList, MessageSquare,
-  HelpCircle, DollarSign, ArrowUpDown, ShoppingCart, Check
+  HelpCircle, DollarSign, ArrowUpDown, ShoppingCart, Check, Wallet, Truck
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { MarketplaceDeliveryTracker } from '@/components/marketplace/MarketplaceDeliveryTracker';
 
 function MktAdBanner() { return <PageAdBanner />; }
 
 // ── Purchase Dialog ─────────────────────────────────────────────────────────────────
 function PurchaseDialog({ product, onClose }: { product: any; onClose: () => void }) {
-  const { user } = useAuth();
-  const [qty, setQty] = useState(1);
-  const [note, setNote] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState(false);
-
-  const total = Number(product.price) * qty;
-
-  const handlePurchase = async () => {
-    if (!user) { toast.error('Sign in to purchase'); return; }
-    if (user.id === product.user_id) { toast.error("You can't buy your own product"); return; }
-    setSubmitting(true);
-    const { error } = await supabase.from('orders').insert({
-      buyer_id: user.id,
-      seller_id: product.user_id,
-      product_id: product.id,
-      quantity: qty,
-      unit_price: Number(product.price),
-      total_amount: total,
-      status: 'confirmed',
-      note: note.trim() || null,
-    });
-    if (error) { toast.error(error.message); setSubmitting(false); return; }
-    // Update sales_count
-    await supabase.from('products').update({ sales_count: (product.sales_count ?? 0) + qty }).eq('id', product.id);
-    // Notify seller
-    await supabase.from('notifications').insert({
-      user_id: product.user_id,
-      type: 'payment_sent',
-      from_user_id: user.id,
-    }).catch(() => {});
-    // Record creator earning
-    await supabase.from('creator_earnings').insert({
-      user_id: product.user_id,
-      source: 'marketplace',
-      amount: total,
-      status: 'pending',
-    }).catch(() => {});
-    setDone(true);
-    setSubmitting(false);
-  };
-
-  return (
-    <div className="fixed inset-0 z-[400] bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-background w-full max-w-sm rounded-t-3xl sm:rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
-        {done ? (
-          <div className="text-center py-10 px-6 space-y-3">
-            <div className="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
-              <Check className="w-8 h-8 text-green-500" />
-            </div>
-            <h3 className="font-black text-xl">Order Placed!</h3>
-            <p className="text-sm text-muted-foreground">
-              Your order for <strong>{product.name}</strong> has been recorded. The seller will be notified to fulfil your order.
-            </p>
-            <p className="text-xs text-muted-foreground">Check your profile for order history.</p>
-            <button onClick={onClose} className="mt-2 w-full py-3 bg-primary text-primary-foreground rounded-2xl font-bold">Done</button>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-              <div>
-                <h3 className="font-bold text-base">Place Order</h3>
-                <p className="text-xs text-muted-foreground line-clamp-1">{product.name}</p>
-              </div>
-              <button onClick={onClose} className="w-8 h-8 rounded-full bg-muted flex items-center justify-center"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="p-5 space-y-4">
-              {/* Product preview */}
-              <div className="flex items-center gap-3 p-3 rounded-2xl bg-muted/40 border border-border">
-                {product.image_url ? (
-                  <img src={product.image_url} alt={product.name} className="w-14 h-14 rounded-xl object-cover shrink-0" />
-                ) : (
-                  <div className="w-14 h-14 rounded-xl bg-muted flex items-center justify-center shrink-0"><ShoppingBag className="w-6 h-6 text-muted-foreground" /></div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="font-bold text-sm truncate">{product.name}</p>
-                  <p className="text-lg font-black text-primary">${Number(product.price).toFixed(2)} each</p>
-                  {product.stock > 0 && <p className="text-[10px] text-muted-foreground">{product.stock} in stock</p>}
-                </div>
-              </div>
-
-              {/* Quantity */}
-              <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Quantity</p>
-                <div className="flex items-center gap-3">
-                  <button onClick={() => setQty(q => Math.max(1, q - 1))}
-                    className="w-10 h-10 rounded-full border border-border flex items-center justify-center text-lg font-bold hover:bg-muted transition-colors">−</button>
-                  <span className="text-xl font-black w-8 text-center">{qty}</span>
-                  <button onClick={() => setQty(q => q + 1)}
-                    className="w-10 h-10 rounded-full border border-border flex items-center justify-center text-lg font-bold hover:bg-muted transition-colors">+</button>
-                </div>
-              </div>
-
-              {/* Note */}
-              <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Note to Seller (optional)</p>
-                <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={200}
-                  placeholder="Any special requests, size, colour…"
-                  className="w-full px-3 py-2 rounded-xl border border-border bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/30" />
-              </div>
-
-              {/* Total */}
-              <div className="flex items-center justify-between px-3 py-2.5 bg-primary/5 border border-primary/20 rounded-xl">
-                <span className="text-sm font-semibold">Total</span>
-                <span className="text-xl font-black text-primary">${total.toFixed(2)}</span>
-              </div>
-
-              <p className="text-[10px] text-muted-foreground text-center">
-                The seller will contact you to arrange payment and delivery. No charge is made now.
-              </p>
-
-              <button onClick={handlePurchase} disabled={submitting}
-                className="w-full py-3.5 bg-primary text-primary-foreground rounded-2xl font-bold text-base disabled:opacity-50 flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
-                {submitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShoppingCart className="w-5 h-5" />}
-                {submitting ? 'Placing Order…' : `Order · $${total.toFixed(2)}`}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Module-level category config (esbuild-safe: no inline objects in render) ──
+  const { user } = useAuth(); const [qty,setQty]=useState(1); const [note,setNote]=useState(''); const [address,setAddress]=useState(''); const [delivery,setDelivery]=useState(product.local_delivery?'local_delivery':'seller_delivery'); const [submitting,setSubmitting]=useState(false); const [done,setDone]=useState(false); const [deliveryId,setDeliveryId]=useState<string|null>(null);
+  const deliveryFee=delivery==='local_delivery'?Number(product.delivery_fee_minor||0)/100:0; const subtotal=Number(product.price)*qty; const total=subtotal+deliveryFee;
+  const handlePurchase=async()=>{ if(!user){toast.error('Sign in to purchase');return} if(delivery!=='pickup'&&!address.trim()){toast.error('Add a delivery address');return} setSubmitting(true); const reservationKey=crypto.randomUUID(); const {error:reservationError}=await supabase.rpc('reserve_marketplace_inventory',{p_product_id:product.id,p_quantity:qty,p_reservation_key:reservationKey,p_ttl_seconds:600}); if(reservationError){toast.error(reservationError.message.replaceAll('_',' ').toLowerCase());setSubmitting(false);return} const {data:orderId,error}=await supabase.rpc('place_marketplace_order',{p_product_id:product.id,p_quantity:qty,p_idempotency_key:crypto.randomUUID(),p_delivery_mode:delivery,p_delivery_address:address.trim()||null,p_delivery_note:note.trim()||null,p_reservation_key:reservationKey}); if(error){toast.error(error.message.replaceAll('_',' ').toLowerCase());setSubmitting(false);return} if(delivery!=='pickup'&&orderId){const {data:did,error:deliveryError}=await supabase.rpc('create_marketplace_delivery',{p_order_id:orderId}); if(deliveryError){toast.error('Payment succeeded, but delivery setup needs attention.');} else setDeliveryId(did);} setDone(true);setSubmitting(false); };
+  return <div className="fixed inset-0 z-[400] bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={onClose}><div className="bg-background w-full max-w-sm rounded-t-3xl sm:rounded-2xl shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
+  {done?<div className="text-center py-8 px-6 space-y-3"><div className="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mx-auto"><Check className="w-8 h-8 text-green-500"/></div><h3 className="font-black text-xl">Paid & Order Confirmed</h3><p className="text-sm text-muted-foreground">Your Wallet payment is complete and your delivery is now connected to live tracking.</p>{deliveryId&&<div className="text-left"><MarketplaceDeliveryTracker deliveryId={deliveryId} compact/></div>}<button onClick={onClose} className="mt-2 w-full py-3 bg-primary text-primary-foreground rounded-2xl font-bold">Done</button></div>:<><div className="flex items-center justify-between px-5 py-4 border-b border-border"><div><h3 className="font-bold text-base">Secure checkout</h3><p className="text-xs text-muted-foreground">{product.name}</p></div><button onClick={onClose} className="w-8 h-8 rounded-full bg-muted flex items-center justify-center"><X className="w-4 h-4"/></button></div>
+  <div className="p-5 space-y-4"><div className="flex items-center gap-3 p-3 rounded-2xl bg-muted/40 border border-border">{product.image_url?<img src={product.image_url} alt="" className="w-14 h-14 rounded-xl object-cover"/>:<ShoppingBag className="w-8 h-8"/>}<div><p className="font-bold text-sm">{product.name}</p><p className="text-lg font-black text-primary">${Number(product.price).toFixed(2)} each</p></div></div>
+  <div><p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Quantity</p><div className="flex items-center gap-3"><button onClick={()=>setQty(q=>Math.max(1,q-1))} className="w-10 h-10 rounded-full border font-bold">−</button><span className="text-xl font-black w-8 text-center">{qty}</span><button onClick={()=>setQty(q=>Math.min(Number(product.stock||100),q+1))} className="w-10 h-10 rounded-full border font-bold">+</button></div></div>
+  <div><p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Delivery</p><div className="grid grid-cols-3 gap-2">{[['pickup','Pickup'],['seller_delivery','Seller-set'],['local_delivery','Local']].filter(x=>x[0]!=='local_delivery'||product.local_delivery).map(([v,l])=><button key={v} onClick={()=>setDelivery(v)} className={'p-2 rounded-xl border text-xs font-bold '+(delivery===v?'border-primary bg-primary/10 text-primary':'border-border')}><Truck className="w-4 h-4 mx-auto mb-1"/>{l}</button>)}</div></div>
+  {delivery!=='pickup'&&<textarea value={address} onChange={e=>setAddress(e.target.value)} rows={2} placeholder="Delivery address / pickup instructions" className="w-full px-3 py-2 rounded-xl border bg-background text-sm resize-none"/>}<textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} maxLength={200} placeholder="Note to seller (optional)" className="w-full px-3 py-2 rounded-xl border bg-background text-sm resize-none"/>
+  <div className="space-y-1 p-3 bg-primary/5 border border-primary/20 rounded-xl"><div className="flex justify-between text-sm"><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div>{deliveryFee>0&&<div className="flex justify-between text-sm"><span>Local delivery</span><span>${deliveryFee.toFixed(2)}</span></div>}<div className="flex justify-between font-black text-lg pt-1 border-t"><span>Total</span><span className="text-primary">${total.toFixed(2)}</span></div></div>
+  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-muted-foreground"><Wallet className="w-4 h-4"/>Wallet checkout · atomic payment · trusted seller profile</div><button onClick={handlePurchase} disabled={submitting} className="w-full py-3.5 bg-primary text-primary-foreground rounded-2xl font-bold flex items-center justify-center gap-2 disabled:opacity-50">{submitting?<Loader2 className="w-5 h-5 animate-spin"/>:<Wallet className="w-5 h-5"/>}{submitting?'Processing securely…':'Pay from Wallet · $'+total.toFixed(2)}</button></div></>}</div></div>;
+}// ── Module-level category config (esbuild-safe: no inline objects in render) ──
 const CATEGORIES = [
   { id: 'all',         label: 'All',          emoji: '🛍️' },
   { id: 'digital',     label: 'Digital',      emoji: '💻' },
@@ -625,6 +514,36 @@ function FilterSheet({
   );
 }
 
+const MARKET_FEATURES = [
+  { id:'local', title:'Local delivery', desc:'Nearby sellers can offer delivery', icon:'🚚' },
+  { id:'seller', title:'Seller-set delivery', desc:'Choose seller delivery or pickup', icon:'📦' },
+  { id:'wallet', title:'Wallet checkout', desc:'Pay directly from your Testagram wallet', icon:'💳' },
+  { id:'atomic', title:'Atomic payment', desc:'Payment, stock and order commit together', icon:'🔐' },
+  { id:'trusted', title:'Trusted sellers', desc:'Verified community profiles', icon:'✓' },
+  { id:'profiles', title:'Community profiles', desc:'Open the seller’s Testagram profile', icon:'👤' },
+  { id:'support', title:'Help & support', desc:'Get assistance with marketplace orders', icon:'💬' },
+] as const;
+
+function MarketplaceFeatureSheet({ feature, onClose, onBrowse, onNavigate }: { feature: typeof MARKET_FEATURES[number]; onClose:()=>void; onBrowse:()=>void; onNavigate:(path:string)=>void }) {
+  const copy: Record<string,{title:string;body:string;cta:string;secondary?:string}> = {
+    local:{title:'Local delivery',body:'Browse products from sellers who have enabled local delivery. Their delivery fee and ETA are shown during checkout.',cta:'Show local delivery'},
+    seller:{title:'Seller-set delivery',body:'At checkout you can choose seller delivery or pickup. The order records your chosen method with the purchase.',cta:'Browse products'},
+    wallet:{title:'Wallet checkout',body:'Pay from your Testagram wallet. The checkout validates your balance before the order is committed.',cta:'Open wallet',secondary:'Browse products'},
+    atomic:{title:'Atomic payment',body:'Payment, inventory and the marketplace order are committed together by the database transaction, preventing a paid order without the matching stock update.',cta:'Start checkout'},
+    trusted:{title:'Trusted sellers',body:'See marketplace sellers with verified community profiles. Open a product and tap the seller identity to view their profile.',cta:'Show trusted sellers'},
+    profiles:{title:'Community profiles',body:'Every marketplace seller is tied to their Testagram community identity. Open a product and tap the seller card to visit the real profile.',cta:'Browse sellers'},
+    support:{title:'Help & support',body:'Get help with marketplace orders, payments, delivery and seller issues from Testagram support.',cta:'Get assistance'},
+  };
+  const x=copy[feature.id];
+  const primary=()=>{ if(feature.id==='local') onBrowse(); else if(feature.id==='seller'||feature.id==='atomic'||feature.id==='profiles') onBrowse(); else if(feature.id==='wallet') onNavigate('/wallet'); else if(feature.id==='trusted') onBrowse(); else onNavigate('/help'); onClose(); };
+  return <div className="fixed inset-0 z-[350] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-4" onClick={onClose}>
+    <div className="bg-background w-full max-w-md rounded-3xl border border-border shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
+      <div className="p-5 border-b border-border flex items-start gap-3"><div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-2xl">{feature.icon}</div><div className="flex-1"><h3 className="font-black text-lg">{x.title}</h3><p className="text-xs text-muted-foreground mt-0.5">{feature.desc}</p></div><button onClick={onClose} className="w-9 h-9 rounded-full bg-muted flex items-center justify-center"><X className="w-4 h-4"/></button></div>
+      <div className="p-5 space-y-4"><p className="text-sm leading-6 text-muted-foreground">{x.body}</p><div className="flex gap-2"><button onClick={primary} className="flex-1 py-3 rounded-2xl bg-primary text-primary-foreground font-bold">{x.cta}</button>{x.secondary&&<button onClick={()=>{onBrowse();onClose()}} className="px-4 py-3 rounded-2xl border border-border font-bold text-sm">{x.secondary}</button>}</div></div>
+    </div>
+  </div>;
+}
+
 // ── Main Marketplace Page ───────────────────────────────────────────────────
 export default function MarketplacePage() {
   const { user } = useAuth();
@@ -634,6 +553,10 @@ export default function MarketplacePage() {
   const [products, setProducts] = useState([]);
   const [featured, setFeatured] = useState([]);
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const MARKET_PAGE_SIZE = 24;
 
   // Filters
   const [search,     setSearch]     = useState('');
@@ -641,6 +564,8 @@ export default function MarketplacePage() {
   const [region,     setRegion]     = useState('all');
   const [priceRange, setPriceRange] = useState('all');
   const [sort,       setSort]       = useState('popular');
+  const [deliveryFilter, setDeliveryFilter] = useState<'all'|'local'|'seller'|'trusted'>('all');
+  const [activeFeature, setActiveFeature] = useState<typeof MARKET_FEATURES[number] | null>(null);
   const [gridMode,   setGridMode]   = useState('grid' as 'grid' | 'list');
 
   // UI state
@@ -667,13 +592,13 @@ export default function MarketplacePage() {
         if (!prev.includes(id)) {
           // Adding — upsert with current price
           const product = (products as any[]).find((p: any) => p.id === id);
-          supabase.from('product_wishlists').upsert(
+          supabase.from('wishlists').upsert(
             { user_id: user.id, product_id: id, last_price: product?.price ?? null },
             { onConflict: 'user_id,product_id' }
           ).catch(() => {});
         } else {
           // Removing
-          supabase.from('product_wishlists').delete()
+          supabase.from('wishlists').delete()
             .eq('user_id', user.id).eq('product_id', id).catch(() => {});
         }
       }
@@ -688,28 +613,97 @@ export default function MarketplacePage() {
     keywords: 'marketplace, shop, buy, sell, products, creators, testagram, kenya, africa',
   });
 
-  useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => { void fetchProducts(0, true); }, []);
 
-  const fetchProducts = async () => {
-    setLoading(true);
-    const { data } = await supabase
-      .from('products')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
-      .eq('is_active', true)
-      .order('views_count', { ascending: false })
-      .limit(120);
-    const all = data ?? [];
-    setProducts(all);
-    setFeatured(all.filter((p: any) => p.is_featured).slice(0, 6));
-    setLoading(false);
-  };
+  const fetchProducts = useCallback(async (page = 0, replace = false) => {
+    if (page === 0) { setLoading(true); setLoadError(null); } else setLoadingMore(true);
+    try {
+      const from = page * MARKET_PAGE_SIZE;
+      const to = from + MARKET_PAGE_SIZE - 1;
+      const primaryQuery = supabase
+        .from('products')
+        .select('*, profiles(id, username, avatar_url, verified_tier)')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+      const result = page === 0
+        ? await readPublicExpansion(
+            'products',
+            (client) => primaryQuery,
+            (client) => client
+              .from('products')
+              .select('id, owner_id, name, description, image_url, external_url, price_cents, currency, created_at')
+              .order('created_at', { ascending: false })
+              .limit(MARKET_PAGE_SIZE),
+          )
+        : { primary: (await primaryQuery).data, secondary: null as any[] | null, primaryError: null };
+
+      if (result.primaryError) throw result.primaryError;
+      const primaryProducts = Array.isArray(result.primary) ? result.primary : [];
+      const secondaryProducts = Array.isArray(result.secondary)
+        ? result.secondary.map((p: any) => ({
+            ...p,
+            profiles: {
+              id: p.owner_id,
+              username: 'legacy_testagram',
+              avatar_url: null,
+              verified_tier: 'none',
+            },
+            _data_plane: 'secondary',
+          }))
+        : [];
+      const incoming = [...primaryProducts, ...secondaryProducts]
+        .filter((p: any, index: number, all: any[]) => all.findIndex((x: any) => String(x.id) === String(p.id)) === index)
+        .slice(0, MARKET_PAGE_SIZE);
+      setProducts(prev => {
+        if (replace) return incoming;
+        const seen = new Set(prev.map((p: any) => p.id));
+        return [...prev, ...incoming.filter((p: any) => !seen.has(p.id))];
+      });
+      if (page === 0) setFeatured(incoming.filter((p: any) => p.is_featured).slice(0, 6));
+      setHasMore(incoming.length === MARKET_PAGE_SIZE);
+    } catch (error: any) {
+      console.error('[marketplace] product fetch failed', error);
+      if (page === 0) { setProducts([]); setFeatured([]); setLoadError(error?.message ?? 'Unable to load marketplace'); }
+      setHasMore(false);
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, []);
+
+  const loadMoreProducts = useCallback(() => {
+    if (loadingMore || !hasMore) return;
+    const nextPage = Math.floor(products.length / MARKET_PAGE_SIZE);
+    void fetchProducts(nextPage, false);
+  }, [fetchProducts, hasMore, loadingMore, products.length]);
+
+  const loadMoreRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || loadingMore || !hasMore) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting) loadMoreProducts();
+    }, { rootMargin: '700px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, loadMoreProducts, loadingMore]);
 
   const trackView = async (id: string) => {
-    await supabase.rpc('increment', { row_id: id, table_name: 'products', column_name: 'views_count' }).catch(() => {});
+    // Use the canonical marketplace analytics RPC; the legacy generic increment
+    // RPC is not part of the production database contract.
+    const { error } = await supabase.rpc('record_marketplace_event', {
+      p_product_id: id,
+      p_event_type: 'view',
+      p_ref_code: null,
+      p_source: 'marketplace',
+      p_medium: 'product_view',
+      p_campaign: null,
+      p_session_id: null,
+    });
+    if (error) console.warn('[marketplace] view event failed', error.message);
   };
 
   const resetFilters = () => {
-    setCategory('all'); setRegion('all'); setPriceRange('all'); setSort('popular'); setSearch('');
+    setCategory('all'); setRegion('all'); setPriceRange('all'); setSort('popular'); setSearch(''); setDeliveryFilter('all');
   };
 
   // Derived filtered + sorted list
@@ -744,6 +738,10 @@ export default function MarketplacePage() {
       });
     }
 
+    if (deliveryFilter === 'local') list = list.filter(p => p.local_delivery === true);
+    if (deliveryFilter === 'trusted') list = list.filter(p => Boolean(p.profiles?.verified_tier));
+    if (deliveryFilter === 'seller') list = list.filter(p => p.local_delivery === true || p.delivery_fee_minor !== undefined);
+
     // Sort
     if (sort === 'newest')     list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     if (sort === 'price_asc')  list.sort((a, b) => Number(a.price) - Number(b.price));
@@ -752,7 +750,7 @@ export default function MarketplacePage() {
     if (sort === 'popular')    list.sort((a, b) => Number(b.views_count ?? 0) - Number(a.views_count ?? 0));
 
     return list;
-  }, [products, search, category, region, priceRange, sort]);
+  }, [products, search, category, region, priceRange, sort, deliveryFilter]);
 
   const activeFilterCount = [
     category !== 'all', region !== 'all', priceRange !== 'all', sort !== 'popular',
@@ -762,6 +760,15 @@ export default function MarketplacePage() {
     <div className="min-h-screen bg-background pb-20 md:pb-0">
       <TopBar title="Marketplace" />
       <MktAdBanner />
+      <div className="px-4 py-3 border-b border-border bg-card/60">
+        <div className="flex gap-2 overflow-x-auto scrollbar-hide">
+          {MARKET_FEATURES.map(feature=><button key={feature.id} onClick={()=>setActiveFeature(feature)} className="min-w-[190px] text-left p-3 rounded-2xl border border-border bg-background hover:border-primary/50 hover:bg-primary/5 active:scale-[.98] transition-all">
+            <div className="flex items-center gap-2"><span className="text-lg">{feature.icon}</span><span className="font-bold text-xs">{feature.title}</span></div><p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">{feature.desc}</p>
+          </button>)}
+          <button onClick={()=>navigate('/orders')} className="min-w-[150px] text-left p-3 rounded-2xl border border-primary/20 bg-primary/5 hover:bg-primary/10 active:scale-[.98] transition-all"><div className="font-bold text-xs">My orders</div><p className="text-[10px] text-muted-foreground mt-1">Track purchases and sales</p></button>
+        </div>
+        {deliveryFilter !== 'all' && <div className="mt-2 flex items-center justify-between rounded-xl bg-primary/5 border border-primary/20 px-3 py-2"><span className="text-xs font-semibold text-primary">Showing {deliveryFilter === 'local' ? 'local delivery' : deliveryFilter === 'trusted' ? 'trusted sellers' : 'seller delivery'} products</span><button onClick={()=>setDeliveryFilter('all')} className="text-xs font-bold text-primary">Clear</button></div>}
+      </div>
 
       {/* ── Sticky Search + Filter bar ── */}
       <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-sm border-b border-border px-4 py-3 space-y-3">
@@ -887,16 +894,25 @@ export default function MarketplacePage() {
           <div className="flex justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
           </div>
+        ) : loadError ? (
+          <div className="text-center py-20">
+            <div className="w-16 h-16 rounded-2xl bg-destructive/10 text-destructive flex items-center justify-center mx-auto mb-4"><ShoppingBag className="w-8 h-8" /></div>
+            <h2 className="text-lg font-bold mb-2">Marketplace unavailable</h2>
+            <p className="text-sm text-muted-foreground max-w-sm mx-auto mb-4">We couldn't load the product catalog. Your filters were kept so you can retry without losing your place.</p>
+            <button onClick={() => void fetchProducts(0, true)} className="px-5 py-2.5 bg-primary text-primary-foreground rounded-full font-semibold text-sm hover:opacity-90">Retry</button>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-20">
             <ShoppingBag className="w-16 h-16 text-muted-foreground/20 mx-auto mb-4" />
-            <h2 className="text-lg font-bold mb-2">No products found</h2>
-            <p className="text-sm text-muted-foreground mb-4">
-              {search ? `No results for "${search}"` : 'Try adjusting your filters'}
+            <h2 className="text-lg font-bold mb-2">{products.length === 0 && !search && category === 'all' ? 'No products yet' : 'No products found'}</h2>
+            <p className="text-sm text-muted-foreground max-w-sm mx-auto mb-4">
+              {search ? `No results for "${search}"` : products.length === 0 ? 'Be the first creator or seller to publish a product on Testagram Mall.' : 'Try adjusting your filters or search terms.'}
             </p>
-            <button onClick={resetFilters} className="px-5 py-2.5 bg-primary text-primary-foreground rounded-full font-semibold text-sm hover:opacity-90">
-              Reset Filters
-            </button>
+            {products.length === 0 && user ? (
+              <button onClick={() => navigate('/products')} className="px-5 py-2.5 bg-primary text-primary-foreground rounded-full font-semibold text-sm hover:opacity-90">Create a product</button>
+            ) : (
+              <button onClick={resetFilters} className="px-5 py-2.5 bg-primary text-primary-foreground rounded-full font-semibold text-sm hover:opacity-90">Reset Filters</button>
+            )}
           </div>
         ) : gridMode === 'grid' ? (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -926,6 +942,9 @@ export default function MarketplacePage() {
           </div>
         )}
       </div>
+      <div ref={loadMoreRef} className="h-10 flex items-center justify-center" aria-hidden="true">
+        {loadingMore && <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />}
+      </div>
 
       {/* ── Filter Sheet ── */}
       {showFilters && (
@@ -936,6 +955,8 @@ export default function MarketplacePage() {
           onReset={resetFilters}
         />
       )}
+
+      {activeFeature && <MarketplaceFeatureSheet feature={activeFeature} onClose={()=>setActiveFeature(null)} onNavigate={navigate} onBrowse={()=>{setDeliveryFilter(activeFeature.id==='local'?'local':activeFeature.id==='trusted'?'trusted':'all'); setActiveFeature(null); window.scrollTo({top:520,behavior:'smooth'});}} />}
 
       {/* ── Product Detail Sheet ── */}
       {selectedProduct && (

@@ -54,30 +54,40 @@ const ACCOUNT_TOPICS = [
       'You will be asked to confirm by typing your username.',
       'All your posts, followers, and earnings data will be permanently removed within 30 days.',
       'Wallet balances should be withdrawn before deletion — they cannot be recovered after.',
-      'If you change your mind, contact support@tsocial.com within 7 days of deletion.',
+      'If you change your mind, contact testagramreels@gmail.com within 7 days of deletion.',
     ],
   },
   {
     q: 'Privacy settings',
     a: [
-      'Go to Settings → Privacy to control who can see your content.',
-      'You can make your account private — new followers need your approval.',
-      'Control who can send you Direct Messages: Everyone, Followers only, or Nobody.',
-      'Mute or Block users from their profile page or the three-dot menu on their posts.',
-      'Your email and phone number are always private and never shown publicly.',
+      'Open Settings → Privacy & Security to control account visibility and discovery.',
+      'Private Account controls whether new followers need your approval before they can see protected posts.',
+      'Discoverable by Username controls whether other people can find your profile through @username, display name, or bio search.',
+      'Your public profile can be discovered even when your account is protected; protected posts remain limited to you and approved followers.',
+      'Email and phone discovery are separate controls and do not make your email address or phone number public.',
+      'Changes to discovery settings are saved to your profile and apply across Search, Explore, and public profile discovery.',
     ],
   },
 ];
 
 const POSTS_TOPICS = [
   {
+    q: 'Daily posting limit',
+    a: [
+      'Each user can create up to 10 posts and threads combined per UTC calendar day.',
+      'Replies, comments, likes, reposts, and bookmarks do not use this daily creation allowance.',
+      'The remaining allowance is shown in the post and thread creation screens.',
+      'Deleting a post or thread does not restore that day\'s allowance; the allowance resets at the next UTC day.',
+    ],
+  },
+  {
     q: 'How to post videos',
     a: [
       'Tap the green + FAB button on the Home screen to open the Compose sheet.',
       'Tap the video camera icon or "Attach Video" to select a video from your gallery.',
-      'Videos up to 10 MB are supported. For longer videos use the upload-to-storage flow.',
+      'Images and videos are limited to 20 MiB per file. Posts can include up to 4 images; threads can include up to 6 inline images plus one cover image or video. Supported formats include JPEG, PNG, GIF, WebP, AVIF, MP4, WebM, MOV, and MKV.',
       'Add a caption, hashtags (#), and mentions (@) before posting.',
-      'Toggle "Monetize" on the post card to earn CPM revenue from video views.',
+      'If monetization is available to your account, use the Monetize controls shown in the creator tools. Earnings and eligibility are governed by the current monetization terms.',
     ],
   },
   {
@@ -85,7 +95,7 @@ const POSTS_TOPICS = [
     a: [
       'In the Compose sheet, tap the Poll icon (bar chart icon) in the toolbar.',
       'Enter your question and up to 4 answer options.',
-      'Set the poll duration: 1 day, 3 days, or 7 days.',
+      'Set the poll duration using the options currently offered by the composer.',
       'Post normally — followers can tap an option to vote.',
       'Results are visible to everyone once you\'ve voted or after the poll expires.',
     ],
@@ -106,8 +116,8 @@ const POSTS_TOPICS = [
       'Type # followed by a keyword in your post (e.g. #Nairobi #TechKenya).',
       'Use 3–7 relevant hashtags for best reach — too many can look spammy.',
       'Follow hashtags from the Explore page to see all posts under that tag in your feed.',
-      'Create hashtag challenges from the Explore → Challenges section (verified users only).',
-      'Trending hashtags appear on the Explore tab — using them boosts discoverability.',
+      'Use hashtags and other discovery features according to the current product rules and eligibility shown in the app.',
+      'Trending hashtags appear on Explore and can help people discover relevant posts, but reach is never guaranteed.',
     ],
   },
   {
@@ -139,25 +149,25 @@ const PAYMENTS_TOPICS = [
       'Go to Wallet → M-Pesa tab to deposit via STK push (Kenya only).',
       'Enter your Safaricom number, amount, and tap "Pay" — a PIN prompt appears on your phone.',
       'For PayPal: go to Wallet → Withdraw and enter your PayPal email for payouts.',
-      'Minimum deposit via M-Pesa: KES 10. Minimum payout: $5 USD.',
+      'Applicable deposit, transfer, conversion, and payout limits are shown in the Wallet and checkout flows and may change.',
       'All transactions are recorded in Wallet → History.',
     ],
   },
   {
     q: 'Creator earnings',
     a: [
-      'Earnings come from: video CPM ($1.50–$3.50 per 1k views), tips (85% to you), ad revenue share, and subscriptions.',
-      'Your CPM tier upgrades automatically as your video views grow.',
+      'Creator earnings can come from eligible advertising, tips, subscriptions, and other monetization features. Rates, eligibility, revenue shares, and payout thresholds can change and are shown in the applicable creator terms and wallet screens.',
+      'Eligibility and monetization status are determined by the current creator program rules shown in the app.',
       'View your full earnings breakdown in Creator Studio → Earnings tab.',
-      'Earnings are distributed daily by our automated system.',
-      'Request a payout from Creator Studio → Earnings → Request Payout (minimum $5).',
+      'Earnings are recorded and paid according to the applicable creator payout schedule and verification requirements.',
+      'Request a payout from the applicable Creator Studio or Wallet payout flow when your account meets the currently displayed eligibility and threshold requirements.',
     ],
   },
   {
     q: 'Premium subscriptions',
     a: [
       'Go to /premium to view available plans (Monthly or Annual).',
-      'Premium removes all ads, gives you a Premium badge, and unlocks advanced creator tools.',
+      'Premium features, pricing, billing frequency, and benefits are shown on the Premium purchase screen before checkout.',
       'Pay with your wallet balance, M-Pesa, or PayPal.',
       'Your subscription auto-renews unless cancelled 24 hours before renewal.',
       'Cancel anytime from Settings → Premium → Cancel Subscription.',
@@ -166,10 +176,10 @@ const PAYMENTS_TOPICS = [
   {
     q: 'Refund policy',
     a: [
-      'Digital purchases (boosts, premium, verification) are generally non-refundable once delivered.',
-      'If a technical error prevented your boost from running, contact support within 7 days.',
-      'M-Pesa deposits that fail but deduct your balance are refunded within 24 hours automatically.',
-      'For all other refund requests email support@tsocial.com with your transaction reference.',
+      'Refund eligibility depends on the purchase type, delivery status, applicable payment-provider rules, and applicable law. Review the refund terms shown before purchase.',
+      'If a technical issue affected a paid feature, contact support with the transaction reference and relevant error details.',
+      'If a payment is debited by a provider but the corresponding Testagram transaction fails, contact support with the provider transaction reference so the transaction can be reconciled.',
+      'For all other refund requests email testagramreels@gmail.com with your transaction reference.',
     ],
   },
 ];
@@ -190,17 +200,17 @@ const SAFETY_TOPICS = [
     a: [
       'Tap the ··· menu on a post or user profile and select Report.',
       'For urgent safety concerns (threats, CSAM) use the Priority Report option.',
-      'All abuse reports go to our Safety team and are reviewed within 24 hours.',
-      'You can also email abuse@tsocial.com for sensitive or urgent matters.',
-      'Our platform regulators can issue temporary bans, strikes, or permanent bans.',
+      'Reports are routed for moderation review. Review time can vary with severity, volume, and whether additional investigation is required.',
+      'You can also email testagramreels@gmail.com for sensitive or urgent matters.',
+      'Moderation may result in warnings, content removal, temporary restrictions, or account suspension under the Community Guidelines and applicable enforcement procedures.',
     ],
   },
   {
     q: 'Two-factor authentication',
     a: [
       'Go to Settings → Security → Two-Factor Authentication.',
-      'Currently 2FA is implemented via OTP code sent to your registered email.',
-      'Every new login from an unrecognised device triggers an OTP verification step.',
+      'Use the authentication and OTP options currently offered in Settings. Never share a verification code with anyone.',
+      'When additional verification is required, Testagram may ask you to complete an OTP or other security check.',
       'Do not share your OTP codes with anyone — Testagram staff will never ask for them.',
       'If you lose access to your email, contact support immediately to recover your account.',
     ],
@@ -211,7 +221,7 @@ const SAFETY_TOPICS = [
       "If you notice logins you don't recognise, go to Settings → Security → Active Sessions and sign out all devices.",
       'Change your password immediately and enable 2FA.',
       'Check your Wallet → History for any unauthorised transactions.',
-      'Report compromised accounts to support@tsocial.com with "ACCOUNT COMPROMISED" in the subject.',
+      'Report compromised accounts to testagramreels@gmail.com with "ACCOUNT COMPROMISED" in the subject.',
       'We may temporarily lock your account during investigation to protect your funds.',
     ],
   },
@@ -219,8 +229,8 @@ const SAFETY_TOPICS = [
     q: 'Content guidelines',
     a: [
       'Testagram prohibits: hate speech, harassment, graphic violence, NSFW content, and spam.',
-      'Posts are reviewed by our AI moderation system and human regulators.',
-      'First violation: warning + content removal. Second: temporary ban. Third: permanent ban.',
+      'Content may be reviewed by automated systems and human moderators.',
+      'Enforcement depends on the severity and context of the violation and may include content removal, warnings, temporary restrictions, or account suspension. Appeals are available where provided.',
       'You can appeal a ban via the Appeals page (/appeals).',
       'Read the full Content Policy at /content-policy.',
     ],
@@ -356,26 +366,26 @@ function formatTicketDate(d: string): string {
 
 // ── Article last-updated dates (module-level, esbuild guard: no Record<string,string> annotation) ──
 const ARTICLE_LAST_UPDATED = {
-  'how-to-change-username': 'Aug 2026',
-  'update-profile-information': 'Aug 2026',
-  'verify-your-account': 'Aug 2026',
-  'delete-your-account': 'Jul 2026',
-  'privacy-settings': 'Aug 2026',
-  'how-to-post-videos': 'Aug 2026',
-  'create-polls': 'Jul 2026',
-  'schedule-posts': 'Aug 2026',
-  'use-hashtags-effectively': 'Jul 2026',
-  'report-inappropriate-content': 'Jun 2026',
+  'how-to-change-username': 'Sep 2026',
+  'update-profile-information': 'Sep 2026',
+  'verify-your-account': 'Sep 2026',
+  'delete-your-account': 'Sep 2026',
+  'privacy-settings': 'Sep 2026',
+  'how-to-post-videos': 'Sep 2026',
+  'create-polls': 'Sep 2026',
+  'schedule-posts': 'Sep 2026',
+  'use-hashtags-effectively': 'Sep 2026',
+  'report-inappropriate-content': 'Sep 2026',
   'boost-your-posts': 'Aug 2026',
-  'payment-methods-paypal-m-pesa': 'Aug 2026',
-  'creator-earnings': 'Aug 2026',
-  'premium-subscriptions': 'Jul 2026',
-  'refund-policy': 'Jun 2026',
+  'payment-methods-paypal-m-pesa': 'Sep 2026',
+  'creator-earnings': 'Sep 2026',
+  'premium-subscriptions': 'Sep 2026',
+  'refund-policy': 'Sep 2026',
   'block-or-mute-users': 'Jul 2026',
-  'report-abuse': 'Aug 2026',
-  'two-factor-authentication': 'Jun 2026',
-  'suspicious-activity': 'Jul 2026',
-  'content-guidelines': 'Aug 2026',
+  'report-abuse': 'Sep 2026',
+  'two-factor-authentication': 'Sep 2026',
+  'suspicious-activity': 'Sep 2026',
+  'content-guidelines': 'Sep 2026',
 };
 
 // ── Article date lookup (esbuild guard: module-level — no inline lookup in JSX) ──
@@ -578,6 +588,7 @@ export default function HelpPage() {
   const [contactEmail, setContactEmail] = useState('');
   const [contactSending, setContactSending] = useState(false);
   const [contactSent, setContactSent] = useState(false);
+  const [contactError, setContactError] = useState('');
   // Video guide modal
   const [videoModalIdx, setVideoModalIdx] = useState(-1);
   // Ticket history — parallel arrays (esbuild guard: plain useState([]))
@@ -734,15 +745,20 @@ export default function HelpPage() {
   };
 
   const handleContactSubmit = async () => {
-    if (!contactMessage.trim()) { toast.error('Please write a message'); return; }
-    if (!contactEmail.trim()) { toast.error('Please provide your email'); return; }
+    const email = contactEmail.trim();
+    const message = contactMessage.trim();
+    setContactError('');
+    if (!email) { setContactError('Please provide your email address.'); return; }
+    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) { setContactError('Enter a valid email address.'); return; }
+    if (!message) { setContactError('Please describe the issue so our team can help.'); return; }
+    if (message.length > 1000) { setContactError('Please keep your message under 1,000 characters.'); return; }
     setContactSending(true);
     try {
       // Insert into platform_inbox for user record
       const { error } = await supabase.from('platform_inbox').insert({
         user_id: user?.id ?? null,
-        subject: `[Support] ${contactSubject}: from ${contactEmail}`,
-        body: `From: ${contactEmail}\nSubject: ${contactSubject}\n\n${contactMessage.trim()}`,
+        subject: `[Support] ${contactSubject}`,
+        body: `From: ${email}\nSubject: ${contactSubject}\n\n${message}`,
         type: 'news',
         icon_emoji: '📩',
         cta_label: 'View in Dashboard',
@@ -753,7 +769,7 @@ export default function HelpPage() {
       // Also post to team_chat_messages so staff see it in Team Chat immediately
       await supabase.from('team_chat_messages').insert({
         user_id: user?.id ?? null,
-        message: `📩 [SUPPORT TICKET] Subject: ${contactSubject}\nFrom: ${contactEmail}\n\n${contactMessage.trim()}`,
+        message: `📩 [SUPPORT TICKET] Subject: ${contactSubject}\nFrom: ${email}\n\n${message}`,
         department: 'Support',
       });
 
@@ -761,7 +777,9 @@ export default function HelpPage() {
       setContactMessage('');
       toast.success("Support request sent! We'll get back to you soon.");
     } catch (e: any) {
-      toast.error(e.message || 'Failed to send. Please try again.');
+      const message = e?.message || 'We could not send your request right now.';
+      setContactError(message);
+      toast.error(message);
     } finally {
       setContactSending(false);
     }
@@ -962,12 +980,17 @@ export default function HelpPage() {
       <div className="max-w-2xl mx-auto px-4 py-6 space-y-6">
 
         {/* Hero */}
-        <div className="text-center pt-2 pb-4">
-          <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-            <HelpCircle className="w-8 h-8 text-primary" />
+        <div className="text-center pt-2 pb-2">
+          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4 shadow-sm">
+            <HelpCircle className="w-8 h-8 text-primary" aria-hidden="true" />
           </div>
-          <h1 className="text-2xl font-black mb-1">How can we help you?</h1>
-          <p className="text-sm text-muted-foreground">Search for answers or browse categories below</p>
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight mb-2">How can we help you?</h1>
+          <p className="text-sm text-muted-foreground max-w-md mx-auto">Search the Help Center for step-by-step answers, or browse a category below.</p>
+          <div className="flex flex-wrap justify-center gap-2 mt-4 text-[10px] font-semibold text-muted-foreground">
+            <span className="px-2.5 py-1 rounded-full bg-muted/60 border border-border">20+ guides</span>
+            <span className="px-2.5 py-1 rounded-full bg-muted/60 border border-border">Support tickets</span>
+            <span className="px-2.5 py-1 rounded-full bg-muted/60 border border-border">AI assistance</span>
+          </div>
         </div>
 
         {/* ── Video Guides ── */}
@@ -1041,14 +1064,26 @@ export default function HelpPage() {
 
         {/* Search */}
         <div className="relative">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
           <Input
             type="text"
             placeholder="Search help articles…"
             value={searchQuery}
             onChange={e => handleSearchChange(e.target.value)}
-            className="pl-10 h-11 rounded-xl"
+            className="pl-10 pr-10 h-12 rounded-xl shadow-sm"
+            aria-label="Search Help Center"
+            autoComplete="off"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear help search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* ── Category Quick Jump ── */}
@@ -1120,7 +1155,7 @@ export default function HelpPage() {
 
         {/* Search Results */}
         {hasSearch && (
-          <div className="border border-border rounded-2xl overflow-hidden">
+          <div className="border border-border rounded-2xl overflow-hidden" aria-live="polite">
             <div className="px-4 py-3 bg-muted/30 border-b border-border">
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
                 {searchResultsLabel}
@@ -1128,8 +1163,15 @@ export default function HelpPage() {
             </div>
             {searchResults.length === 0 ? (
               <div className="px-4 py-8 text-center text-muted-foreground">
-                <p className="text-sm mb-1">No articles found</p>
-                <p className="text-xs">Try a different keyword or browse the categories below</p>
+                <p className="text-sm font-semibold mb-1">No articles found</p>
+                <p className="text-xs mb-4">Try another keyword, browse a category, or contact support if you still need help.</p>
+                <button
+                  type="button"
+                  onClick={() => document.getElementById('contact-support')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-bold"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" /> Contact support
+                </button>
               </div>
             ) : (
               <div>
@@ -1280,12 +1322,16 @@ export default function HelpPage() {
                 <label className="text-xs font-bold text-muted-foreground mb-1.5 block uppercase tracking-wide">Message</label>
                 <textarea
                   value={contactMessage}
+                  maxLength={1000}
                   onChange={e => setContactMessage(e.target.value)}
                   placeholder="Describe your issue in detail. Include any relevant post IDs, transaction references, or error messages…"
                   rows={4}
                   className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed"
                 />
-                <p className="text-[10px] text-muted-foreground mt-1 text-right">{contactMessage.length}/1000</p>
+                <div className="flex items-center justify-between gap-3 mt-1">
+                {contactError ? <p role="alert" className="text-[10px] text-destructive">{contactError}</p> : <span />}
+                <p className="text-[10px] text-muted-foreground">{contactMessage.length}/1000</p>
+              </div>
               </div>
               <button
                 onClick={handleContactSubmit}
@@ -1298,7 +1344,7 @@ export default function HelpPage() {
               </button>
               <p className="text-[10px] text-muted-foreground text-center">
                 Or email us directly at{' '}
-                <a href="mailto:support@tsocial.com" className="text-primary hover:underline">support@tsocial.com</a>
+                <a href="mailto:testagramreels@gmail.com" className="text-primary hover:underline">testagramreels@gmail.com</a>
               </p>
             </div>
           )}
@@ -1413,7 +1459,7 @@ export default function HelpPage() {
               Community Guidelines
             </button>
           </div>
-          <p className="text-center text-[10px] text-muted-foreground/50 mt-2">© 2026 Testagram · Help Center</p>
+          <p className="text-center text-[10px] text-muted-foreground/50 mt-2">© 2026 Testagram · Help Center · Policies updated September 2026</p>
         </div>
 
         {/* Quick Links */}
@@ -1528,6 +1574,7 @@ export default function HelpPage() {
             <input
               type="text"
               value={chatInput}
+              maxLength={500}
               onChange={e => setChatInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChatSend(); } }}
               placeholder="Ask a question…"

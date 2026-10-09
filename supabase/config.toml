@@ -1,0 +1,66 @@
+[auth]
+enable_anonymous_sign_ins = false
+
+[functions.capability-gateway]
+verify_jwt = false
+
+[functions.community-admin-runtime]
+verify_jwt = false
+
+[functions.gateway-relay]
+verify_jwt = false
+
+[functions.federated-feed]
+verify_jwt = true
+
+[functions.megalodon-gateway]
+verify_jwt = true
+
+[functions.testagram-rss-feed]
+verify_jwt = false
+
+[functions.tv-catalog]
+verify_jwt = false
+
+# Public media proxy: the browser cannot attach a Supabase JWT to HLS.js media requests.
+# The function performs its own public-stream/SSRF validation.
+[functions.tv-stream-proxy]
+verify_jwt = false
+
+[functions.tv-media-control]
+verify_jwt = true
+
+[functions.mux-tv-webhook]
+verify_jwt = false
+
+[functions.register-push-token]
+verify_jwt = true
+
+[functions.novu-notification-delivery]
+verify_jwt = false
+
+[functions.notification-delivery-worker]
+verify_jwt = false
+
+[functions.newsify-feed]
+verify_jwt = false
+
+[functions.newsify-sync]
+verify_jwt = false
+
+[functions.notification-fcm-worker]
+verify_jwt = false
+
+[functions.identity-verification]
+verify_jwt = false
+
+[functions.identity-engine-result]
+verify_jwt = false
+
+# Local/self-hosted Auth parity: Testagram sessions are time-boxed to 2 hours.
+[auth.sessions]
+timebox = "2h"
+
+
+[functions.tv-cdn-playback]
+verify_jwt = false
