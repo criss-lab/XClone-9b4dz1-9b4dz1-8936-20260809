@@ -1,0 +1,65 @@
+name: Testagram CDN Integration Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xclone-cdn-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout XClone
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/testagram-cdn/go.mod
+          cache-dependency-path: services/testagram-cdn/go.sum
+
+      - name: Verify canonical CDN contract
+        working-directory: services/testagram-cdn
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -R 'media.testagram.site' internal docs >/dev/null
+          grep -R '2026-10-08-go-edge-iptv-v1' internal >/dev/null
+          grep -R 'TV_PREFETCH_SECONDS' internal >/dev/null
+          grep -R 'TV_PREFETCH_TIMEOUT' internal >/dev/null
+
+      - name: Run CDN correctness suite
+        working-directory: services/testagram-cdn
+        run: go test ./...
+
+      - name: Verify XClone points at the first-party CDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -R 'https://media.testagram.site' src supabase .github >/dev/null
+          grep -R 'tv-cdn-playback' src supabase >/dev/null
+
+      - name: Verify IPTV playback is origin-first and CDN optional
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F "VITE_TESTAGRAM_CDN_ENABLED || 'false'" src/services/tvCdn.ts >/dev/null
+          grep -F 'let playbackUrl=proxyFallbackRef.current?proxyUrl():directUrl;' src/components/features/TvChannelPlayer.tsx >/dev/null
+          grep -F 'enabled: false' services/testagram-cdn/web/p2p-loader.js >/dev/null
+          if grep -F 'VITE_TESTAGRAM_CDN_ENABLED: "true"' .github/workflows/production-build.yml >/dev/null; then
+            echo 'Production build must not force TV playback through the optional CDN.' >&2
+            exit 1
+          fi
+
+      - name: Build XClone
+        run: |
+          npm ci
+          npm run build
