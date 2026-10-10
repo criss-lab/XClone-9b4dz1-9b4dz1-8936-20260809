@@ -1,5 +1,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
+
+function runWhenIdle(task: () => void, timeout = 1400) {
+  if (typeof window === 'undefined') return;
+  const ric = (window as any).requestIdleCallback;
+  if (typeof ric === 'function') { const id = ric(task, { timeout }); return () => (window as any).cancelIdleCallback?.(id); }
+  const id = window.setTimeout(task, 80); return () => window.clearTimeout(id);
+}
+
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
@@ -8,6 +16,7 @@ import { TrendingUp, Users, Hash, Radio, Sparkles, Plus, Check, RefreshCw, Troph
 import { formatNumber } from '@/lib/utils';
 import { UserSuggestionsWidget } from '../features/UserSuggestionsWidget';
 import { ContentSuggestionsWidget } from '../features/ContentSuggestionsWidget';
+import { TestagramAdSlot } from '../features/TestagramAdSlot';
 import { toast } from 'sonner';
 
 interface TrendingHashtag {
@@ -67,7 +76,7 @@ function CreatorEarningsWidget() {
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
-    Promise.all([
+    const cancel = runWhenIdle(() => Promise.all([
       supabase.from('creator_earnings').select('amount').eq('user_id', user.id).gte('created_at', startOfMonth.toISOString()),
       supabase.from('user_monetization').select('pending_user_payout').eq('user_id', user.id).maybeSingle(),
     ]).then(([earningsRes, monRes]) => {
@@ -75,7 +84,8 @@ function CreatorEarningsWidget() {
       setMonthEarnings(total);
       setPendingPayout(Number(monRes.data?.pending_user_payout ?? 0));
       setLoading(false);
-    });
+    }));
+    return () => cancel?.();
   }, [user?.id]);
 
   if (!user || loading || (monthEarnings === 0 && pendingPayout === 0)) return null;
@@ -164,7 +174,7 @@ function CreatorLeaderboardWidget() {
     if (topIds.length === 0) { setLoading(false); return; }
 
     const { data: profiles } = await supabase
-      .from('user_profiles')
+      .from('profiles')
       .select('id, username, avatar_url, verified')
       .in('id', topIds);
 
@@ -183,9 +193,9 @@ function CreatorLeaderboardWidget() {
   }, []);
 
   useEffect(() => {
-    fetchLeaders();
+    const cancel = runWhenIdle(fetchLeaders);
     const iv = setInterval(fetchLeaders, 60_000);
-    return () => clearInterval(iv);
+    return () => { cancel?.(); clearInterval(iv); };
   }, [fetchLeaders]);
 
   if (loading || leaders.length === 0) return null;
@@ -306,6 +316,7 @@ function CreatorLeaderboardWidget() {
 }
 
 export function RightSidebar() {
+  const adContext = { page_path: typeof window !== 'undefined' ? window.location.pathname : '/', surface: 'SIDEBAR' };
   const navigate = useNavigate();
   const { user } = useAuth();
   const [trending, setTrending] = useState<TrendingTopic[]>([]);
@@ -369,7 +380,7 @@ export function RightSidebar() {
   const fetchLiveSpaces = useCallback(async () => {
     const { data } = await supabase
       .from('spaces')
-      .select(`*, user_profiles (username, avatar_url)`)
+      .select(`*, profiles (username, avatar_url)`)
       .eq('is_live', true)
       .order('listener_count', { ascending: false })
       .limit(5);
@@ -409,15 +420,15 @@ export function RightSidebar() {
   }, []); // Dependencies are now explicit empty array, because comms and spaces are passed as arguments
 
   useEffect(() => {
-    fetchTrending();
-    fetchTrendingHashtags();
-    fetchCommunities();
-    fetchLiveSpaces();
-    if (user) { fetchFollowedTags(); fetchFollowedHashtagsPanel(); }
-
-    // Auto-refresh trending hashtags every 60s
+    const cancel = runWhenIdle(() => {
+      void fetchTrending();
+      void fetchTrendingHashtags();
+      void fetchCommunities();
+      void fetchLiveSpaces();
+      if (user) { void fetchFollowedTags(); void fetchFollowedHashtagsPanel(); }
+    });
     const iv = setInterval(fetchTrendingHashtags, 60_000);
-    return () => clearInterval(iv);
+    return () => { cancel?.(); clearInterval(iv); };
   }, [user, fetchTrending, fetchTrendingHashtags, fetchCommunities, fetchLiveSpaces, fetchFollowedTags, fetchFollowedHashtagsPanel]);
 
   const unfollowHashtag = async (hashtagId: string, _tag: string, e: React.MouseEvent) => {
@@ -443,7 +454,8 @@ export function RightSidebar() {
     }
   };
   
-  return (
+  return (<>
+    <div className="hidden xl:block w-80 px-4 pt-4"><TestagramAdSlot placement="SIDEBAR" context={adContext} /></div>
     <aside className="hidden xl:block w-80 h-screen sticky top-0 p-4 space-y-4 overflow-y-auto">
       {/* Create Community */}
       <div className="bg-muted/50 rounded-xl p-4 border border-border">
@@ -810,5 +822,5 @@ export function RightSidebar() {
         <p>© 2025 T Social</p>
       </div>
     </aside>
-  );
+  </>);
 }
