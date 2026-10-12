@@ -11,9 +11,12 @@ export function FloatingActionButton() {
 
   if (!user) return null;
 
-  // Don't show on auth page, messages page, or AI page (they have their own input areas)
+  // Live-stream pages have a persistent chat composer at the bottom.
+  // Keep the global FAB out of that interaction zone so it cannot cover
+  // the message field/send control on mobile.
+  const isLiveStreamPage = location.pathname.startsWith('/stream/');
   const hiddenRoutes = ['/auth', '/messages', '/ai'];
-  if (hiddenRoutes.some(r => location.pathname.startsWith(r))) return null;
+  if (isLiveStreamPage || hiddenRoutes.some(r => location.pathname.startsWith(r))) return null;
 
   const actions = [
     {
@@ -63,7 +66,7 @@ export function FloatingActionButton() {
 
       {/* Action Menu */}
       {isOpen && (
-        <div className="fixed bottom-24 right-6 z-50 space-y-3 lg:hidden">
+        <div className="tg-fab fixed z-50 space-y-3 lg:hidden">
           {actions.map((action, index) => {
             const Icon = action.icon;
             return (
@@ -90,7 +93,7 @@ export function FloatingActionButton() {
       {/* Main FAB */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`fixed bottom-20 right-6 z-50 lg:hidden p-4 rounded-full shadow-lg transition-all ${
+        className={`tg-fab fixed z-50 lg:hidden p-4 rounded-full shadow-lg transition-all tg-touch-control ${
           isOpen
             ? 'bg-destructive hover:bg-destructive/90 rotate-45'
             : 'bg-primary hover:bg-primary/90'

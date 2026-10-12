@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { VideoPlayer } from '@/components/features/VideoPlayer';
-import { VideoAdSlide } from '@/components/features/VideoAdSlide';
 import { supabase } from '@/lib/supabase';
 import { Post } from '@/types/app-types';
 import { Loader2, Gift, X, Zap, Play, Search, Bookmark, Share, MessageCircle, Eye, Heart, BadgeCheck, Send as SendIcon, Gauge } from 'lucide-react';
@@ -10,6 +9,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { formatDistanceToNow } from 'date-fns';
 import { formatNumber } from '@/lib/utils';
 import { toast } from 'sonner';
+import { warmOfflineVideos, writeOfflineVideoFeed, readOfflineVideoFeed } from '@/lib/offlineMediaCache';
 
 // esbuild-safe module-level constants
 // esbuild guard: no 'as const' on module-level arrays used in .map() render
@@ -20,8 +20,6 @@ const PRELOAD_AHEAD = 3;
 // PRELOAD_CANCEL_BEHIND: release buffering for videos more than this many slots behind current
 const PRELOAD_CANCEL_BEHIND = 2;
 const PAGE_SIZE = 20;
-// Inject a video ad every AD_INTERVAL videos
-const AD_INTERVAL = 5;
 
 type FeedTab = 'foryou' | 'following' | 'watchlater' | 'duets';
 
@@ -36,7 +34,7 @@ function VideoCommentDrawer({ post, onClose }: { post: Post; onClose: () => void
 
   useEffect(() => {
     supabase.from('replies')
-      .select('*, user_profiles(id,username,avatar_url,verified)')
+      .select('*, profiles(id,username,avatar_url,verified)')
       .eq('post_id', post.id)
       .order('created_at', { ascending: false })
       .limit(50)
@@ -184,8 +182,6 @@ export default function VideosPage() {
   // Duets feed — posts that contain 'Duet with @' in content
   const [duetVideos, setDuetVideos] = useState<Post[]>([]);
   const [duetsLoading, setDuetsLoading] = useState(false);
-  // Video ads fetched once and injected every AD_INTERVAL slots
-  const [videoAds, setVideoAds] = useState<any[]>([]);
 
   // Top 5 videos for SEO ItemList JSON-LD
   const topVideos = videos.slice(0, 5);
@@ -247,18 +243,6 @@ export default function VideosPage() {
   // Track indices whose <video> src should be set to '' to cancel buffering
   const [cancelMap, setCancelMap] = useState<any>({});
 
-  // Fetch active user-created video/image ads for injection
-  useEffect(() => {
-    supabase
-      .from('user_ads')
-      .select('*, user_profiles!user_ads_user_id_fkey(id, username, avatar_url, verified)')
-      .eq('status', 'active')
-      .eq('payment_status', 'paid')
-      .order('created_at', { ascending: false })
-      .limit(6)
-      .then(({ data }) => setVideoAds(data ?? []));
-  }, []);
-
   // Fetch following IDs + watch later when user logs in
   useEffect(() => {
     if (!user) { setFollowingIds([]); setWatchLaterIds([]); return; }
@@ -290,7 +274,7 @@ export default function VideosPage() {
     if (!q.trim()) { setSearchResults([]); return; }
     searchDebounce.current = setTimeout(async () => {
       setSearchLoading(true);
-      const { data } = await supabase.from('posts').select('*, user_profiles(*)')
+      const { data } = await supabase.from('posts').select('*, user_profiles:profiles!posts_user_id_fkey(*)')
         .eq('is_video', true).ilike('content', `%${q}%`).order('views_count', { ascending: false }).limit(20);
       setSearchResults(data ?? []);
       setSearchLoading(false);
@@ -307,7 +291,7 @@ export default function VideosPage() {
     setDuetsLoading(true);
     supabase
       .from('posts')
-      .select('*, user_profiles(*)')
+      .select('*, user_profiles:profiles!posts_user_id_fkey(*)')
       .eq('is_video', true)
       .ilike('content', '%Duet with @%')
       .order('created_at', { ascending: false })
@@ -366,7 +350,7 @@ export default function VideosPage() {
     try {
       let query = supabase
         .from('posts')
-        .select('*, user_profiles (*)')
+        .select('*, user_profiles:profiles!posts_user_id_fkey(*)')
         .eq('is_video', true)
         .order('created_at', { ascending: false })
         .range(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE - 1);
@@ -379,7 +363,7 @@ export default function VideosPage() {
         }
         query = supabase
           .from('posts')
-          .select('*, user_profiles (*)')
+          .select('*, user_profiles:profiles!posts_user_id_fkey(*)')
           .eq('is_video', true)
           .in('user_id', followingIds)
           .order('created_at', { ascending: false })
@@ -390,6 +374,13 @@ export default function VideosPage() {
       if (error) throw error;
 
       const newVideos = data || [];
+      // Persist the first five playable videos locally. Keep the downloads sequential
+      // inside the cache helper so a feed refresh never opens a burst of large transfers.
+      if (pageNum === 0) {
+        const feedKey = `${activeTab}:${user?.id ?? 'guest'}`;
+        void writeOfflineVideoFeed(feedKey, newVideos);
+        void warmOfflineVideos(newVideos.map((video: any) => video.video_url).filter(Boolean), 5);
+      }
       if (newVideos.length < PAGE_SIZE) setHasMore(false);
 
       if (pageNum === 0) {
@@ -405,6 +396,18 @@ export default function VideosPage() {
       setPage(pageNum);
     } catch (err) {
       console.error('fetchVideos error:', err);
+      if (pageNum === 0) {
+        const feedKey = `${activeTab}:${user?.id ?? 'guest'}`;
+        const cached = await readOfflineVideoFeed(feedKey);
+        if (cached?.length) {
+          setVideos(cached);
+          const init: any = {};
+          for (let i = 0; i < Math.min(4, cached.length); i++) init[i] = true;
+          setPreloadMap(init);
+          setCancelMap({});
+          setHasMore(false);
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -693,71 +696,43 @@ export default function VideosPage() {
           WebkitOverflowScrolling: 'touch',
         }}
       >
-        {videos.map((video, index) => {
-          // Calculate the true rendered-slot index including injected ad slots
-          // Every AD_INTERVAL real videos, one ad slot appears before the next video
-          const adsBefore = Math.floor(index / AD_INTERVAL);
-          const slotIndex = index + adsBefore;
-          // Determine if an ad slot appears immediately before this video
-          const showAdBeforeThis = index > 0 && index % AD_INTERVAL === 0 && videoAds.length > 0;
-          const adForSlot = showAdBeforeThis ? videoAds[(Math.floor(index / AD_INTERVAL) - 1) % videoAds.length] : null;
-          return (
-            <React.Fragment key={`slot-${video.id}`}>
-              {/* Inject ad slide before every AD_INTERVAL-th video */}
-              {adForSlot && (
-                <div
-                  key={`ad-${adForSlot.id}-${index}`}
-                  style={{
-                    height: '100svh',
-                    scrollSnapAlign: 'start',
-                    scrollSnapStop: 'always',
-                    position: 'relative',
-                    flexShrink: 0,
-                  }}
-                >
-                  <VideoAdSlide
-                    ad={adForSlot}
-                    isActive={slotIndex - 1 === activeIndex}
-                  />
-                </div>
-              )}
-              <div
-                key={video.id}
-                className="video-feed-item"
-                style={{
-                  height: '100svh',
-                  scrollSnapAlign: 'start',
-                  scrollSnapStop: 'always',
-                  position: 'relative',
-                }}
-              >
-                {/* Thumbnail shimmer while video is loading (shown before preload activates) */}
-                {!preloadMap[index] && video.image_url && (
-                  <div className="absolute inset-0 bg-black">
-                    <img
-                      src={video.image_url}
-                      alt=""
-                      className="w-full h-full object-cover opacity-60"
-                      loading="lazy"
-                    />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-16 h-16 rounded-full bg-black/40 border border-white/20 flex items-center justify-center animate-pulse">
-                        <Play className="w-7 h-7 text-white fill-white ml-1" />
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <VideoPlayer
-                  post={video}
-                  isActive={slotIndex === activeIndex}
-                  onUpdate={() => fetchVideos(0)}
-                  shouldPreload={!!preloadMap[index]}
-                  cancelPreload={!!cancelMap[index]}
+        {videos.map((video, index) => (
+          <div
+            key={video.id}
+            className="video-feed-item"
+            style={{
+              height: '100svh',
+              scrollSnapAlign: 'start',
+              scrollSnapStop: 'always',
+              position: 'relative',
+              flexShrink: 0,
+            }}
+          >
+            {/* Thumbnail shimmer while video is loading (shown before preload activates) */}
+            {!preloadMap[index] && video.image_url && (
+              <div className="absolute inset-0 bg-black">
+                <img
+                  src={video.image_url}
+                  alt=""
+                  className="w-full h-full object-cover opacity-60"
+                  loading="lazy"
                 />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-16 h-16 rounded-full bg-black/40 border border-white/20 flex items-center justify-center animate-pulse">
+                    <Play className="w-7 h-7 text-white fill-white ml-1" />
+                  </div>
+                </div>
               </div>
-            </React.Fragment>
-          );
-        })}
+            )}
+            <VideoPlayer
+              post={video}
+              isActive={index === activeIndex}
+              onUpdate={() => fetchVideos(0)}
+              shouldPreload={!!preloadMap[index]}
+              cancelPreload={!!cancelMap[index]}
+            />
+          </div>
+        ))}
 
         {/* Loading more indicator */}
         {hasMore && (

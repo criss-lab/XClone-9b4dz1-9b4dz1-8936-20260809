@@ -1,34 +1,73 @@
-import { Analytics, StatusBar, Style, Capacitor } from '@/lib/capacitor-stub';
+import { Analytics } from '@/lib/analytics-stub';
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from '@/components/layout/AuthProvider';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { RightSidebar } from '@/components/layout/RightSidebar';
 import { BottomNav } from '@/components/layout/BottomNav';
 import { FloatingActionButton } from '@/components/layout/FloatingActionButton';
-import { LiveSpaceBanner } from '@/components/features/LiveSpaceBanner';
+import { LiveSpacesDiscoveryStrip } from '@/components/features/LiveSpacesDiscoveryStrip';
 import { LiveNotificationBanner } from '@/components/features/LiveNotificationBanner';
 import { useCreatorTierAlert } from '@/hooks/useCreatorTierAlert';
 import { Toaster } from '@/components/ui/toaster';
 import { Toaster as Sonner } from 'sonner';
-import { Loader2, Sparkles, Check, X, ArrowRight } from 'lucide-react';
+import { Loader2, X, Minus, Plus, Maximize2 } from 'lucide-react';
+import { InterestOnboardingSheet } from '@/components/features/InterestOnboardingSheet';
+import { IncomingCallOverlay } from '@/components/features/IncomingCallOverlay';
+import { supabase } from '@/lib/supabase';
+import { startTestagramHeartbeat } from '@/services/heartbeatClient';
+import { applyAppearance, getStoredAppearance } from '@/theme/themes';
 import { useAuth } from '@/hooks/useAuth';
-import HomePage from '@/pages/HomePage';
-import AuthPage from '@/pages/AuthPage';
-import VideosPage from '@/pages/VideosPage';
+import { OwnerOnlyAdminRoute } from '@/components/auth/OwnerOnlyAdminRoute';
+import { RouteSEO } from '@/components/seo/RouteSEO';
+import { TvPageErrorBoundary } from '@/components/features/TvPageErrorBoundary';
+const HomePage = lazy(() => import('@/pages/HomePage'));
+const FederatedOrganicDiscoveryPage = lazy(() => import('@/pages/FederatedOrganicDiscoveryPage'));
+const AuthPage = lazy(() => import('@/pages/AuthPage'));
+const IdentityVerificationPage = lazy(() => import('@/pages/IdentityVerificationPage'));
+const CompleteProfilePage = lazy(() => import('@/pages/CompleteProfilePage'));
+const VideosPage = lazy(() => import('@/pages/VideosPage'));
+const FastPixShortsPage = lazy(() => import('@/pages/FastPixShortsPage'));
 const ExplorePage = lazy(() => import('@/pages/ExplorePage'));
 const NotificationsPage = lazy(() => import('@/pages/NotificationsPage'));
 const MessagesPage = lazy(() => import('@/pages/MessagesPage'));
 const ProfilePage = lazy(() => import('@/pages/ProfilePage'));
+const ProfileSectionPage = lazy(() => import('@/pages/ProfileSectionPage'));
+const ProfilePostsPage = lazy(() => import('@/pages/profile/ProfilePostsPage'));
+const ProfileThreadsPage = lazy(() => import('@/pages/profile/ProfileThreadsPage'));
+const ProfileRepliesPage = lazy(() => import('@/pages/profile/ProfileRepliesPage'));
+const ProfileMediaPage = lazy(() => import('@/pages/profile/ProfileMediaPage'));
+const ProfileVideosPage = lazy(() => import('@/pages/profile/ProfileVideosPage'));
+const ProfileLikesPage = lazy(() => import('@/pages/profile/ProfileLikesPage'));
+const ProfileFollowersPage = lazy(() => import('@/pages/profile/ProfileFollowersPage'));
+const ProfileFollowingPage = lazy(() => import('@/pages/profile/ProfileFollowingPage'));
+const ProfileFeaturesPage = lazy(() => import('@/pages/ProfileFeaturesPage'));
 const SearchPage = lazy(() => import('@/pages/SearchPage'));
 const SpacesPage = lazy(() => import('@/pages/SpacesPage'));
 const AIPage = lazy(() => import('@/pages/AIPage'));
 const AnalyticsDashboard = lazy(() => import('@/pages/AnalyticsDashboard'));
 const AdminPanel = lazy(() => import('@/pages/AdminPanel'));
 const PostThreadPage = lazy(() => import('@/pages/PostThreadPage'));
+const PostLikesPage = lazy(() => import('@/pages/PostLikesPage'));
+const PostRepliesPage = lazy(() => import('@/pages/PostRepliesPage'));
+const PostReplyChainPage = lazy(() => import('@/pages/PostReplyChainPage'));
+const PostRepostsPage = lazy(() => import('@/pages/PostRepostsPage'));
+const PostQuotesPage = lazy(() => import('@/pages/PostQuotesPage'));
+const PostQuoteLikesPage = lazy(() => import('@/pages/PostQuoteLikesPage'));
+const PostQuoteComposerPage = lazy(() => import('@/pages/PostQuoteComposerPage'));
+const ThreadLikesPage = lazy(() => import('@/pages/ThreadLikesPage'));
+const ThreadRepostsPage = lazy(() => import('@/pages/ThreadRepostsPage'));
+const ThreadRepliesPage = lazy(() => import('@/pages/ThreadRepliesPage'));
+const ThreadQuotesPage = lazy(() => import('@/pages/ThreadQuotesPage'));
+const ThreadQuoteLikesPage = lazy(() => import('@/pages/ThreadQuoteLikesPage'));
+const ThreadReplyLikesPage = lazy(() => import('@/pages/ThreadReplyLikesPage'));
+
 const CommunitiesPage = lazy(() => import('@/pages/CommunitiesPage'));
 const CommunityPage = lazy(() => import('@/pages/CommunityPage'));
 const HashtagPage = lazy(() => import('@/pages/HashtagPage'));
+const NewsArticlePage = lazy(() => import('@/pages/NewsArticlePage'));
+const NewsifyNewsPage = lazy(() => import('@/pages/NewsifyNewsPage'));
+const SportsHubPage = lazy(() => import('@/pages/SportsHubPage'));
 const AIBotSetup = lazy(() => import('@/pages/AIBotSetup'));
 const BookmarksPage = lazy(() => import('@/pages/BookmarksPage').then(m => ({ default: m.BookmarksPage })));
 const ListsPage = lazy(() => import('@/pages/ListsPage').then(m => ({ default: m.ListsPage })));
@@ -36,16 +75,63 @@ const MonetizationDashboard = lazy(() => import('@/pages/MonetizationDashboard')
 const ProductsPage = lazy(() => import('@/pages/ProductsPage').then(m => ({ default: m.ProductsPage })));
 const ScheduledPostsPage = lazy(() => import('@/pages/ScheduledPostsPage').then(m => ({ default: m.ScheduledPostsPage })));
 const CreatorStudio = lazy(() => import('@/pages/CreatorStudio'));
+const CreatorOverviewPage = lazy(() => import('@/pages/creator/CreatorOverviewPage'));
+const CreatorAnalyticsPage = lazy(() => import('@/pages/creator/CreatorAnalyticsPage'));
+const CreatorVideosPage = lazy(() => import('@/pages/creator/CreatorVideosPage'));
+const CreatorEarningsPage = lazy(() => import('@/pages/creator/CreatorEarningsPage'));
+const CreatorRevenuePage = lazy(() => import('@/pages/creator/CreatorRevenuePage'));
+const CommunityPostsPage = lazy(() => import('@/pages/community/CommunityPostsPage'));
+const CommunityMembersPage = lazy(() => import('@/pages/community/CommunityMembersPage'));
+const CommunityChatPage = lazy(() => import('@/pages/community/CommunityChatPage'));
+const CommunityEventsPage = lazy(() => import('@/pages/community/CommunityEventsPage'));
+const CommunityShopPage = lazy(() => import('@/pages/community/CommunityShopPage'));
+const DiscoverSuggestedPage = lazy(() => import('@/pages/discover/DiscoverSuggestedPage'));
+const DiscoverPopularPage = lazy(() => import('@/pages/discover/DiscoverPopularPage'));
+const DiscoverFediversePage = lazy(() => import('@/pages/discover/DiscoverFediversePage'));
+const AdminGovernancePage = lazy(() => import('@/pages/AdminGovernancePage'));
+const JobsPage = lazy(() => import('@/pages/JobsPage'));
+const StaffDashboardPage = lazy(() => import('@/pages/StaffDashboardPage'));
+const StaffRecruitmentPage = lazy(() => import('@/pages/StaffRecruitmentPage'));
+const AdminOverviewPage = lazy(() => import('@/pages/admin/AdminOverviewPage'));
+const AdminAdsPage = lazy(() => import('@/pages/admin/AdminAdsPage'));
+const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'));
+const AdminFraudPage = lazy(() => import('@/pages/admin/AdminFraudPage'));
+
 const PremiumPage = lazy(() => import('@/pages/PremiumPage'));
 const LiveStreamPage = lazy(() => import('@/pages/LiveStreamPage'));
 const StartStreamPage = lazy(() => import('@/pages/StartStreamPage'));
+const TvStudioPage = lazy(() => import('@/pages/TvStudioPage'));
+const TvGuestControlPage = lazy(() => import('@/pages/TvGuestControlPage'));
+const TvPublicLivePage = lazy(() => import('@/pages/TvPublicLivePage'));
+const TvChannelsPage = lazy(() => import('@/pages/TvChannelsPage'));
+const TikVTVPage = lazy(() => import('@/pages/TikVTVPage'));
+const RidePage = lazy(() => import('@/pages/RidePage'));
+const ChannelProfilePage = lazy(() => import('@/pages/ChannelProfilePage'));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
+const SettingsAccountPage = lazy(() => import('@/pages/settings/SettingsAccountPage'));
+const SettingsAppearancePage = lazy(() => import('@/pages/settings/SettingsAppearancePage'));
+const SettingsConnectionsPage = lazy(() => import('@/pages/settings/SettingsConnectionsPage'));
+const SettingsNotificationsPage = lazy(() => import('@/pages/settings/SettingsNotificationsPage'));
+const SettingsPrivacyPage = lazy(() => import('@/pages/settings/SettingsPrivacyPage'));
+
 const ThreadsPage = lazy(() => import('@/pages/ThreadsPage'));
 const CreateThreadPage = lazy(() => import('@/pages/CreateThreadPage'));
 const ThreadDetailPage = lazy(() => import('@/pages/ThreadDetailPage'));
 const HistoryPage = lazy(() => import('@/pages/HistoryPage'));
 const HelpPage = lazy(() => import('@/pages/HelpPage'));
 const WalletPage = lazy(() => import('@/pages/WalletPage'));
+const WalletHistoryPage = lazy(() => import('@/pages/WalletHistoryPage'));
+const WalletSendPage = lazy(() => import('@/pages/WalletSendPage'));
+const WalletReceivePage = lazy(() => import('@/pages/WalletReceivePage'));
+const WalletAnalyticsPage = lazy(() => import('@/pages/WalletAnalyticsPage'));
+const WalletReferralsPage = lazy(() => import('@/pages/WalletReferralsPage'));
+const WalletScheduledPage = lazy(() => import('@/pages/WalletScheduledPage'));
+const WalletSavingsPage = lazy(() => import('@/pages/WalletSavingsPage'));
+const WalletRemindersPage = lazy(() => import('@/pages/WalletRemindersPage'));
+const WalletSecurityPage = lazy(() => import('@/pages/WalletSecurityPage'));
+const WalletConverterPage = lazy(() => import('@/pages/WalletConverterPage'));
+const WalletPocketPage = lazy(() => import('@/pages/WalletPocketPage'));
+const WalletMpesaPage = lazy(() => import('@/pages/WalletMpesaPage'));
 const CreateAdPage = lazy(() => import('@/pages/CreateAdPage'));
 const MyAdsPage = lazy(() => import('@/pages/MyAdsPage'));
 const ListDetailPage = lazy(() => import('@/pages/ListDetailPage'));
@@ -59,10 +145,52 @@ const BoostAnalyticsPage = lazy(() => import('@/pages/BoostAnalyticsPage'));
 const BoostCreatePage = lazy(() => import('@/pages/BoostCreatePage'));
 const RewardedAdHistory = lazy(() => import('@/pages/RewardedAdHistory'));
 const PostAnalyticsDashboard = lazy(() => import('@/pages/PostAnalyticsDashboard'));
-const FediversePage = lazy(() => import('@/pages/FediversePage'));
+const lazyWithChunkRecovery = (loader) => lazy(async () => {
+  try {
+    return await loader();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const isChunkLoadFailure = /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk|ChunkLoadError|dynamically imported module/i.test(message);
+    if (isChunkLoadFailure && typeof window !== 'undefined') {
+      const key = 'testagram-fediverse-chunk-recovery';
+      const last = Number(window.sessionStorage.getItem(key) ?? '0');
+      if (Date.now() - last >= 15000) {
+        window.sessionStorage.setItem(key, String(Date.now()));
+        window.location.reload();
+      }
+    }
+    throw error;
+  }
+});
+
+const FediversePage = lazyWithChunkRecovery(() => import('@/pages/FediversePage'));
+const FediverseParityPage = lazy(() => import('@/pages/FediverseParityPage'));
+const FediverseFeedPage = lazy(() => import('@/pages/FediverseFeedPage'));
+const FediverseMastodonPage = lazy(() => import('@/pages/FediverseMastodonPage'));
+const FediverseInboxPage = lazy(() => import('@/pages/FediverseInboxPage'));
+const FediverseRelayPage = lazy(() => import('@/pages/FediverseRelayPage'));
+const FediverseAnalyticsPage = lazy(() => import('@/pages/FediverseAnalyticsPage'));
+const FediverseDiscoverPage = lazy(() => import('@/pages/FediverseDiscoverPage'));
+const FediverseIdentityPage = lazy(() => import('@/pages/FediverseIdentityPage'));
+const FediverseProfilePage = lazy(() => import('@/pages/FediverseProfilePage'));
+const FediverseProfilePostsPage = lazy(() => import('@/pages/FediverseProfilePostsPage'));
+const FediverseProfileThreadsPage = lazy(() => import('@/pages/FediverseProfileThreadsPage'));
+const FediverseProfileRepliesPage = lazy(() => import('@/pages/FediverseProfileRepliesPage'));
+const FediverseProfileMediaPage = lazy(() => import('@/pages/FediverseProfileMediaPage'));
+const FediverseProfileVideosPage = lazy(() => import('@/pages/FediverseProfileVideosPage'));
+const FediverseProfilePodcastsPage = lazy(() => import('@/pages/FediverseProfilePodcastsPage'));
+const FediverseProfileSeriesPage = lazy(() => import('@/pages/FediverseProfileSeriesPage'));
+const FediverseProfileLikesPage = lazy(() => import('@/pages/FediverseProfileLikesPage'));
+const FediverseProfileTipsPage = lazy(() => import('@/pages/FediverseProfileTipsPage'));
+const FediverseProfileGiftsPage = lazy(() => import('@/pages/FediverseProfileGiftsPage'));
+const FediverseProfileFollowersPage = lazy(() => import('@/pages/FediverseProfileFollowersPage'));
+const FediverseProfileFollowingPage = lazy(() => import('@/pages/FediverseProfileFollowingPage'));
+const FediverseProfileAnalyticsPage = lazy(() => import('@/pages/FediverseProfileAnalyticsPage'));
 const VerificationRequestPage = lazy(() => import('@/pages/VerificationRequestPage'));
 const AdminVerificationPage = lazy(() => import('@/pages/AdminVerificationPage'));
+const AdminIdentityVerificationPage = lazy(() => import('@/pages/AdminIdentityVerificationPage'));
 const DailyRewardsPage = lazy(() => import('@/pages/DailyRewardsPage'));
+const CreditsPage = lazy(() => import('@/pages/CreditsPage'));
 const LeaderboardPage = lazy(() => import('@/pages/LeaderboardPage'));
 const ChallengeLeaderboardPage = lazy(() => import('@/pages/ChallengeLeaderboardPage'));
 const DiscoverPage = lazy(() => import('@/pages/DiscoverPage'));
@@ -75,6 +203,9 @@ const AdminAdsDashboard = lazy(() => import('@/pages/AdminAdsDashboard'));
 const NotificationPreferencesPage = lazy(() => import('@/pages/NotificationPreferencesPage'));
 const WishlistPage = lazy(() => import('@/pages/WishlistPage'));
 const MarketplacePage = lazy(() => import('@/pages/MarketplacePage'));
+const ShoppingMallPage = lazy(() => import('@/pages/ShoppingMallPage'));
+const MarketProductPage = lazy(() => import('@/pages/MarketProductPage'));
+const PollsPage = lazy(() => import('@/pages/PollsPage'));
 const InterestOnboardingPage = lazy(() => import('@/pages/InterestOnboardingPage'));
 const SeriesPage = lazy(() => import('@/pages/SeriesPage'));
 const PlatformInboxPage = lazy(() => import('@/pages/PlatformInboxPage'));
@@ -87,11 +218,11 @@ const PodcastSearchPage = lazy(() => import('@/pages/PodcastSearchPage'));
 const RegulatorPanel = lazy(() => import('@/pages/RegulatorPanel'));
 const PodcastAnalyticsPage = lazy(() => import('@/pages/PodcastAnalyticsPage'));
 const TeamChatPage = lazy(() => import('@/pages/TeamChatPage'));
+const CallPage = lazy(() => import('@/pages/CallPage'));
 const AppealsPage = lazy(() => import('@/pages/AppealsPage'));
 const CreatorLeaderboardPage = lazy(() => import('@/pages/CreatorLeaderboardPage'));
 const StoryAnalyticsDashboard = lazy(() => import('@/pages/StoryAnalyticsDashboard'));
 const PlatformRevenueDashboard = lazy(() => import('@/pages/PlatformRevenueDashboard'));
-
 const ContentPolicyPage = lazy(() => import('@/pages/ContentPolicyPage'));
 const PrivacyPolicyPage = lazy(() => import('@/pages/PrivacyPolicyPage'));
 const TermsOfServicePage = lazy(() => import('@/pages/TermsOfServicePage'));
@@ -99,297 +230,251 @@ const ActiveSessionsPage = lazy(() => import('@/pages/ActiveSessionsPage'));
 const BlockedUsersPage = lazy(() => import('@/pages/BlockedUsersPage'));
 const SellerStorefrontPage = lazy(() => import('@/pages/SellerStorefrontPage'));
 const OrdersPage = lazy(() => import('@/pages/OrdersPage'));
+function PageLoader(){return <div className="min-h-screen flex items-center justify-center bg-background"><Loader2 className="w-8 h-8 animate-spin text-primary"/></div>}
 
-function PageLoader() {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <Loader2 className="w-8 h-8 animate-spin text-primary" />
-    </div>
-  );
-}
-
-// ── Interest Onboarding Bottom-Sheet (shown once after first login) ───────────
-const INTEREST_CHIPS = [
-  { tag: 'technology', emoji: '💻' }, { tag: 'ai', emoji: '🤖' },
-  { tag: 'music', emoji: '🎵' },      { tag: 'art', emoji: '🎨' },
-  { tag: 'football', emoji: '⚽' },   { tag: 'fitness', emoji: '💪' },
-  { tag: 'food', emoji: '🍜' },       { tag: 'travel', emoji: '✈️' },
-  { tag: 'finance', emoji: '💰' },    { tag: 'science', emoji: '🔬' },
-  { tag: 'gaming', emoji: '🎮' },     { tag: 'news', emoji: '📰' },
-];
-
-import { supabase } from '@/lib/supabase';
-
-function InterestOnboardingSheet() {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const [show, setShow] = useState(false);
-  // selected — plain array (esbuild guard: no Set<string> state)
-  const [selectedTags, setSelectedTags] = useState([] as string[]);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!user) return;
-    const key = `ts-interest-onboarded-${user.id}`;
-    const done = localStorage.getItem(key);
-    if (done) return;
-    // Show after a short delay so the home feed renders first
-    const t = setTimeout(() => setShow(true), 1800);
-    return () => clearTimeout(t);
-  }, [user?.id]);
-
-  const toggle = (tag: string) => {
-    setSelectedTags(prev =>
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    );
-  };
-
-  const handleSave = async () => {
-    if (!user || selectedTags.length < 3) return;
-    setSaving(true);
-    for (const tag of selectedTags) {
-      let hashtagId: string | null = null;
-      const { data: existing } = await supabase.from('hashtags').select('id').eq('tag', tag).maybeSingle();
-      if (existing?.id) hashtagId = existing.id;
-      else {
-        const { data: newTag } = await supabase.from('hashtags').insert({ tag }).select('id').single();
-        hashtagId = newTag?.id ?? null;
-      }
-      if (hashtagId) {
-        await supabase.from('user_interests').upsert(
-          { user_id: user.id, hashtag_id: hashtagId, interest_score: 1.0 },
-          { onConflict: 'user_id,hashtag_id' }
-        ).catch(() => {});
-      }
+function getOriginalImageUrl(image: HTMLImageElement) {
+  const explicit = image.dataset.originalSrc || image.getAttribute('data-original-src');
+  if (explicit) return explicit;
+  const source = image.currentSrc || image.src;
+  try {
+    const url = new URL(source);
+    if (url.pathname.includes('/storage/v1/render/image/')) {
+      url.pathname = url.pathname.replace('/storage/v1/render/image/', '/storage/v1/object/');
+      url.search = '';
     }
-    localStorage.setItem(`ts-interest-onboarded-${user.id}`, '1');
-    setSaving(false);
-    setShow(false);
-  };
-
-  const handleDismiss = () => {
-    if (user) localStorage.setItem(`ts-interest-onboarded-${user.id}`, '1');
-    setShow(false);
-  };
-
-  if (!show || !user) return null;
-
-  return (
-    <div className="fixed inset-0 z-[600] flex items-end justify-center" onClick={handleDismiss}>
-      <div
-        className="w-full max-w-2xl bg-background rounded-t-3xl border-t border-border shadow-2xl p-5 pb-8 max-h-[80vh] overflow-y-auto animate-in slide-in-from-bottom duration-300"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Handle */}
-        <div className="flex justify-center mb-4">
-          <div className="w-10 h-1.5 rounded-full bg-muted" />
-        </div>
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center shrink-0">
-              <Sparkles className="w-5 h-5 text-primary" />
-            </div>
-            <div>
-              <h2 className="font-bold text-lg leading-tight">What are you into?</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Pick at least 3 topics to personalise your feed</p>
-            </div>
-          </div>
-          <button onClick={handleDismiss} className="p-1.5 rounded-full hover:bg-muted text-muted-foreground">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Interest chips */}
-        <div className="flex flex-wrap gap-2 mb-5">
-          {INTEREST_CHIPS.map(({ tag, emoji }) => {
-            const sel = selectedTags.includes(tag);
-            return (
-              <button
-                key={tag}
-                onClick={() => toggle(tag)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-sm font-semibold transition-all active:scale-95 ${
-                  sel
-                    ? 'bg-primary border-primary text-primary-foreground shadow-sm'
-                    : 'bg-muted/30 border-border text-foreground hover:border-primary/40 hover:bg-primary/5'
-                }`}
-              >
-                <span className="text-base leading-none">{emoji}</span>
-                <span>#{tag}</span>
-                {sel && <Check className="w-3 h-3" />}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* CTA */}
-        <div className="flex gap-3">
-          <button
-            onClick={() => { navigate('/interests'); handleDismiss(); }}
-            className="flex-1 py-2.5 border border-border rounded-xl text-sm font-semibold hover:bg-muted transition-colors"
-          >
-            See all topics
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || selectedTags.length < 3}
-            className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
-              selectedTags.length >= 3
-                ? 'bg-primary text-primary-foreground hover:opacity-90'
-                : 'bg-muted text-muted-foreground cursor-not-allowed'
-            }`}
-          >
-            {saving
-              ? <Loader2 className="w-4 h-4 animate-spin" />
-              : <><Sparkles className="w-4 h-4" />Save {selectedTags.length >= 3 ? `${selectedTags.length} interests` : `(${3 - selectedTags.length} more)`}</>
-            }
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+    return url.toString();
+  } catch {
+    return source;
+  }
 }
 
-// ─── Inner app — has access to router context ─────────────────────────────────
-function AppInner() {
-  const location = useLocation();
-  useCreatorTierAlert();
+function ImageLightbox() {
+  const [source, setSource] = useState<string | null>(null);
+  const [alt, setAlt] = useState('');
+  const [zoom, setZoom] = useState(1);
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return;
-    (async () => {
-      try {
-        await StatusBar.setOverlaysWebView({ overlay: true });
-        await StatusBar.setStyle({ style: Style.Dark });
-        try {
-          await StatusBar.setBackgroundColor({ color: '#00000000' });
-        } catch (_) {}
-      } catch {
-        try { await StatusBar.hide(); } catch (_) {}
-      }
-    })();
+    const handleImageClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement)) return;
+      if (target.dataset.noImageViewer === 'true' || target.closest('[data-no-image-viewer="true"]')) return;
+      const original = getOriginalImageUrl(target);
+      if (!original) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSource(original);
+      setAlt(target.alt || 'Testagram image');
+      setZoom(1);
+      setNaturalSize({ width: 0, height: 0 });
+    };
+
+    document.addEventListener('click', handleImageClick, true);
+    return () => document.removeEventListener('click', handleImageClick, true);
   }, []);
 
+  useEffect(() => {
+    if (!source) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSource(null);
+      if (event.key === '+' || event.key === '=') setZoom((value) => Math.min(value + 0.25, 4));
+      if (event.key === '-') setZoom((value) => Math.max(value - 0.25, 0.5));
+    };
+    document.addEventListener('keydown', handleKey);
+    const previousOverflow = document.body.style.overflow;
+    const previousPaddingRight = document.body.style.paddingRight;
+    const scrollbarGap = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = 'hidden';
+    if (scrollbarGap > 0) document.body.style.paddingRight = String(scrollbarGap) + 'px';
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.body.style.overflow = previousOverflow;
+      document.body.style.paddingRight = previousPaddingRight;
+    };
+  }, [source]);
+
+  if (!source) return null;
+
+  const displayWidth = naturalSize.width ? naturalSize.width * zoom : undefined;
 
   return (
-    <AuthProvider>
-      <div className="flex min-h-screen bg-background overflow-x-hidden pb-20">
-        <Sidebar />
-
-        <main className="flex-1 max-w-2xl w-full border-x border-border overflow-x-hidden">
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/auth" element={<AuthPage />} />
-              <Route path="/videos" element={<VideosPage />} />
-
-              <Route path="/explore" element={<ExplorePage />} />
-              <Route path="/notifications" element={<NotificationsPage />} />
-              <Route path="/messages" element={<MessagesPage />} />
-              <Route path="/spaces" element={<SpacesPage />} />
-              <Route path="/profile/:username" element={<ProfilePage />} />
-              <Route path="/search" element={<SearchPage />} />
-              <Route path="/ai" element={<AIPage />} />
-              <Route path="/analytics" element={<AnalyticsDashboard />} />
-              <Route path="/admin" element={<AdminPanel />} />
-              <Route path="/post/:postId" element={<PostThreadPage />} />
-              <Route path="/communities" element={<CommunitiesPage />} />
-              <Route path="/c/:name" element={<CommunityPage />} />
-              <Route path="/hashtag/:tag" element={<HashtagPage />} />
-              <Route path="/ai-bot-setup" element={<AIBotSetup />} />
-              <Route path="/bookmarks" element={<BookmarksPage />} />
-              <Route path="/lists" element={<ListsPage />} />
-              <Route path="/monetization" element={<MonetizationDashboard />} />
-              <Route path="/products" element={<ProductsPage />} />
-              <Route path="/scheduled" element={<ScheduledPostsPage />} />
-              <Route path="/creator-studio" element={<CreatorStudio />} />
-              <Route path="/premium" element={<PremiumPage />} />
-              <Route path="/stream/:streamId" element={<LiveStreamPage />} />
-              <Route path="/start-stream" element={<StartStreamPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/threads" element={<ThreadsPage />} />
-              <Route path="/threads/create" element={<CreateThreadPage />} />
-              <Route path="/thread/:id" element={<ThreadDetailPage />} />
-              <Route path="/history" element={<HistoryPage />} />
-              <Route path="/help" element={<HelpPage />} />
-              <Route path="/wallet" element={<WalletPage />} />
-              <Route path="/create-ad" element={<CreateAdPage />} />
-              <Route path="/my-ads" element={<MyAdsPage />} />
-              <Route path="/lists/:id" element={<ListDetailPage />} />
-              <Route path="/admin/ads" element={<AdConfigPage />} />
-              <Route path="/payouts" element={<PayoutsPage />} />
-              <Route path="/revenue-analytics" element={<RevenueAnalytics />} />
-              <Route path="/fraud-detection" element={<FraudDetection />} />
-              <Route path="/ad-performance" element={<AdPerformanceComparison />} />
-              <Route path="/admin/revenue" element={<AdminRevenueDashboard />} />
-              <Route path="/boost-analytics/:postId" element={<BoostAnalyticsPage />} />
-              <Route path="/boost-create" element={<BoostCreatePage />} />
-              <Route path="/rewards" element={<RewardedAdHistory />} />
-              <Route path="/post-analytics" element={<PostAnalyticsDashboard />} />
-              <Route path="/post-analytics/:postId" element={<PostAnalyticsDashboard />} />
-              <Route path="/verify" element={<VerificationRequestPage />} />
-              <Route path="/admin/verifications" element={<AdminVerificationPage />} />
-              <Route path="/fediverse" element={<FediversePage />} />
-              <Route path="/daily-rewards" element={<DailyRewardsPage />} />
-              <Route path="/leaderboard" element={<LeaderboardPage />} />
-              <Route path="/leaderboard/challenges" element={<ChallengeLeaderboardPage />} />
-              <Route path="/discover" element={<DiscoverPage />} />
-              <Route path="/referral" element={<ReferralPage />} />
-              <Route path="/space-recording/:id" element={<SpaceRecordingViewerPage />} />
-              <Route path="/spaces/:id" element={<SpaceDetailPage />} />
-              <Route path="/trending/:topic" element={<TrendingTopicFeedPage />} />
-              <Route path="/challenge/:id" element={<HashtagChallengePage />} />
-              <Route path="/admin/ads-review" element={<AdminAdsDashboard />} />
-              <Route path="/notification-preferences" element={<NotificationPreferencesPage />} />
-              <Route path="/wishlist" element={<WishlistPage />} />
-              <Route path="/marketplace" element={<MarketplacePage />} />
-              <Route path="/interests" element={<InterestOnboardingPage />} />
-              <Route path="/ad-analytics" element={<AdAnalyticsPage />} />
-              <Route path="/series" element={<SeriesPage />} />
-              <Route path="/platform-inbox" element={<PlatformInboxPage />} />
-              <Route path="/admin/seo" element={<SEOAuditPage />} />
-              <Route path="/videos/watchlater" element={<VideoWatchLaterPage />} />
-              <Route path="/hashtags" element={<HashtagDiscoveryPage />} />
-              <Route path="/podcasts/search" element={<PodcastSearchPage />} />
-              <Route path="/regulator" element={<RegulatorPanel />} />
-              <Route path="/podcasts/analytics" element={<PodcastAnalyticsPage />} />
-              <Route path="/team-chat" element={<TeamChatPage />} />
-              <Route path="/appeals" element={<AppealsPage />} />
-              <Route path="/leaderboard/creators" element={<CreatorLeaderboardPage />} />
-              <Route path="/policy" element={<ContentPolicyPage />} />
-              <Route path="/privacy" element={<PrivacyPolicyPage />} />
-              <Route path="/terms" element={<TermsOfServicePage />} />
-              <Route path="/sessions" element={<ActiveSessionsPage />} />
-              <Route path="/blocked" element={<BlockedUsersPage />} />
-              <Route path="/seller/:username" element={<SellerStorefrontPage />} />
-              <Route path="/orders" element={<OrdersPage />} />
-              <Route path="/story-analytics" element={<StoryAnalyticsDashboard />} />
-              <Route path="/admin/platform-revenue" element={<PlatformRevenueDashboard />} />
-              <Route path="*" element={<NotFoundPage />} />
-            </Routes>
-          </Suspense>
-        </main>
-
-        <RightSidebar />
-        <LiveSpaceBanner />
-        <LiveNotificationBanner />
-        <BottomNav />
-        <FloatingActionButton />
-        <InterestOnboardingSheet />
+    <div
+      className="fixed inset-0 z-[100] bg-black/95"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image viewer"
+      onClick={() => setSource(null)}
+    >
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 p-3 bg-gradient-to-b from-black/80 to-transparent">
+        <div className="flex items-center gap-2 text-white text-sm">
+          <Maximize2 className="h-4 w-4" aria-hidden="true" />
+          <span>Original image</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="h-10 w-10 rounded-full bg-white/10 text-white hover:bg-white/20 flex items-center justify-center"
+            aria-label="Zoom out"
+            onClick={(event) => { event.stopPropagation(); setZoom((value) => Math.max(value - 0.25, 0.5)); }}
+          >
+            <Minus className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            className="px-3 h-10 rounded-full bg-white/10 text-white text-sm hover:bg-white/20"
+            aria-label="Reset zoom"
+            onClick={(event) => { event.stopPropagation(); setZoom(1); }}
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            type="button"
+            className="h-10 w-10 rounded-full bg-white/10 text-white hover:bg-white/20 flex items-center justify-center"
+            aria-label="Zoom in"
+            onClick={(event) => { event.stopPropagation(); setZoom((value) => Math.min(value + 0.25, 4)); }}
+          >
+            <Plus className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            className="ml-1 h-10 w-10 rounded-full bg-white text-black hover:bg-white/90 flex items-center justify-center"
+            aria-label="Close image viewer"
+            onClick={(event) => { event.stopPropagation(); setSource(null); }}
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
-
-      <Toaster />
-      <Sonner position="top-center" richColors />
-
-      {/* ✅ Vercel Analytics (GLOBAL TRACKING) */}
-      <Analytics />
-    </AuthProvider>
+      <div className="absolute inset-0 overflow-auto pt-16 pb-6" onClick={(event) => event.stopPropagation()}>
+        <div className="min-h-full min-w-full flex items-start justify-center p-4 sm:p-8">
+          <img
+            src={source}
+            alt={alt}
+            className="block h-auto max-w-none select-none rounded-sm shadow-2xl"
+            style={{ width: displayWidth ? `${displayWidth}px` : 'auto', maxWidth: 'none' }}
+            draggable={false}
+            onLoad={(event) => {
+              const image = event.currentTarget;
+              setNaturalSize({ width: image.naturalWidth, height: image.naturalHeight });
+            }}
+          />
+        </div>
+      </div>
+    </div>
   );
 }
 
-export default function App() {
+function TvProductionShell() {
+  const location = useLocation();
+  const guestWorkspace = /^\/tv-studio\/[^/]+\/guests\/?$/.test(location.pathname);
   return (
-    <BrowserRouter>
-      <AppInner />
-    </BrowserRouter>
+    <OwnerOnlyAdminRoute>
+      <div className={guestWorkspace ? "min-h-screen pt-[214px] sm:pt-[250px]" : "min-h-screen"}>
+        <TvStudioPage persistentDock={guestWorkspace} />
+        {guestWorkspace && <TvGuestControlPage />}
+      </div>
+    </OwnerOnlyAdminRoute>
   );
 }
+
+function AppearanceBootstrap() {
+  const { user } = useAuth();
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const local = getStoredAppearance();
+      applyAppearance(local);
+      if (!user) return;
+      const { data } = await (supabase.from('profiles') as any)
+        .select('appearance_settings')
+        .eq('id', user.id)
+        .maybeSingle();
+      if (cancelled) return;
+      const remote = data?.appearance_settings;
+      if (!remote || typeof remote !== 'object') return;
+      const merged = { ...local, ...remote };
+      applyAppearance(merged);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => {
+      const appearance = getStoredAppearance();
+      if (appearance.mode === 'system') applyAppearance(appearance);
+    };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  return null;
+}
+function AppInner(){useCreatorTierAlert();const location=useLocation();const isNewsHost=typeof window !== 'undefined' && /^(www\.)?testagram\.news$/i.test(window.location.hostname);const isPublicTvLive=location.pathname.startsWith('/tv/live/');useEffect(()=>startTestagramHeartbeat('web-v1'),[]);if(isNewsHost)return <Suspense fallback={<PageLoader/>}><NewsifyNewsPage/></Suspense>;if(isPublicTvLive)return <AuthProvider><Suspense fallback={<PageLoader/>}><Routes><Route path="/tv/live/:streamId" element={<TvPublicLivePage/>}/></Routes></Suspense><Sonner position="top-center" richColors/></AuthProvider>;return <AuthProvider><RouteSEO/><AppearanceBootstrap/><ImageLightbox/><div className="tg-shell flex min-h-screen bg-background overflow-x-hidden pb-20"><Sidebar/><main className="tg-main flex-1 border-x border-border/70 overflow-x-hidden"><Suspense fallback={<PageLoader/>}><LiveSpacesDiscoveryStrip/><Routes><Route path="/" element={<HomePage/>}/><Route path="/auth" element={<AuthPage/>}/><Route path="/verify-identity" element={<IdentityVerificationPage/>}/><Route path="/profile/complete" element={<CompleteProfilePage/>}/><Route path="/videos" element={<VideosPage/>}/><Route path="/shorts" element={<FastPixShortsPage/>}/><Route path="/explore" element={<ExplorePage/>}/>
+<Route path="/discover" element={<DiscoverSuggestedPage/>}/>
+<Route path="/discover/suggested" element={<DiscoverSuggestedPage/>}/>
+<Route path="/discover/popular" element={<DiscoverPopularPage/>}/>
+<Route path="/discover/fediverse" element={<DiscoverFediversePage/>}/><Route path="/notifications" element={<NotificationsPage/>}/><Route path="/messages" element={<MessagesPage/>}/><Route path="/call/:callId" element={<CallPage/>}/><Route path="/spaces" element={<SpacesPage/>}/><Route path="/profile/:username" element={<ProfilePage/>}/>
+<Route path="/profile/:username/posts" element={<ProfilePostsPage/>}/>
+<Route path="/profile/:username/threads" element={<ProfileThreadsPage/>}/>
+<Route path="/profile/:username/replies" element={<ProfileRepliesPage/>}/>
+<Route path="/profile/:username/media" element={<ProfileMediaPage/>}/>
+<Route path="/profile/:username/videos" element={<ProfileVideosPage/>}/>
+<Route path="/profile/:username/likes" element={<ProfileLikesPage/>}/>
+<Route path="/profile/:username/followers" element={<ProfileFollowersPage/>}/>
+<Route path="/profile/:username/following" element={<ProfileFollowingPage/>}/>
+<Route path="/profile/:username/podcasts" element={<ProfilePage/>}/>
+<Route path="/profile/:username/series" element={<ProfilePage/>}/>
+<Route path="/profile/:username/tips" element={<ProfilePage/>}/>
+<Route path="/profile/:username/gifts" element={<ProfilePage/>}/>
+<Route path="/profile/:username/analytics" element={<ProfilePage/>}/><Route path="/profile-features" element={<ProfileFeaturesPage/>}/><Route path="/search" element={<SearchPage/>}/><Route path="/ai" element={<AIPage/>}/><Route path="/analytics" element={<AnalyticsDashboard/>}/><Route path="/admin" element={<AdminPanel/>}/><Route path="/admin/governance" element={<AdminGovernancePage/>}/><Route path="/jobs" element={<JobsPage/>}/><Route path="/staff" element={<StaffDashboardPage/>}/><Route path="/admin/staff-recruitment" element={<OwnerOnlyAdminRoute><StaffRecruitmentPage/></OwnerOnlyAdminRoute>}/>
+<Route path="/admin/overview" element={<OwnerOnlyAdminRoute><AdminOverviewPage/></OwnerOnlyAdminRoute>}/>
+<Route path="/admin/ads-management" element={<OwnerOnlyAdminRoute><AdminAdsPage/></OwnerOnlyAdminRoute>}/>
+<Route path="/admin/users" element={<OwnerOnlyAdminRoute><AdminUsersPage/></OwnerOnlyAdminRoute>}/>
+<Route path="/admin/fraud" element={<OwnerOnlyAdminRoute><AdminFraudPage/></OwnerOnlyAdminRoute>}/><Route path="/post/:postId" element={<PostThreadPage/>}/><Route path="/post/:postId/likes" element={<PostLikesPage/>}/><Route path="/post/:postId/replies" element={<PostRepliesPage/>}/><Route path="/post/:postId/reply/:replyId" element={<PostReplyChainPage/>}/><Route path="/post/:postId/reposts" element={<PostRepostsPage/>}/><Route path="/post/:postId/quotes" element={<PostQuotesPage/>}/><Route path="/post/:postId/quote" element={<PostQuoteComposerPage/>}/><Route path="/post/:postId/quote-likes" element={<PostQuoteLikesPage/>}/><Route path="/post-remote" element={<PostThreadPage/>}/><Route path="/post-remote/likes" element={<PostLikesPage/>}/><Route path="/post-remote/replies" element={<PostRepliesPage/>}/><Route path="/post-remote/reply/:replyId" element={<PostReplyChainPage/>}/><Route path="/post-remote/reposts" element={<PostRepostsPage/>}/><Route path="/post-remote/quotes" element={<PostQuotesPage/>}/><Route path="/communities" element={<CommunitiesPage/>}/><Route path="/c/:name" element={<CommunityPage/>}/>
+<Route path="/c/:name/posts" element={<CommunityPostsPage/>}/>
+<Route path="/c/:name/members" element={<CommunityMembersPage/>}/>
+<Route path="/c/:name/chat" element={<CommunityChatPage/>}/>
+<Route path="/c/:name/events" element={<CommunityEventsPage/>}/>
+<Route path="/c/:name/shop" element={<CommunityShopPage/>}/><Route path="/hashtag/:tag" element={<HashtagPage/>}/><Route path="/sports" element={<SportsHubPage/>}/><Route path="/news" element={<NewsifyNewsPage/>}/><Route path="/news/:id" element={<NewsArticlePage/>}/><Route path="/ai-bot-setup" element={<AIBotSetup/>}/><Route path="/bookmarks" element={<BookmarksPage/>}/><Route path="/lists" element={<ListsPage/>}/><Route path="/monetization" element={<MonetizationDashboard/>}/><Route path="/products" element={<ProductsPage/>}/><Route path="/scheduled" element={<ScheduledPostsPage/>}/><Route path="/creator-studio" element={<CreatorStudio/>}/>
+<Route path="/creator-studio/overview" element={<CreatorOverviewPage/>}/>
+<Route path="/creator-studio/analytics" element={<CreatorAnalyticsPage/>}/>
+<Route path="/creator-studio/videos" element={<CreatorVideosPage/>}/>
+<Route path="/creator-studio/earnings" element={<CreatorEarningsPage/>}/>
+<Route path="/creator-studio/revenue" element={<CreatorRevenuePage/>}/><Route path="/premium" element={<PremiumPage/>}/><Route path="/stream/:streamId" element={<LiveStreamPage/>}/><Route path="/start-stream" element={<StartStreamPage/>}/><Route path="/tv-studio" element={<TvProductionShell/>}/><Route path="/tv-studio/:streamId" element={<TvProductionShell/>}/><Route path="/tv-studio/:streamId/guests" element={<TvProductionShell/>}/><Route path="/tv/live/:streamId" element={<TvPublicLivePage/>}/><Route path="/tv" element={<TvPageErrorBoundary><TvChannelsPage/></TvPageErrorBoundary>}/><Route path="/iptv" element={<TikVTVPage/>}/><Route path="/ride" element={<RidePage/>}/><Route path="/channel/:handle" element={<ChannelProfilePage/>}/><Route path="/tv/channels" element={<TvPageErrorBoundary><TvChannelsPage/></TvPageErrorBoundary>}/><Route path="/tv/reels" element={<TvPageErrorBoundary><TvChannelsPage/></TvPageErrorBoundary>}/><Route path="/settings" element={<SettingsPage/>}/>
+<Route path="/settings/account" element={<SettingsAccountPage/>}/>
+<Route path="/settings/appearance" element={<SettingsAppearancePage/>}/>
+<Route path="/settings/connections" element={<SettingsConnectionsPage/>}/>
+<Route path="/settings/notifications" element={<SettingsNotificationsPage/>}/>
+<Route path="/settings/privacy" element={<SettingsPrivacyPage/>}/><Route path="/threads" element={<ThreadsPage/>}/><Route path="/threads/create" element={<CreateThreadPage/>}/><Route path="/thread/:id" element={<ThreadDetailPage/>}/><Route path="/thread/:threadId/likes" element={<ThreadLikesPage/>}/><Route path="/thread/:threadId/replies" element={<ThreadRepliesPage/>}/><Route path="/thread/:threadId/reposts" element={<ThreadRepostsPage/>}/><Route path="/thread/:threadId/quotes" element={<ThreadQuotesPage/>}/><Route path="/thread/:threadId/quote-likes/:quoteId" element={<ThreadQuoteLikesPage/>}/><Route path="/thread/:threadId/reply-likes/:replyId" element={<ThreadReplyLikesPage/>}/><Route path="/history" element={<HistoryPage/>}/><Route path="/help" element={<HelpPage/>}/><Route path="/wallet" element={<WalletPage/>}/><Route path="/wallet/history" element={<WalletHistoryPage/>} /><Route path="/wallet/send" element={<WalletSendPage/>} /><Route path="/wallet/receive" element={<WalletReceivePage/>} /><Route path="/wallet/analytics" element={<WalletAnalyticsPage/>} /><Route path="/wallet/referrals" element={<WalletReferralsPage/>} /><Route path="/wallet/scheduled" element={<WalletScheduledPage/>} /><Route path="/wallet/savings" element={<WalletSavingsPage/>} /><Route path="/wallet/reminders" element={<WalletRemindersPage/>} /><Route path="/wallet/security" element={<WalletSecurityPage/>} /><Route path="/wallet/converter" element={<WalletConverterPage/>} /><Route path="/wallet/pocket" element={<WalletPocketPage/>} /><Route path="/wallet/mpesa" element={<WalletMpesaPage/>} /><Route path="/create-ad" element={<CreateAdPage/>}/><Route path="/my-ads" element={<MyAdsPage/>}/><Route path="/lists/:id" element={<ListDetailPage/>}/><Route path="/admin/ads" element={<OwnerOnlyAdminRoute><AdConfigPage/></OwnerOnlyAdminRoute>}/><Route path="/payouts" element={<PayoutsPage/>}/><Route path="/revenue-analytics" element={<RevenueAnalytics/>}/><Route path="/fraud-detection" element={<FraudDetection/>}/><Route path="/ad-performance" element={<AdPerformanceComparison/>}/><Route path="/admin/revenue" element={<OwnerOnlyAdminRoute><AdminRevenueDashboard/></OwnerOnlyAdminRoute>}/><Route path="/boost-analytics/:postId" element={<BoostAnalyticsPage/>}/><Route path="/boost-create" element={<BoostCreatePage/>}/><Route path="/rewards" element={<RewardedAdHistory/>}/><Route path="/post-analytics" element={<PostAnalyticsDashboard/>}/><Route path="/post-analytics/:postId" element={<PostAnalyticsDashboard/>}/><Route path="/verify" element={<VerificationRequestPage/>}/><Route path="/admin/verifications" element={<OwnerOnlyAdminRoute><AdminVerificationPage/></OwnerOnlyAdminRoute>}/><Route path="/admin/identity-verification" element={<OwnerOnlyAdminRoute><AdminIdentityVerificationPage/></OwnerOnlyAdminRoute>}/><Route path="/fediverse" element={<FediversePage/>}/><Route path="/fediverse/controls" element={<FediverseParityPage/>}/>
+<Route path="/fediverse/feed" element={<FediverseFeedPage/>}/>
+<Route path="/fediverse/mastodon" element={<FediverseMastodonPage/>}/>
+<Route path="/fediverse/inbox" element={<FediverseInboxPage/>}/>
+<Route path="/fediverse/relay" element={<FediverseRelayPage/>}/>
+<Route path="/fediverse/analytics" element={<FediverseAnalyticsPage/>}/>
+<Route path="/fediverse/discover" element={<FediverseDiscoverPage/>}/><Route path="/fediverse/organic-discovery" element={<FederatedOrganicDiscoveryPage/>}/>
+<Route path="/fediverse/identity" element={<FediverseIdentityPage/>}/><Route path="/fediverse/profile" element={<FediverseProfilePage/>}/>
+<Route path="/fediverse/profile/posts" element={<FediverseProfilePostsPage/>}/>
+<Route path="/fediverse/profile/threads" element={<FediverseProfileThreadsPage/>}/>
+<Route path="/fediverse/profile/replies" element={<FediverseProfileRepliesPage/>}/>
+<Route path="/fediverse/profile/media" element={<FediverseProfileMediaPage/>}/>
+<Route path="/fediverse/profile/videos" element={<FediverseProfileVideosPage/>}/>
+<Route path="/fediverse/profile/podcasts" element={<FediverseProfilePodcastsPage/>}/>
+<Route path="/fediverse/profile/series" element={<FediverseProfileSeriesPage/>}/>
+<Route path="/fediverse/profile/likes" element={<FediverseProfileLikesPage/>}/>
+<Route path="/fediverse/profile/tips" element={<FediverseProfileTipsPage/>}/>
+<Route path="/fediverse/profile/gifts" element={<FediverseProfileGiftsPage/>}/>
+<Route path="/fediverse/profile/followers" element={<FediverseProfileFollowersPage/>}/>
+<Route path="/fediverse/profile/following" element={<FediverseProfileFollowingPage/>}/>
+<Route path="/fediverse/profile/analytics" element={<FediverseProfileAnalyticsPage/>}/><Route path="/daily-rewards" element={<DailyRewardsPage/>}/><Route path="/credits" element={<CreditsPage/>}/><Route path="/leaderboard" element={<LeaderboardPage/>}/><Route path="/leaderboard/challenges" element={<ChallengeLeaderboardPage/>}/><Route path="/discover" element={<DiscoverPage/>}/><Route path="/referral" element={<ReferralPage/>}/><Route path="/referrals" element={<ReferralPage/>}/><Route path="/space-recording/:id" element={<SpaceRecordingViewerPage/>}/><Route path="/spaces/:id" element={<SpaceDetailPage/>}/><Route path="/trending/:topic" element={<TrendingTopicFeedPage/>}/><Route path="/challenge/:id" element={<HashtagChallengePage/>}/><Route path="/admin/ads-review" element={<OwnerOnlyAdminRoute><AdminAdsDashboard/></OwnerOnlyAdminRoute>}/><Route path="/notification-preferences" element={<NotificationPreferencesPage/>}/><Route path="/wishlist" element={<WishlistPage/>}/><Route path="/marketplace" element={<MarketplacePage/>}/><Route path="/shop" element={<ShoppingMallPage/>}/><Route path="/p/:productId" element={<MarketProductPage/>}/><Route path="/polls" element={<PollsPage/>}/><Route path="/interests" element={<InterestOnboardingPage/>}/><Route path="/ad-analytics" element={<AdAnalyticsPage/>}/><Route path="/series" element={<SeriesPage/>}/><Route path="/platform-inbox" element={<PlatformInboxPage/>}/><Route path="/admin/seo" element={<OwnerOnlyAdminRoute><SEOAuditPage/></OwnerOnlyAdminRoute>}/><Route path="/videos/watchlater" element={<VideoWatchLaterPage/>}/><Route path="/hashtags" element={<HashtagDiscoveryPage/>}/><Route path="/podcasts/search" element={<PodcastSearchPage/>}/><Route path="/regulator" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/employees" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/features" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/wallets" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/moderation" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/platform" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/announce" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/reports" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/audit" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/>
+<Route path="/regulator/analytics" element={<OwnerOnlyAdminRoute><RegulatorPanel/></OwnerOnlyAdminRoute>}/><Route path="/podcasts/analytics" element={<PodcastAnalyticsPage/>}/><Route path="/team-chat" element={<TeamChatPage/>}/><Route path="/appeals" element={<AppealsPage/>}/><Route path="/leaderboard/creators" element={<CreatorLeaderboardPage/>}/><Route path="/policy" element={<ContentPolicyPage/>}/><Route path="/privacy" element={<PrivacyPolicyPage/>}/><Route path="/terms" element={<TermsOfServicePage/>}/><Route path="/sessions" element={<ActiveSessionsPage/>}/><Route path="/blocked" element={<BlockedUsersPage/>}/><Route path="/seller/:username" element={<SellerStorefrontPage/>}/><Route path="/orders" element={<OrdersPage/>}/><Route path="/story-analytics" element={<StoryAnalyticsDashboard/>}/><Route path="/admin/platform-revenue" element={<OwnerOnlyAdminRoute><PlatformRevenueDashboard/></OwnerOnlyAdminRoute>}/><Route path="*" element={<NotFoundPage/>}/></Routes></Suspense></main><RightSidebar/><LiveNotificationBanner/><BottomNav/><FloatingActionButton/><InterestOnboardingSheet/><IncomingCallOverlay/></div><Toaster/><Sonner position="top-center" richColors/><Analytics/></AuthProvider>}
+export default function App(){return <BrowserRouter><AppInner/></BrowserRouter>}
