@@ -1,379 +1,274 @@
-# T Social - World-Class Platform Features
+# XClone — Social Media App for Android, iOS Web, and Android TV
 
-## ✅ Recently Implemented
+**XClone** is a social platform for short-form videos, posts and threads, live video and audio, communities, messaging, creator tools, discovery, commerce, and digital payments. The product's current public web experience is hosted at **[testagram.site](https://testagram.site/)**.
 
-### Multi-Image Posts
-- **Upload up to 4 images per post** with smart grid layouts
-  - 1 image: Full width
-  - 2 images: Side by side grid
-  - 3 images: Top image spans full width, bottom 2 side by side
-  - 4 images: 2x2 grid
-- **20MB per file limit** for both images and videos
-- **Individual image removal** before posting
-- **Real-time upload progress** with toast notifications
+Choose the build for your device. Android phone builds are published now; Android TV and Windows/macOS/Linux desktop installers are generated as **preview/testing releases** by dedicated platform workflows. iPhone/iPad currently use the web app—there is no native iOS app or IPA in this repository yet.
 
-### Enhanced Media Support
-- Videos up to 20MB (increased from 10MB)
-- Multiple image validation (type, size checks)
-- Optimized storage with unique file naming
-- CDN-ready public URLs via Supabase Storage
+[**Open XClone on the web**](https://testagram.site/) · [**Download Android phone APK**](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest/download/app-release.apk) · [**Android TV test APK releases**](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=tv-test) · [**Desktop OS releases**](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=desktop) · [**All releases**](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases)
 
-### World-Class Sidebars
-Both sidebars are now properly integrated and visible on desktop (lg+) and xl screens:
+> **Release status:** Android phone APK/AAB assets are already published. Android TV debug APK and Windows/macOS/Linux installer builds are intended to be published as preview releases by the new workflows. Preview builds are not equivalent to stable signed production releases; TV hardware and OS-specific installation still need validation.
 
-#### Left Sidebar (`Sidebar.tsx`)
-- ✓ Logo and branding
-- ✓ Main navigation (Home, Explore, Notifications, Messages, Spaces, AI)
-- ✓ User library (Bookmarks, Lists, History)
-- ✓ Creator tools (Creator Studio, Analytics, Monetization, Products, Scheduled)
-- ✓ Collapsible communities section
-  - Your communities with member counts
-  - Discover communities button
-- ✓ Trending communities section
-- ✓ Premium upgrade banner with gradient design
-- ✓ User profile dropdown with settings & logout
-- ✓ Sign in button for guests
+## Get XClone for your device
 
-#### Right Sidebar (`RightSidebar.tsx`)
-- ✓ Create Community card
-- ✓ Live Audio Spaces with real-time listener counts
-- ✓ Trending topics (top 5) with post counts
-- ✓ Popular communities with member counts
-- ✓ AI-powered features banner
-- ✓ Footer links (Terms, Privacy, Help, About)
-- ✓ All sections link to relevant pages
+| Platform | Download / access | Availability |
+|---|---|---|
+| **Android phone or tablet** | **[Download latest APK](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest/download/app-release.apk)** · [Release notes](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest) · [AAB for store distribution](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest/download/app-release.aab) | Published release assets |
+| **Android TV / Google TV** | **[Find the latest TV test APK](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=tv-test)** · [TV setup guide](android-tv/README.md) · [TV release workflow](.github/workflows/xclone-tv-debug-release.yml) | Debug-signed test APK; not the stable signed production TV release |
+| **Windows** | **[Find Windows installers (.msi/.exe)](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=desktop)** | Preview installer when the desktop workflow succeeds |
+| **macOS** | **[Find macOS disk images (.dmg)](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=desktop)** | Preview installer when published; CPU/OS compatibility depends on the asset |
+| **Linux** | **[Find Linux packages (.deb/.AppImage)](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=desktop)** | Preview installer when the desktop workflow succeeds |
+| **iPhone / iPad** | **[Open XClone in Safari](https://testagram.site/)** | Web app only; no native iOS project, signed IPA, or App Store listing is published in this repository |
+| **Desktop browser / any OS** | [Open XClone](https://testagram.site/) | Web app |
+| **Desktop client source** | [Desktop setup and development](desktop/README.md) | Tauri desktop project; published installers are preview builds |
 
-### Trending System
-- Real-time trending hashtag calculation
-- Hourly and daily post tracking
-- Trend score algorithm (weighted by recency)
-- Automated updates via database triggers
+### Android: download and install
 
-## 🚀 Core Infrastructure (Already Built)
+1. Tap **[Download the latest XClone APK](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest/download/app-release.apk)** on your Android phone or tablet.
+2. When the download completes, open the APK and follow Android's installation prompts. If Android asks, allow installation from the browser or file manager you used to download it.
+3. Open XClone and sign in to use account features that require authentication.
+4. For the version number, release notes, and alternative assets, use the [latest release page](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest).
 
-### Authentication & Security
-- ✅ Email/password authentication via Supabase
-- ✅ Google OAuth support (configurable)
-- ✅ Row Level Security (RLS) on all tables
-- ✅ JWT token management
-- ✅ Session persistence
+**Before upgrading:** the current Android release workflow uses temporary CI signing material. Builds signed with different certificates may not install as in-place updates over each other. Do not uninstall an existing app unless you understand the impact on locally stored data; check the release notes and confirm your account data is available before replacing an installation. A published APK is not, by itself, evidence of a stable signing identity or Play Store approval.
 
-### Backend Integration
-- ✅ Supabase backend (PostgreSQL + Storage + Edge Functions)
-- ✅ Real-time database subscriptions for notifications
-- ✅ Serverless edge functions for AI bot
-- ✅ CDN-optimized media delivery
+### Android TV and Google TV: testing build
 
-### Responsive Design
-- ✅ Mobile-first approach with Tailwind CSS
-- ✅ Dark/light mode toggle
-- ✅ Adaptive layouts for all screen sizes
-- ✅ Bottom navigation for mobile
-- ✅ Floating action button for quick actions
-- ✅ Sidebar visibility breakpoints (lg for left, xl for right)
+XClone TV is a separate Android app (**com.xclone.app.tv**) that opens the existing web experience and provides a TV launcher entry point with remote/D-pad navigation support. It is **not yet advertised as a production-ready TV release**.
 
-### Performance
-- ✅ Code splitting with React Router
-- ✅ Lazy loading for feeds
-- ✅ Infinite scroll with cursor-based pagination
-- ✅ Optimistic UI updates
-- ✅ Image/video optimization
+- **[Download a published TV testing APK](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=tv-test)** — open the newest `XClone TV Test APK` prerelease and download `xclone-tv-debug.apk`.
+- [Read the TV build instructions](android-tv/README.md).
+- [Public TV test APK workflow](.github/workflows/xclone-tv-debug-release.yml) · [Signed TV release workflow](.github/workflows/xclone-tv-release.yml).
 
-## 🎨 User Interface & Experience
+The public test APK is a debug-signed build intended for sideloading and evaluation. It is separate from the mobile APK and is not the stable, signed TV release. CI verifies the TV package ID and Leanback launcher entry; physical-device navigation and playback still need testing.
 
-### Rich Media
-- ✅ Multiple image uploads (up to 4 per post)
-- ✅ Video uploads with TikTok-style vertical player
-- ✅ GIF integration (Giphy/Tenor URLs)
-- ✅ Audio Spaces with live streaming
-- ✅ 24-hour recording storage
+The automated TV APK build passed in [Testagram CI run #37918010514](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010514). That confirms the build and its verification steps, **not** physical-device compatibility. Remote focus order, login/session persistence, Back behavior, video playback, and IPTV playback still require testing on actual Android TV or Google TV hardware before a public TV release can be called fully validated.
 
-### Interactive Elements
-- ✅ Likes with optimistic updates
-- ✅ Reposts/retweets
-- ✅ Threaded replies
-- ✅ Quote posts
-- ✅ Bookmarks
-- ✅ Lists (user-curated)
-- ✅ Polls with real-time voting
-- ✅ Post editing with history tracking
+### iPhone and iPad: use XClone on the web
 
-### Navigation & Layout
-- ✅ Explore page (trending, categories)
-- ✅ Notifications with type filtering
-- ✅ Direct Messages
-- ✅ Communities (Reddit-style)
-- ✅ Hashtag pages with follow/unfollow
-- ✅ User profiles with tabs (Posts, Media, Likes, Reposts, Bookmarks)
-- ✅ Search with filters
+Open **[testagram.site](https://testagram.site/)** in Safari and sign in. If you want an icon on your Home Screen, use Safari's **Share → Add to Home Screen** option when available on your device.
 
-### Customization
-- ✅ Profile editing (avatar, bio, website, location, social links)
-- ✅ Cover images
-- ✅ Verification badges (3 premium tiers)
-- ✅ Theme switcher
-- ✅ Feed preferences
+This is the responsive web experience—not a native iOS app. This repository currently has no published IPA, native iOS project release, or App Store listing.
 
-## 🤖 Advanced Features
+### Desktop
 
-### AI-Powered
-- ✅ Content ranking algorithm (engagement-based)
-- ✅ User recommendations (friends-of-friends, shared interests)
-- ✅ Content recommendations (trending + personalized)
-- ✅ Automated AI news bot (posts 20 times daily)
-- ✅ Hashtag trending detection
-- 🔄 **New**: User interests tracking for personalization
-- 🔄 **New**: Trending score calculation
-- 📋 **Planned**: AI-generated summaries
-- 📋 **Planned**: Fact-checking tools
-- 📋 **Planned**: Spam/adult content moderation
+Use [XClone in your browser](https://testagram.site/) for the web experience. For desktop installers, open the [desktop OS preview releases](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=desktop). The workflow builds Windows MSI/EXE, macOS DMG and Linux DEB/AppImage packages; only formats actually attached to the newest release are available. These are preview builds and may trigger OS security warnings because they are not yet distributed through a signed commercial installer channel. Developers can follow the [Tauri desktop instructions](desktop/README.md) or inspect the [desktop release workflow](.github/workflows/platform-apps-release.yml).
+## What can you do with XClone?
 
-### Polls & Interactivity
-- ✅ Multi-option polls
-- ✅ Expiration times
-- ✅ Real-time vote updates
-- ✅ Unique voting (one vote per user)
-- 📋 **Planned**: Live Q&A sessions
-- 📋 **Planned**: Quizzes
+XClone brings social networking, short videos, live experiences, communities, creator tools, discovery, and commerce into one connected product. Feature availability may depend on account permissions, configuration, integrations, and rollout status.
 
-### Search & Discovery
-- ✅ Full-text search
-- ✅ Trending topics
-- ✅ Hashtag pages
-- ✅ User discovery
-- ✅ Community browsing
-- 📋 **Planned**: Advanced filters (date, media type, user)
-- 📋 **Planned**: Saved searches
+### Social posts, threads, and profiles
+- Publish text posts, threads, replies, quote posts, reposts, and multi-image or video posts.
+- Like, bookmark, follow, mention users, use hashtags, and participate in polls.
+- Explore post history and profile sections for posts, replies, media, videos, likes, followers, and following.
+- Use lists, notifications, search, and discovery tools to find people and conversations.
 
-### Moderation
-- ✅ Admin panel
-- ✅ Report content
-- ✅ Block users
-- ✅ Community guidelines
-- ✅ Verification system
-- 📋 **Planned**: AI spam detection
-- 📋 **Planned**: Human moderation queue
-- 📋 **Planned**: Automated flagging
+### Short videos, live video, audio, and IPTV/TV
+- Watch short-form videos and browse video discovery surfaces.
+- Discover live streams and supported live/recorded viewing experiences.
+- Join or host Live Audio Spaces where enabled.
+- Explore TV channels, TV Studio and related channel/profile experiences.
+- Use the web-based TV channel and media-player surfaces; actual IPTV playback depends on the stream source, device, network, and service availability.
+- The separate Android TV shell provides a TV launcher entry point and remote/D-pad navigation support.
 
-### Analytics
-- ✅ Post analytics (views, engagement rate)
-- ✅ User analytics (profile views, impressions)
-- ✅ Creator dashboard
-- ✅ Performance charts
-- ✅ Earnings tracking
-- 📋 **Planned**: Follower demographics
-- 📋 **Planned**: Engagement trends over time
+**Playback transparency:** IPTV channel availability, start-up time, and buffering depend on live endpoints and network conditions. The repository's CI build passing does not guarantee every channel plays on every device.
 
-## 💰 Monetization
+### Communities and conversations
+- Discover communities and community pages.
+- Participate in community posts, member experiences, chat, events, and shop surfaces where enabled.
+- Follow trending topics and hashtags.
+- Use direct messages and notification surfaces.
 
-### Current Features
-- ✅ Premium verification (3 tiers: Basic $4.99, Premium $9.99, VIP $19.99)
-- ✅ Admin-controlled content sponsorship
-- ✅ Multiple ad networks (AdSense, Adsterra, Propeller, ExoClick)
-- ✅ Creator earnings tracking
-- ✅ Subscription system
-- ✅ Product tagging and shopping
-- ✅ Tips between users
+### Search, trends, publishers, and federated discovery
+- Discover accounts, posts, hashtags, and trending conversations.
+- Browse publisher/RSS stories and article discovery surfaces.
+- Explore supported Fediverse/Mastodon-oriented identities, profiles, feeds, inbox, relay, and analytics surfaces.
+- Keep external publisher and federated content attributable to its original source.
 
-### Planned Enhancements
-- 📋 Stripe/PayPal integration
-- 📋 Super follows
-- 📋 Paid subscriptions for exclusive content
-- 📋 Revenue share program
-- 📋 NFT profile pictures
-- 📋 Crypto wallet tips
+### Creator Studio and monetization
+- Access Creator Studio and creator overview surfaces.
+- Review creator analytics, video performance, earnings and revenue information where enabled.
+- Use post/story analytics and creator discovery/leaderboard surfaces.
+- Explore supported monetization, advertising, promotions and creator tools.
 
-## 🌐 Ecosystem Features
+### Wallet, payments, and commerce
+- Use wallet and transaction-history surfaces.
+- Explore supported send/receive, M-Pesa-related flows, referrals, savings goals, scheduled transfers, reminders and currency conversion.
+- Access premium subscription and verification workflows.
+- Browse marketplace, product tagging, seller storefronts, orders, wishlists, shopping mall and community shop experiences where enabled.
 
-### Cross-Platform
-- ✅ Progressive Web App (PWA) ready
-- ✅ Responsive on all devices
-- ✅ Shareable post links
-- ✅ Social media meta tags (Open Graph, Twitter Card)
-- 📋 **Planned**: React Native mobile apps (iOS/Android)
-- 📋 **Planned**: Desktop app (Electron)
+Payment features can require provider configuration, verification, eligibility, and supported regions. Listing a payment surface in this README does not guarantee every payment provider or transaction type is available to every account.
 
-### Integrations
-- ✅ Google OAuth
-- ✅ Supabase backend
-- ✅ Giphy/Tenor GIFs
-- ✅ News API (for AI bot)
-- 🔄 **New**: Voice notes support (database ready)
-- 🔄 **New**: Post translations (database ready)
-- 📋 **Planned**: Calendar events
-- 📋 **Planned**: Google Translate API
-- 📋 **Planned**: Web Speech API (voice-to-text)
-- 📋 **Planned**: Webhook integrations
+### Safety, privacy, and support
+- Access reporting, blocking, appeals, verification, moderation and account-security surfaces.
+- Review community guidelines, content policies, privacy information and terms.
+- Use the Help Center for searchable help content, feedback, support requests, ticket history for authenticated users, and AI-assisted support where configured.
 
-### Unique Differentiators
-- ✅ Audio Spaces with video streaming
-- ✅ TikTok-style vertical video player
-- ✅ Reddit-style communities
-- ✅ AI-powered content ranking
-- ✅ Multi-image posts (up to 4)
-- 🔄 **New**: Voice notes (infrastructure ready)
-- 🔄 **New**: Post translations (infrastructure ready)
-- 📋 **Planned**: Voice-to-text posting
-- 📋 **Planned**: AI-generated replies
-- 📋 **Planned**: End-to-end encrypted DMs
-- 📋 **Planned**: Live shopping
+## Platform details
 
-### SEO & Discoverability
-- ✅ robots.txt for crawler access
-- ✅ sitemap.xml for indexing
-- ✅ Meta tags (title, description, Open Graph)
-- ✅ Shareable post URLs
-- ✅ Schema.org markup
-- 📋 **Planned**: Google News integration
-- 📋 **Planned**: AMP pages for posts
+### Android app
+The existing Android project lives in `android/`. The production WebView shell uses the mobile application ID `com.xclone.app`.
 
-## 📊 Scalability & Testing
+- [Android release workflow](.github/workflows/android-release.yml)
+- [All GitHub releases](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases)
+- [Latest APK download](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases/latest)
 
-### Infrastructure
-- ✅ Supabase cloud hosting
-- ✅ PostgreSQL database
-- ✅ Object storage (S3-compatible)
-- ✅ Edge functions (serverless)
-- ✅ RLS for security
-- 📋 **Planned**: Docker containerization
-- 📋 **Planned**: Load balancing
-- 📋 **Planned**: Auto-scaling
+### Android TV app
+The TV project lives in `android-tv/` and uses `com.xclone.app.tv`, separate from the mobile package. It reuses the existing web experience rather than duplicating IPTV catalogue, stream-selection, buffering, or playback services.
 
-### Quality Assurance
-- ✅ Error boundaries
-- ✅ Toast notifications for user feedback
-- ✅ Loading states
-- ✅ Empty states
-- 📋 **Planned**: Jest unit tests
-- 📋 **Planned**: Integration tests
-- 📋 **Planned**: E2E tests (Cypress)
-- 📋 **Planned**: Beta testing program
-- 📋 **Planned**: Sentry error monitoring
+- [TV README](android-tv/README.md)
+- [Public TV test APK releases](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/releases?q=tv-test)
+- [Public TV test APK workflow](.github/workflows/xclone-tv-debug-release.yml)
+- [Signed TV release workflow](.github/workflows/xclone-tv-release.yml)
+- [GitHub Actions runs](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions)
 
-## 🗺️ Implementation Roadmap
+### iPhone and iPad
+Open [testagram.site](https://testagram.site/) in Safari. The site includes web-app metadata and an Apple touch icon, but this repository does **not** currently contain a native iOS application project or an IPA download. This README therefore does not claim an App Store release.
 
-### Phase 1: Core Polish (Weeks 1-4) ✅ COMPLETE
-- ✅ Fix all authentication flows
-- ✅ Optimize database queries
-- ✅ Polish UI/UX
-- ✅ Multi-image uploads
-- ✅ Enhanced sidebars
-- ✅ Media upload improvements
+## Product architecture
 
-### Phase 2: Advanced Features (Weeks 5-8) 🔄 IN PROGRESS
-- 🔄 Voice notes implementation
-- 🔄 Post translation UI
-- 📋 AI-powered content moderation
-- 📋 Advanced search filters
-- 📋 Push notifications
-- 📋 PWA installation
+```text
+Web browser / Android WebView / Android TV WebView
+                    |
+             React + TypeScript
+                    |
+      Routes, social UI, media and feature surfaces
+                    |
+       Supabase Auth / PostgreSQL / Storage
+             / Realtime / Edge Functions
+                    |
+     Media and IPTV delivery / live experiences
+        / publisher and Fediverse integrations
+          / payment and monetization services
+```
 
-### Phase 3: Monetization (Weeks 9-12)
-- 📋 Stripe integration
-- 📋 Payment processing
-- 📋 Creator payouts
-- 📋 Subscription management
-- 📋 Ad serving optimization
+The repository contains a React + TypeScript application using Vite, Tailwind CSS, route-level lazy loading and Supabase. It also contains a separate Android TV project, the existing Android project, a Flutter mobile foundation, a Tauri desktop client, and first-party media/backend services.
 
-### Phase 4: Mobile Apps (Weeks 13-20)
-- 📋 React Native setup
-- 📋 iOS app development
-- 📋 Android app development
-- 📋 App Store submission
-- 📋 Google Play submission
+The checked-in repository and deployed configuration are authoritative for the exact production service topology. Some feature screens integrate with external providers and may require separate service configuration.
 
-### Phase 5: Scale & Marketing (Weeks 21+)
-- 📋 Performance optimization
-- 📋 Load testing
-- 📋 Marketing campaigns
-- 📋 User acquisition
-- 📋 Community building
-- 📋 Partnership programs
+## Technology stack
 
-## 📈 Success Metrics
+| Area | Technology |
+|---|---|
+| Web UI | React 18, TypeScript, React Router |
+| Build | Vite |
+| Styling and components | Tailwind CSS, Radix UI, shadcn-style components |
+| Data and state | TanStack Query, Redux Toolkit/Zustand where used |
+| Backend and database | Supabase, PostgreSQL |
+| Authentication | Supabase Auth |
+| Realtime and storage | Supabase Realtime and Storage |
+| Edge/serverless | Supabase Edge Functions and API handlers |
+| Video | HLS.js and application media-player surfaces |
+| Live media | WebRTC / Testagram Media Engine integrations |
+| Android | Existing Android/Capacitor project |
+| Android TV | Separate Android application project |
+| Mobile migration foundation | Flutter under `mobile/` |
+| Desktop | Tauri |
+| Analytics and charts | PostHog integration, Recharts, Chart.js |
+| Maps | Leaflet / React Leaflet |
+| Deployment | Vercel-oriented production pipeline and GitHub Actions |
 
-### User Growth
-- Daily Active Users (DAU)
-- Monthly Active Users (MAU)
-- User retention rate
-- Sign-up conversion rate
+## Repository layout
 
-### Engagement
-- Posts per user per day
-- Time spent on platform
-- Interaction rate (likes, comments, shares)
-- Content creation rate
+```text
+.
+├── src/                  # React application, components, hooks and pages
+├── android/              # Existing Android app; keep separate from TV package
+├── android-tv/           # Separate Android TV app and build instructions
+├── mobile/               # Flutter mobile migration foundation
+├── desktop/              # Tauri desktop client
+├── supabase/             # Database migrations and Edge Functions
+├── services/              # First-party backend and media services
+├── api/                   # API/serverless handlers
+├── public/                # Static assets, manifests and public metadata
+├── docs/                  # Architecture and operations documentation
+├── ops/                   # Operational tooling
+├── scripts/               # Build and maintenance scripts
+└── .github/workflows/     # CI, Android release and TV release workflows
+```
 
-### Monetization
-- Premium conversion rate
-- Average revenue per user (ARPU)
-- Creator earnings
-- Ad revenue
+## Run the web application locally
 
-### Technical
-- Page load time (<2s target)
-- API response time (<100ms target)
-- Uptime (99.9% target)
-- Error rate (<0.1% target)
+### Prerequisites
+Use a current Node.js LTS version and npm compatible with the repository lockfile.
 
-## 🎯 Competitive Advantages
+```bash
+npm ci
+npm run dev
+```
 
-### vs X (Twitter)
-- ✅ Multi-image posts (up to 4 vs X's 4)
-- ✅ Larger file uploads (20MB vs X's 5MB free tier)
-- ✅ Communities (Reddit-style)
-- ✅ Audio Spaces with video
-- ✅ Lower premium pricing ($4.99 vs $8)
-- ✅ Open-source friendly
+### Validate and build
 
-### vs Threads
-- ✅ More features (polls, bookmarks, lists)
-- ✅ Better media support
-- ✅ Creator monetization
-- ✅ Community features
-- ✅ Audio/video streaming
+```bash
+npm run typecheck
+npm run lint
+npm run build
+npm run preview
+```
 
-### vs Bluesky
-- ✅ More mature feature set
-- ✅ Monetization built-in
-- ✅ Richer media (videos, audio spaces)
-- ✅ AI-powered recommendations
-- ✅ Creator tools
+## Environment configuration
 
-## 🔒 Privacy & Security
+See `.env.example` for the browser-facing example configuration. Typical client settings include:
 
-### Current Implementation
-- ✅ End-to-end encryption for passwords
-- ✅ JWT token security
-- ✅ RLS policies
-- ✅ Secure storage URLs
-- ✅ HTTPS only
+```env
+VITE_SUPABASE_URL=
+VITE_SUPABASE_PUBLISHABLE_KEY=
+VITE_POSTHOG_KEY=
+VITE_POSTHOG_HOST=https://us.i.posthog.com
+```
 
-### Planned Enhancements
-- 📋 Two-factor authentication (2FA)
-- 📋 End-to-end encrypted DMs
-- 📋 Data export (GDPR)
-- 📋 Account deletion
-- 📋 Privacy dashboard
-- 📋 Opt-out options for data collection
+Never place Supabase service-role keys, payment secrets, private API credentials, or other privileged values in client-side Vite variables. Privileged operations belong on trusted server infrastructure.
 
-## 💡 Innovation Areas
+## Performance, reliability, and security principles
 
-1. **AI Integration**: Deeper than competitors with personalized feeds, content moderation, and smart recommendations
-2. **Hybrid Features**: Combines best of X (microblogging), Reddit (communities), TikTok (videos), Threads (conversations)
-3. **Creator First**: Built-in monetization, analytics, and tools from day one
-4. **Privacy Focused**: Transparent data policies, encryption, user control
-5. **Open Ecosystem**: API access, integrations, third-party apps
+- Lazy-load route-level pages and request secondary datasets only when needed.
+- Use pagination for long feeds and caching for suitable short-lived external data.
+- Treat live streams differently from uploaded media; transient live content should not automatically become permanent storage.
+- Provide clear loading, empty, success and error states; never disguise a backend failure as success.
+- Enforce authorization server-side and with appropriate database row-level security.
+- Treat RSS, federated, uploaded and user-generated content as untrusted input.
+- Keep privileged credentials server-side and protect payment, moderation, administration and account operations with authorization.
+- Validate the exact commit through CI and check deployment status separately from build status.
+
+## Build and release verification
+
+**Current result:** the automated checks for the README/platform update completed successfully on 9 October 2026. This is a code/build result, not a claim that every feature or device has been manually tested.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Web build and checks | Passed | [Testagram CI](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010514) |
+| Android TV debug APK build and verification | Passed in CI | [TV build job in Testagram CI](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010514) |
+| Edge-function checks | Passed | [Testagram CI](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010514) |
+| Production build gate | Passed | [Production Build Gate](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010280) |
+| Frontend production quality gate | Passed | [Frontend Production Quality Gate](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010395) |
+| CDN integration gate | Passed | [CDN Integration Gate](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions/runs/37918010304) |
+| TV hardware, sign-in and IPTV playback | **Not yet verified on physical TV hardware** | Requires device testing |
+| Stable Android TV release signing | **Pending** | Configure and protect the long-lived signing identity before publishing a signed TV release |
+
+For the live status of future commits, check [all GitHub Actions runs](https://github.com/Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr/actions). A green workflow only proves the checks that workflow actually ran; it does not guarantee that every production route, IPTV stream, payment integration, or device combination works.
+
+Before calling a release production-ready, validate the signing certificate and upgrade path, fresh install, login/session persistence, Back navigation, video playback, IPTV playback, and target device compatibility. Android TV remote and playback checks require a real Android TV or Google TV device.
+## SEO and discoverability
+
+This README intentionally describes the product in natural language so users and search engines can understand the supported platform paths and feature areas. Relevant search topics include:
+
+- XClone social media app and Android APK
+- XClone short videos, reels-style video feed, posts and communities
+- XClone Android TV and Google TV app
+- Social networking, live video, live audio and IPTV/TV channel experiences
+- Creator Studio, creator analytics and monetization
+- Social messaging, trending topics and federated discovery
+- Wallet, M-Pesa-related flows, marketplace and community shops
+- XClone web app for iPhone, iPad, Android and desktop browsers
+
+These phrases describe product areas; they are not a promise that every integration is enabled for every user or that a native iOS app is published. Avoid keyword stuffing and keep the README aligned with real release availability.
+
+## Support and policies
+
+Open the [XClone web app](https://testagram.site/) to access the in-product Help Center and available policy pages. Repository-level documentation is in `docs/`.
+
+## License
+
+No open-source license is currently declared in this repository. Do not assume the code is freely redistributable or reusable unless a license is explicitly added.
 
 ---
 
-## Next Steps to Achieve World-Class Status
-
-1. **User Testing**: Beta launch with 100-1000 users for feedback
-2. **Performance Audit**: Lighthouse scores, load testing, optimization
-3. **Mobile Apps**: React Native development for App Store/Google Play
-4. **Marketing**: Viral campaigns, influencer partnerships, press releases
-5. **Community**: Build early adopter community, ambassador program
-6. **Iteration**: Weekly updates based on user feedback and analytics
-
-**Target**: 100K MAU within 6 months, 1M MAU within 12 months
+**XClone** — social publishing, short videos, live experiences, communities, creator tools, and connected experiences across the web, Android, and Android TV.

@@ -4,6 +4,8 @@ User-agent: *
 Allow: /$
 Allow: /explore
 Allow: /videos
+Allow: /tv
+Allow: /iptv
 Allow: /threads
 Allow: /communities
 Allow: /spaces
@@ -24,49 +26,16 @@ Allow: /thread/
 Allow: /trending/
 Allow: /challenge/
 
-# ── Private / auth-required routes (noindex) ─────────────────────────────────
-Disallow: /auth
-Disallow: /messages
-Disallow: /notifications
-Disallow: /wallet
-Disallow: /settings
-Disallow: /bookmarks
-Disallow: /history
-Disallow: /scheduled
-Disallow: /payouts
-Disallow: /creator-studio
-Disallow: /monetization
-Disallow: /analytics
-Disallow: /verify
-Disallow: /wishlist
-Disallow: /referral
-Disallow: /daily-rewards
-Disallow: /rewards
-Disallow: /platform-inbox
-Disallow: /interests
-Disallow: /notification-preferences
-Disallow: /lists
-Disallow: /my-ads
-Disallow: /create-ad
-Disallow: /start-stream
-Disallow: /ad-analytics
-Disallow: /revenue-analytics
-Disallow: /ad-performance
-Disallow: /post-analytics
-Disallow: /boost-analytics/
-Disallow: /seo-audit
-Disallow: /spaces/
+# Private/auth/admin app-shell routes are crawlable so search engines can observe
+# the server-rendered noindex directive. These routes expose no private data in HTML.
 
-# ── Admin routes ──────────────────────────────────────────────────────────────
-Disallow: /admin/
-Disallow: /fraud-detection
-Disallow: /ai-bot-setup
-
-# ── AI Crawlers — content reserved for monetization ──────────────────────────
+# ── AI training/data-collection crawlers remain blocked ────────────────────────
+# Search retrieval crawlers are not blocked here and inherit the default group
+# above, including its private/admin route exclusions.
 User-agent: GPTBot
 Disallow: /
 
-User-agent: ChatGPT-User
+User-agent: Google-Extended
 Disallow: /
 
 User-agent: Claude-Web
@@ -75,13 +44,7 @@ Disallow: /
 User-agent: anthropic-ai
 Disallow: /
 
-User-agent: Google-Extended
-Disallow: /
-
 User-agent: CCBot
-Disallow: /
-
-User-agent: PerplexityBot
 Disallow: /
 
 User-agent: Bytespider
@@ -99,22 +62,9 @@ Disallow: /
 User-agent: Applebot-Extended
 Disallow: /
 
-# ── Search engine bots (fully allowed) ───────────────────────────────────────
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Slurp
-Allow: /
-
-User-agent: DuckDuckBot
-Allow: /
-
 # ── Sitemaps ─────────────────────────────────────────────────────────────────
 Sitemap: https://testagram.site/sitemap.xml
-Sitemap: https://testagram.site/sitemap-static.xml
-Sitemap: https://lrqqpudyrkmitbeilrqq.backend.onspace.ai/functions/v1/community-sitemap
+
+# Standard search crawlers inherit the default group's public allow rules and private/admin exclusions.
 
 Crawl-delay: 1

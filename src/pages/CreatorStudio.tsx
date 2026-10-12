@@ -18,9 +18,10 @@ import { formatNumber } from '@/lib/utils';
 import { toast } from 'sonner';
 
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { CreatorStudioWorkbench } from '@/components/features/CreatorStudioWorkbench';
 function CreatorStudioAdBanner() { return <PageAdBanner />; }
 
-export default function CreatorStudio() {
+export default function CreatorStudio({ section = 'overview', standalone = false }: { section?: 'overview' | 'analytics' | 'videos' | 'earnings' | 'revenue'; standalone?: boolean }) {
   const { user } = useAuth();
   const navigate = useNavigate();
 
@@ -43,9 +44,11 @@ export default function CreatorStudio() {
   const [videoPostsCount, setVideoPostsCount] = useState(0);
   const [loading, setLoading] = useState(true);
   // esbuild guard: type annotation on useState is fine for union literal types
-  const [activeStudioTab, setActiveStudioTab] = useState<'overview' | 'analytics' | 'videos' | 'earnings' | 'revenue'>('overview');
+  const [activeStudioTab, setActiveStudioTab] = useState<'overview' | 'analytics' | 'videos' | 'earnings' | 'revenue'>(section);
   const [exportStartMonth, setExportStartMonth] = useState('');
   const [exportEndMonth, setExportEndMonth] = useState('');
+  useEffect(() => { setActiveStudioTab(section); }, [section]);
+
   useEffect(() => {
     const now = new Date();
     setExportEndMonth(now.toISOString().slice(0, 7));
@@ -125,7 +128,7 @@ export default function CreatorStudio() {
       const { data } = await supabase
         .from('creator_earnings')
         .select('amount')
-        .eq('user_id', user.id)
+        .eq('creator_id', user.id)
         .gte('created_at', todayStart.toISOString());
       const todayTotal = (data ?? []).reduce((s, e) => s + Number(e.amount), 0);
       setAlertTodayEarnings(todayTotal);
@@ -196,7 +199,7 @@ export default function CreatorStudio() {
 
   const fetchMonthlyGoal = async () => {
     if (!user) return;
-    const { data } = await supabase.from('user_monetization').select('monthly_tip_goal').eq('user_id', user.id).maybeSingle();
+    const { data } = await supabase.from('creator_preferences').select('monthly_tip_goal').eq('user_id', user.id).maybeSingle();
     setMonthlyGoal(Number(data?.monthly_tip_goal ?? 0));
   };
 
@@ -204,7 +207,7 @@ export default function CreatorStudio() {
     if (!user) return;
     const val = parseFloat(goalInput);
     if (isNaN(val) || val < 0) { toast.error('Enter a valid amount'); return; }
-    const { error } = await supabase.from('user_monetization').upsert({ user_id: user.id, monthly_tip_goal: val }, { onConflict: 'user_id' });
+    const { error } = await supabase.from('creator_preferences').upsert({ user_id: user.id, monthly_tip_goal: val, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
     if (error) { toast.error(error.message); return; }
     setMonthlyGoal(val); setEditingGoal(false); toast.success('Goal saved!');
   };
@@ -215,7 +218,7 @@ export default function CreatorStudio() {
     try {
       const [postsRes, earningsRes] = await Promise.all([
         supabase.from('posts').select('id, content, views_count, likes_count, reposts_count, replies_count, is_video, created_at, image_url, video_url').eq('user_id', user.id).order('views_count', { ascending: false }).limit(20),
-        supabase.from('creator_earnings').select('amount, created_at').eq('user_id', user.id).eq('status', 'paid').order('created_at', { ascending: true }),
+        supabase.from('creator_earnings').select('amount, created_at').eq('creator_id', user.id).eq('status', 'paid').order('created_at', { ascending: true }),
       ]);
       const scored = (postsRes.data ?? []).map(p => ({
         ...p,
@@ -231,8 +234,8 @@ export default function CreatorStudio() {
         { name: 'Images', value: imgs, color: '#3b82f6' },
         { name: 'Text',   value: txt, color: '#8b5cf6' },
       ].filter(t => t.value > 0));
-      const { data: profile } = await supabase.from('user_profiles').select('followers_count').eq('id', user.id).maybeSingle();
-      const currentFollowers = profile?.followers_count ?? 0;
+      const { data: profile } = await supabase.from('profiles').select('follower_count').eq('id', user.id).maybeSingle();
+      const currentFollowers = profile?.follower_count ?? 0;
       const growthData: any[] = [];
       for (let i = 6; i >= 0; i--) {
         const d = new Date(Date.now() - i * 86400000);
@@ -281,7 +284,7 @@ export default function CreatorStudio() {
     const { data } = await supabase
       .from('creator_earnings')
       .select('created_at')
-      .eq('user_id', user.id)
+      .eq('creator_id', user.id)
       .order('created_at', { ascending: false })
       .limit(90);
     if (!data || data.length === 0) { setEarningsStreak(0); return; }
@@ -322,7 +325,7 @@ export default function CreatorStudio() {
       const { data } = await supabase
         .from('creator_earnings')
         .select('amount, source')
-        .eq('user_id', user.id)
+        .eq('creator_id', user.id)
         .gte('created_at', lastWeekStart.toISOString())
         .lt('created_at', lastWeekEnd.toISOString());
       const rows = data ?? [];
@@ -391,12 +394,12 @@ export default function CreatorStudio() {
   const fetchCreatorStats = async () => {
     if (!user) return;
     try {
-      const { data: profile } = await supabase.from('user_profiles').select('*').eq('id', user.id).single();
+      const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       const { data: posts } = await supabase.from('posts').select('views_count, likes_count, is_video, created_at').eq('user_id', user.id);
       const totalViews = posts?.reduce((s, p) => s + (p.views_count || 0), 0) || 0;
       const totalLikes = posts?.reduce((s, p) => s + (p.likes_count || 0), 0) || 0;
       const videoViews = posts?.filter(p => p.is_video).reduce((s, p) => s + (p.views_count || 0), 0) || 0;
-      const { data: earnings } = await supabase.from('creator_earnings').select('amount').eq('user_id', user.id).eq('status', 'paid');
+      const { data: earnings } = await supabase.from('creator_earnings').select('amount').eq('creator_id', user.id).eq('status', 'paid');
       const totalEarnings = earnings?.reduce((s, e) => s + Number(e.amount), 0) || 0;
       const { data: analytics } = await supabase.from('user_analytics').select('engagement_rate').eq('user_id', user.id).single();
       const now = Date.now();
@@ -404,7 +407,7 @@ export default function CreatorStudio() {
       for (let i = 6; i >= 0; i--) { const d = new Date(now - i * 86400000).toISOString().split('T')[0]; days[d] = 0; }
       (posts || []).forEach(p => { const d = p.created_at?.split('T')[0]; if (d && days[d] !== undefined) days[d] += p.views_count || 0; });
       setWeeklyViews(Object.entries(days).map(([date, views]) => ({ date: (date as string).slice(5), views })));
-      setStats({ total_followers: profile?.followers_count || 0, total_posts: posts?.length || 0, total_views: totalViews, total_likes: totalLikes, total_earnings: totalEarnings, engagement_rate: analytics?.engagement_rate || 0, video_views: videoViews, article_views: 0 });
+      setStats({ total_followers: profile?.follower_count || 0, total_posts: posts?.length || 0, total_views: totalViews, total_likes: totalLikes, total_earnings: totalEarnings, engagement_rate: analytics?.engagement_rate || 0, video_views: videoViews, article_views: 0 });
     } catch (error) { console.error('Error fetching creator stats:', error); }
     finally { setLoading(false); }
   };
@@ -417,7 +420,7 @@ export default function CreatorStudio() {
 
   const fetchEarningsHistory = async () => {
     if (!user) return;
-    const { data } = await supabase.from('creator_earnings').select('amount, source, created_at, status').eq('user_id', user.id).order('created_at', { ascending: true }).limit(60);
+    const { data } = await supabase.from('creator_earnings').select('amount, source, created_at, status').eq('creator_id', user.id).order('created_at', { ascending: true }).limit(60);
     if (!data) return;
     const byMonth: any = {};
     data.forEach((e: any) => {
@@ -432,16 +435,16 @@ export default function CreatorStudio() {
   const fetchWeeklyEarnings = async () => {
     if (!user) return;
     const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
-    const { data } = await supabase.from('creator_earnings').select('amount, source, created_at').eq('user_id', user.id).gte('created_at', sevenDaysAgo).order('created_at', { ascending: true });
+    const { data } = await supabase.from('creator_earnings').select('amount, source, created_at').eq('creator_id', user.id).gte('created_at', sevenDaysAgo).order('created_at', { ascending: true });
     if (!data) return;
     const days: any = {};
     for (let i = 6; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0]; days[d] = { day: d.slice(5), tips: 0, subscriptions: 0, ads: 0, other: 0 }; }
     data.forEach((e: any) => {
       const d = e.created_at.split('T')[0]; if (!days[d]) return;
       const amt = Number(e.amount);
-      if (e.source === 'tips') days[d].tips += amt;
-      else if (e.source === 'subscription') days[d].subscriptions += amt;
-      else if (e.source?.includes('ad') || e.source?.includes('video')) days[d].ads += amt;
+      if (e.source_type === 'tips') days[d].tips += amt;
+      else if (e.source_type === 'subscription') days[d].subscriptions += amt;
+      else if (e.source_type?.includes('ad') || e.source_type?.includes('video')) days[d].ads += amt;
       else days[d].other += amt;
     });
     setWeeklyEarnings(Object.values(days));
@@ -450,7 +453,7 @@ export default function CreatorStudio() {
   const fetchRevenueBreakdown4W = async () => {
     if (!user) return;
     const fourWeeksAgo = new Date(Date.now() - 28 * 86400000).toISOString();
-    const { data } = await supabase.from('creator_earnings').select('amount, source, created_at').eq('user_id', user.id).gte('created_at', fourWeeksAgo).order('created_at', { ascending: true });
+    const { data } = await supabase.from('creator_earnings').select('amount, source, created_at').eq('creator_id', user.id).gte('created_at', fourWeeksAgo).order('created_at', { ascending: true });
     if (!data) return;
     const weeks: any = {};
     for (let w = 3; w >= 0; w--) {
@@ -462,7 +465,7 @@ export default function CreatorStudio() {
       for (const e of data) {
         const d = new Date(e.created_at);
         if (d >= start && d < end) {
-          const amt = Number(e.amount); const src = e.source ?? '';
+          const amt = Number(e.amount); const src = e.source_type ?? '';
           if (src === 'tips') weeks[key].tips += amt;
           else if (src === 'subscription') weeks[key].subscriptions += amt;
           else if (src?.includes('ad') || src?.includes('video')) weeks[key].ads += amt;
@@ -491,12 +494,12 @@ export default function CreatorStudio() {
       const startDate = `${exportStartMonth}-01T00:00:00.000Z`;
       const endDate = `${exportEndMonth}-31T23:59:59.999Z`;
       const [earningsRes, tipsRes, adRevenueRes] = await Promise.all([
-        supabase.from('creator_earnings').select('amount, source, created_at, status, post_id').eq('user_id', user.id).gte('created_at', startDate).lte('created_at', endDate).order('created_at', { ascending: true }),
+        supabase.from('creator_earnings').select('amount, source, created_at, status, post_id').eq('creator_id', user.id).gte('created_at', startDate).lte('created_at', endDate).order('created_at', { ascending: true }),
         supabase.from('tips').select('amount, message, created_at, from_user_id').eq('to_user_id', user.id).gte('created_at', startDate).lte('created_at', endDate).order('created_at', { ascending: true }),
         supabase.from('creator_ad_revenue').select('gross_revenue, creator_share, ad_type, created_at').eq('creator_user_id', user.id).gte('created_at', startDate).lte('created_at', endDate).order('created_at', { ascending: true }),
       ]);
       const rows: string[][] = [['Date', 'Source', 'Type', 'Amount (USD)', 'Status', 'Notes']];
-      for (const e of earningsRes.data ?? []) rows.push([new Date(e.created_at).toISOString().split('T')[0], e.source ?? 'creator_earnings', 'earnings', Number(e.amount).toFixed(4), e.status ?? 'paid', e.post_id ? `post:${e.post_id}` : '']);
+      for (const e of earningsRes.data ?? []) rows.push([new Date(e.created_at).toISOString().split('T')[0], e.source_type ?? 'creator_earnings', 'earnings', Number(e.amount).toFixed(4), e.status ?? 'paid', e.post_id ? `post:${e.post_id}` : '']);
       for (const t of tipsRes.data ?? []) rows.push([new Date(t.created_at).toISOString().split('T')[0], 'tips', 'tip', Number(t.amount).toFixed(4), 'paid', t.message ? t.message.slice(0, 80).replace(/,/g, ';') : '']);
       for (const a of adRevenueRes.data ?? []) rows.push([new Date(a.created_at).toISOString().split('T')[0], `ad_revenue (${a.ad_type ?? 'ad'})`, 'ad_revenue', Number(a.creator_share).toFixed(4), 'paid', `gross:$${Number(a.gross_revenue).toFixed(4)}`]);
       const header = rows[0];
@@ -517,7 +520,7 @@ export default function CreatorStudio() {
     setExportingPdf(true);
     try {
       const [earningsRes] = await Promise.all([
-        supabase.from('creator_earnings').select('amount, source, status, created_at').eq('user_id', user.id).order('created_at', { ascending: true }),
+        supabase.from('creator_earnings').select('amount, source, status, created_at').eq('creator_id', user.id).order('created_at', { ascending: true }),
       ]);
       const allEarnings = earningsRes.data ?? [];
       const totalPaid = allEarnings.filter((e: any) => e.status === 'paid').reduce((s, e: any) => s + Number(e.amount), 0);
@@ -528,7 +531,7 @@ export default function CreatorStudio() {
         if (e.status === 'paid') byMonth[m].paid += Number(e.amount); else byMonth[m].pending += Number(e.amount);
       });
       const sourceTotals: any = {};
-      allEarnings.forEach((e: any) => { const src = e.source ?? 'other'; sourceTotals[src] = (sourceTotals[src] ?? 0) + Number(e.amount); });
+      allEarnings.forEach((e: any) => { const src = e.source_type ?? 'other'; sourceTotals[src] = (sourceTotals[src] ?? 0) + Number(e.amount); });
       const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
       const monthlyRows = Object.entries(byMonth).slice(-12).map(([month, v]: any) => `<tr><td>${month}</td><td>$${v.paid.toFixed(2)}</td><td>$${v.pending.toFixed(2)}</td><td>$${(v.paid + v.pending).toFixed(2)}</td></tr>`).join('');
       const sourceRows = Object.entries(sourceTotals).sort((a: any, b: any) => b[1] - a[1]).map(([src, amt]: any) => `<tr><td>${src.replace(/_/g, ' ')}</td><td>$${amt.toFixed(4)}</td><td>${((amt / (totalPaid + totalPending)) * 100).toFixed(1)}%</td></tr>`).join('');
@@ -543,7 +546,7 @@ export default function CreatorStudio() {
 
   const enableCreatorMode = async () => {
     if (!user) return;
-    const { error } = await supabase.from('user_profiles').update({ is_creator: true, can_monetize: true }).eq('id', user.id);
+    const { error } = await supabase.from('profiles').update({ is_creator: true, can_monetize: true }).eq('id', user.id);
     if (error) { toast.error(error.message); return; }
     toast.success('Creator mode enabled!');
     fetchCreatorStats();
@@ -589,12 +592,13 @@ export default function CreatorStudio() {
     <div className="min-h-screen bg-background pb-20 md:pb-0">
       <TopBar title="Creator Studio" showBack />
       <CreatorStudioAdBanner />
+      <CreatorStudioWorkbench stats={stats} recentPosts={recentPosts} />
 
       <div className="p-4 space-y-6">
         {/* Studio tabs */}
         <div className="flex bg-muted/30 rounded-xl p-1 gap-1 overflow-x-auto scrollbar-hide">
           {(['overview', 'analytics', 'videos', 'earnings', 'revenue'] as const).map(tab => (
-            <button key={tab} onClick={() => setActiveStudioTab(tab)}
+            <button key={tab} onClick={() => { setActiveStudioTab(tab); navigate(`/creator-studio/${tab}`); }}
               className={`flex-1 py-2 rounded-lg text-xs font-semibold capitalize transition-all whitespace-nowrap ${
                 activeStudioTab === tab ? 'bg-background shadow text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}>

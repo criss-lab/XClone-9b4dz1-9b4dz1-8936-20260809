@@ -1,80 +1,643 @@
 package com.xclone.app;
 
+import android.Manifest;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
-import android.view.KeyEvent;
+import android.os.Build;
+import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceError;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.webkit.WebSettings;
+import android.webkit.SslErrorHandler;
+import android.webkit.RenderProcessGoneDetail;
 import android.view.View;
-import android.widget.Toast;
+import android.widget.FrameLayout;
+import android.net.http.SslError;
 
-import com.getcapacitor.BridgeActivity;
+import org.json.JSONObject;
 
-public class MainActivity extends BridgeActivity {
+import androidx.annotation.Nullable;
+import androidx.activity.OnBackPressedCallback;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.core.content.ContextCompat;
+import com.google.firebase.messaging.FirebaseMessaging;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewFeature;
 
-    private long lastBackPressed = 0;
+public final class MainActivity extends AppCompatActivity {
+    private static final String APP_URL = "https://testagram.site/?tg_shell=android-20261004";
+    private static final int FILE_PICKER = 4101;
+    private static final int MEDIA_PERMISSIONS = 4102;
+    private static final int LOCATION_PERMISSION = 4104;
+    private ValueCallback<Uri[]> fileCallback;
+    private android.webkit.GeolocationPermissions.Callback geolocationCallback;
+    private String geolocationOrigin;
+    private PermissionRequest pendingMediaPermissionRequest;
+    private WebView webView;
+    private String lastHandledDeepLink;
+    private View customVideoView;
+    private WebChromeClient.CustomViewCallback customVideoCallback;
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // ================= Immersive Fullscreen =================
-        final View decorView = getWindow().getDecorView();
-        decorView.setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY    // Keep immersive after swipe
-            | View.SYSTEM_UI_FLAG_FULLSCREEN        // Hide status bar
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION   // Hide navigation bar
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        // Modern edge-to-edge shell: let the WebView occupy the entire display,
+        // including behind transparent system bars. Important interactive content
+        // remains responsible for its own safe-area/inset handling.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        WindowCompat.enableEdgeToEdge(getWindow());
+        WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView())
+                .setAppearanceLightStatusBars(false);
+        WindowInsetsControllerCompat initialController =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        initialController.setAppearanceLightNavigationBars(false);
+        initialController.setSystemBarsBehavior(
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         );
-    }
-
-    // Handle Android back button navigation
-    @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-
-            if (this.bridge.getWebView().canGoBack()) {
-                this.bridge.getWebView().goBack();
-                return true;
-            } else {
-
-                if (lastBackPressed + 2000 > System.currentTimeMillis()) {
-                    finish();
-                    return true;
-                } else {
-                    Toast.makeText(this, "Press back again to exit", Toast.LENGTH_SHORT).show();
-                    lastBackPressed = System.currentTimeMillis();
-                    return true;
-                }
-            }
+        enterImmersiveFullscreen();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            getWindow().setNavigationBarContrastEnforced(false);
+            getWindow().setStatusBarContrastEnforced(false);
+        }
+        getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            getWindow().setNavigationBarDividerColor(android.graphics.Color.TRANSPARENT);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            getWindow().getAttributes().layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         }
 
-        return super.onKeyDown(keyCode, event);
+        webView = new WebView(this);
+        WebView web = webView;
+        web.setFitsSystemWindows(false);
+        // Keep the WebView physically edge-to-edge and let Chromium receive the
+        // real system-bar/cutout insets so the website can use CSS safe-area-*.
+        // Do not add native padding here: that would create the visible top/bottom
+        // bands we are explicitly eliminating.
+        ViewCompat.setOnApplyWindowInsetsListener(web, (view, insets) -> insets);
+        ViewCompat.requestApplyInsets(web);
+        web.setLayoutParams(new android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        setContentView(web);
+
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (customVideoView != null) {
+                    WebChromeClient.CustomViewCallback callback = customVideoCallback;
+                    customVideoView = null;
+                    customVideoCallback = null;
+                    if (callback != null) callback.onCustomViewHidden();
+                    if (webView != null) {
+                        setContentView(webView);
+                        enterImmersiveFullscreen();
+                    }
+                    return;
+                }
+                if (webView != null && webView.canGoBack()) {
+                    webView.goBack();
+                } else {
+                    finish();
+                }
+            }
+        });
+
+        WebSettings settings = web.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(true);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        // Never zoom-to-fit the desktop page; the responsive site owns the layout.
+        settings.setLoadWithOverviewMode(false);
+        // Honor Testagram's responsive viewport meta exactly as Chrome mobile does.
+        settings.setUseWideViewPort(true);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        // Keep the canonical origin while allowing fresh navigation after web releases.
+        // Cookies and local storage remain intact, so authentication is preserved.
+        // Present the canonical site as a normal mobile Chrome browser rather than an
+        // Android WebView. Some production web stacks suppress/alter rendering when the
+        // WebView-only "wv" marker is present, which can make the homepage appear blank.
+        // Keep the real Chromium/WebView version and Android device information intact;
+        // only remove WebView-specific identification so the canonical web app follows
+        // the same browser rendering path as testagram.site in Chrome.
+        String mobileChromeUserAgent = settings.getUserAgentString()
+                .replace("; wv", "")
+                .replace(" Version/4.0", "");
+        settings.setUserAgentString(mobileChromeUserAgent);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setGeolocationEnabled(true);
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
+
+        WebView.setWebContentsDebuggingEnabled(false);
+        web.setOverScrollMode(WebView.OVER_SCROLL_NEVER);
+        web.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        web.setVerticalScrollBarEnabled(false);
+        web.setHorizontalScrollBarEnabled(false);
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
+            WebSettingsCompat.setSafeBrowsingEnabled(settings, true);
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+            WebSettingsCompat.setForceDark(web.getSettings(), WebSettingsCompat.FORCE_DARK_OFF);
+        }
+
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                // Never bypass TLS errors in production.
+                handler.cancel();
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request.isForMainFrame()) {
+                    android.util.Log.e("TestagramWebView", "Main-frame load error: " + request.getUrl()
+                            + " code=" + error.getErrorCode() + " description=" + error.getDescription());
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request, android.webkit.WebResourceResponse response) {
+                super.onReceivedHttpError(view, request, response);
+                if (request.isForMainFrame()) {
+                    android.util.Log.e("TestagramWebView", "Main-frame HTTP error: " + request.getUrl()
+                            + " status=" + response.getStatusCode());
+                }
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                android.util.Log.d("TestagramWebView", "Page committed visibly: " + url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                publishPushTokenToWeb();
+                handlePushIntent(getIntent());
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                // A WebView renderer can be reclaimed by Android under memory
+                // pressure or can crash independently of the Activity. The dead
+                // WebView instance is never reusable; recreate the Activity so a
+                // completely fresh renderer is attached.
+                boolean crashed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && detail.didCrash();
+                android.util.Log.e(
+                        "TestagramWebView",
+                        "WebView renderer gone; crashed=" + crashed
+                );
+                if (webView != null) {
+                    webView.stopLoading();
+                    webView.setWebChromeClient(null);
+                    webView.setWebViewClient(null);
+                    webView.destroy();
+                    webView = null;
+                }
+                recreate();
+                return true;
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if (isTrustedTestagramUrl(uri)) {
+                    return false;
+                }
+
+                // Upgrade the site's own accidental HTTP links before loading them.
+                String scheme = uri.getScheme();
+                String host = uri.getHost();
+                if ("http".equalsIgnoreCase(scheme)
+                        && ("testagram.site".equalsIgnoreCase(host) || "www.testagram.site".equalsIgnoreCase(host))) {
+                    Uri secure = canonicalTestagramUrl(uri).buildUpon().scheme("https").authority("testagram.site").build();
+                    view.loadUrl(secure.toString());
+                    return true;
+                }
+
+                // External navigation is delegated only for conventional web links
+                // and user-initiated phone/email links. Block javascript:, file:,
+                // intent: and other schemes from crossing the WebView boundary.
+                boolean safeExternalScheme = "https".equalsIgnoreCase(scheme)
+                        || "http".equalsIgnoreCase(scheme)
+                        || "mailto".equalsIgnoreCase(scheme)
+                        || "tel".equalsIgnoreCase(scheme);
+                if (safeExternalScheme) {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                    } catch (android.content.ActivityNotFoundException ignored) {
+                        android.util.Log.w("TestagramWebView", "No handler for external URL scheme: " + scheme);
+                    } catch (SecurityException ignored) {
+                        android.util.Log.w("TestagramWebView", "External URL launch was blocked");
+                    }
+                }
+                return true;
+            }
+        });
+
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onShowCustomView(View view, WebChromeClient.CustomViewCallback callback) {
+                if (customVideoView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                customVideoView = view;
+                customVideoCallback = callback;
+                FrameLayout fullscreen = new FrameLayout(MainActivity.this);
+                fullscreen.setBackgroundColor(android.graphics.Color.BLACK);
+                fullscreen.addView(view, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                ));
+                setContentView(fullscreen);
+                enterImmersiveFullscreen();
+            }
+
+            @Override
+            public void onHideCustomView() {
+                if (customVideoView == null) return;
+                if (customVideoCallback != null) customVideoCallback.onCustomViewHidden();
+                customVideoView = null;
+                customVideoCallback = null;
+                if (webView != null) {
+                    setContentView(webView);
+                    enterImmersiveFullscreen();
+                }
+            }
+
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin, android.webkit.GeolocationPermissions.Callback callback) {
+                geolocationOrigin = origin;
+                geolocationCallback = callback;
+                boolean granted = ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                        || ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+                if (granted) { callback.invoke(origin, true, false); geolocationCallback = null; geolocationOrigin = null; }
+                else ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION);
+            }
+
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                if (request == null) return;
+                runOnUiThread(() -> {
+                    // WebView permissions are origin-scoped. Never grant capture to an
+                    // embedded/untrusted origin, and fail closed on resource types that
+                    // this shell does not explicitly support.
+                    if (!isTrustedTestagramUrl(request.getOrigin())) {
+                        safeDeny(request);
+                        return;
+                    }
+
+                    java.util.ArrayList<String> requestedResources = new java.util.ArrayList<>();
+                    boolean needsCamera = false;
+                    boolean needsAudio = false;
+                    boolean unsupportedResource = false;
+                    boolean camera = ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+                    boolean audio = ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+
+                    for (String resource : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                            requestedResources.add(resource);
+                            needsCamera = !camera;
+                        } else if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) {
+                            requestedResources.add(resource);
+                            needsAudio = !audio;
+                        } else {
+                            unsupportedResource = true;
+                        }
+                    }
+                    if (unsupportedResource || requestedResources.isEmpty()) {
+                        safeDeny(request);
+                        return;
+                    }
+                    if (!needsCamera && !needsAudio) {
+                        safeGrant(request, requestedResources.toArray(new String[0]));
+                        return;
+                    }
+
+                    // A WebView may issue overlapping requests; don't leave an earlier
+                    // callback hanging or accidentally grant it after a later prompt.
+                    if (pendingMediaPermissionRequest != null) {
+                        safeDeny(pendingMediaPermissionRequest);
+                        pendingMediaPermissionRequest = null;
+                    }
+                    pendingMediaPermissionRequest = request;
+                    java.util.ArrayList<String> permissions = new java.util.ArrayList<>();
+                    if (needsCamera) permissions.add(Manifest.permission.CAMERA);
+                    if (needsAudio) permissions.add(Manifest.permission.RECORD_AUDIO);
+                    ActivityCompat.requestPermissions(MainActivity.this,
+                            permissions.toArray(new String[0]), MEDIA_PERMISSIONS);
+                });
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (fileCallback != null) fileCallback.onReceiveValue(null);
+                fileCallback = callback;
+                Intent intent = params.createIntent();
+                try {
+                    startActivityForResult(intent, FILE_PICKER);
+                } catch (Exception e) {
+                    fileCallback = null;
+                    callback.onReceiveValue(null);
+                }
+                return true;
+            }
+        });
+
+        createNotificationChannel();
+        requestNotificationPermission();
+
+        // App Links must preserve the exact public URL selected by Search, a
+        // notification, share sheet, or another app. Only trusted HTTPS
+        // Testagram URLs are accepted; everything else follows the normal
+        // external-browser policy in shouldOverrideUrlLoading().
+        Uri initialDeepLink = getTrustedInitialDeepLink(getIntent());
+        web.loadUrl(initialDeepLink != null ? initialDeepLink.toString() : APP_URL);
     }
 
     @Override
-    public void onResume() {
+    protected void onResume() {
         super.onResume();
+        enterImmersiveFullscreen();
+        publishPushTokenToWeb();
+    }
 
-        // Re-enable immersive mode if user swiped to show bars
-        final View decorView = getWindow().getDecorView();
-        decorView.setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            | View.SYSTEM_UI_FLAG_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+    /**
+     * Testagram is a true full-screen WebView shell: the website owns every pixel
+     * from the physical top edge to the physical bottom edge. The Android status
+     * and navigation bars must not reserve a black band around the WebView.
+     *
+     * Android can still reveal system bars transiently in response to an explicit
+     * system gesture; this method restores immersive mode as soon as the Activity
+     * regains focus.
+     */
+    private void enterImmersiveFullscreen() {
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (controller == null) return;
+
+        controller.setSystemBarsBehavior(
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        controller.hide(WindowInsetsCompat.Type.systemBars());
+
+        // Compatibility fallback for older Android releases supported by this APK.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            );
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // A new notification/deep link is a new navigation request, even when
+        // it targets the same URL as the previous notification.
+        lastHandledDeepLink = null;
+        handlePushIntent(intent);
+    }
+
+    private void publishPushTokenToWeb() {
+        FirebaseMessaging.getInstance().getToken().addOnSuccessListener(this, token -> {
+            getSharedPreferences(TestagramFirebaseMessagingService.PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putString(TestagramFirebaseMessagingService.TOKEN_KEY, token)
+                    .apply();
+
+            try {
+                String json = JSONObject.quote(token);
+                String script =
+                        "window.__TESTAGRAM_FCM_TOKEN__=" + json + ";" +
+                        "window.dispatchEvent(new CustomEvent('testagram:fcm-token',{detail:{token:" + json + "}}));";
+                if (webView != null) webView.evaluateJavascript(script, null);
+            } catch (Exception ignored) {
+                // Token delivery to the page is best-effort; it will retry on the next page load.
+            }
+        });
+    }
+
+    private void handlePushIntent(Intent intent) {
+        if (intent == null || webView == null) return;
+
+        String url = firstNonBlank(
+                intent.getStringExtra(TestagramFirebaseMessagingService.EXTRA_PUSH_URL),
+                intent.getStringExtra("url"),
+                intent.getStringExtra("deep_link"),
+                intent.getStringExtra("deepLink"),
+                intent.getStringExtra("redirectUrl"),
+                intent.getStringExtra("action_url")
         );
+
+        Uri uri = url == null ? intent.getData() : Uri.parse(url);
+        if (!isTrustedTestagramUrl(uri)) return;
+
+        Uri canonical = canonicalTestagramUrl(uri);
+        String canonicalUrl = canonical.toString();
+
+        // onPageFinished fires for every navigation. Consume each deep link once
+        // so an intent's data URI cannot cause a reload loop on every page load.
+        if (canonicalUrl.equals(lastHandledDeepLink)) return;
+        lastHandledDeepLink = canonicalUrl;
+
+        webView.loadUrl(canonicalUrl);
+
+        intent.removeExtra(TestagramFirebaseMessagingService.EXTRA_PUSH_URL);
+        intent.removeExtra("url");
+        intent.removeExtra("deep_link");
+        intent.removeExtra("deepLink");
+        intent.removeExtra("redirectUrl");
+        intent.removeExtra("action_url");
+        if (intent.getData() != null) intent.setData(null);
+    }
+
+    private static Uri getTrustedInitialDeepLink(Intent intent) {
+        if (intent == null) return null;
+        String extra = firstNonBlank(
+                intent.getStringExtra(TestagramFirebaseMessagingService.EXTRA_PUSH_URL),
+                intent.getStringExtra("url"),
+                intent.getStringExtra("deep_link"),
+                intent.getStringExtra("deepLink"),
+                intent.getStringExtra("redirectUrl"),
+                intent.getStringExtra("action_url")
+        );
+        Uri candidate = extra == null ? intent.getData() : Uri.parse(extra);
+        return isTrustedTestagramUrl(candidate) ? canonicalTestagramUrl(candidate) : null;
+    }
+
+    private static boolean isTrustedTestagramUrl(Uri uri) {
+        if (uri == null) return false;
+        String scheme = uri.getScheme();
+        String host = uri.getHost();
+        int port = uri.getPort();
+        return "https".equalsIgnoreCase(scheme)
+                && (port == -1 || port == 443)
+                && uri.getUserInfo() == null
+                && ("testagram.site".equalsIgnoreCase(host) || "www.testagram.site".equalsIgnoreCase(host));
+    }
+
+    private static Uri canonicalTestagramUrl(Uri uri) {
+        if (uri == null || !"www.testagram.site".equalsIgnoreCase(uri.getHost())) return uri;
+        return uri.buildUpon().authority("testagram.site").build();
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) return value;
+        }
+        return null;
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        android.app.NotificationManager manager = getSystemService(android.app.NotificationManager.class);
+        if (manager == null) return;
+        android.app.NotificationChannel normal = new android.app.NotificationChannel(
+                TestagramFirebaseMessagingService.CHANNEL_ID, "Testagram notifications",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT);
+        normal.setDescription("Routine Testagram activity and social notifications.");
+        android.app.NotificationChannel urgent = new android.app.NotificationChannel(
+                TestagramFirebaseMessagingService.URGENT_CHANNEL_ID, "Testagram important alerts",
+                android.app.NotificationManager.IMPORTANCE_HIGH);
+        urgent.setDescription("Wallet, security, messages and other time-sensitive Testagram alerts.");
+        android.app.NotificationChannel updates = new android.app.NotificationChannel(
+                TestagramFirebaseMessagingService.UPDATES_CHANNEL_ID, "Testagram updates",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT);
+        updates.setDescription("Product announcements, feature updates and Testagram news.");
+        manager.createNotificationChannel(normal);
+        manager.createNotificationChannel(urgent);
+        manager.createNotificationChannel(updates);
+    }
+
+    private static void safeGrant(PermissionRequest request, String[] resources) {
+        try {
+            request.grant(resources);
+        } catch (IllegalStateException ignored) {
+            // The renderer may have navigated or been destroyed while the dialog was open.
+        }
+    }
+
+    private static void safeDeny(PermissionRequest request) {
+        try {
+            request.deny();
+        } catch (IllegalStateException ignored) {
+            // A stale WebView permission request is already invalid; nothing else to do.
+        }
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                    this,
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    4103
+            );
+        }
     }
 
     @Override
-    public void onPause() {
-        super.onPause();
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == MEDIA_PERMISSIONS) {
+            PermissionRequest pending = pendingMediaPermissionRequest;
+            pendingMediaPermissionRequest = null;
+            if (pending != null) {
+                boolean camera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+                boolean audio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+                java.util.ArrayList<String> grant = new java.util.ArrayList<>();
+                boolean unsupportedResource = false;
+                for (String resource : pending.getResources()) {
+                    if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                        if (camera) grant.add(resource);
+                    } else if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) {
+                        if (audio) grant.add(resource);
+                    } else {
+                        unsupportedResource = true;
+                    }
+                }
+                if (!isTrustedTestagramUrl(pending.getOrigin()) || unsupportedResource || grant.isEmpty()) {
+                    safeDeny(pending);
+                } else {
+                    safeGrant(pending, grant.toArray(new String[0]));
+                }
+            }
+        } else if (requestCode == LOCATION_PERMISSION && geolocationCallback != null) {
+            boolean granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+            geolocationCallback.invoke(geolocationOrigin, granted, false);
+            geolocationCallback = null; geolocationOrigin = null;
+        }
     }
 
     @Override
-    public void onDestroy() {
+    @SuppressWarnings("deprecation")
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == FILE_PICKER && fileCallback != null) {
+            Uri[] results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            fileCallback.onReceiveValue(results);
+            fileCallback = null;
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (pendingMediaPermissionRequest != null) {
+            safeDeny(pendingMediaPermissionRequest);
+            pendingMediaPermissionRequest = null;
+        }
+        if (geolocationCallback != null && geolocationOrigin != null) {
+            geolocationCallback.invoke(geolocationOrigin, false, false);
+            geolocationCallback = null;
+            geolocationOrigin = null;
+        }
+        if (fileCallback != null) {
+            fileCallback.onReceiveValue(null);
+            fileCallback = null;
+        }
+        if (webView != null) {
+            webView.stopLoading();
+            webView.setWebChromeClient(null);
+            webView.setWebViewClient(null);
+            webView.destroy();
+            webView = null;
+        }
         super.onDestroy();
     }
 }
