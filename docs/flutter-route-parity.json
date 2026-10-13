@@ -1,0 +1,1495 @@
+{
+  "schema_version": 2,
+  "source_of_truth": "React Router declarations in src/App.tsx compared with explicit GoRouter path declarations in mobile/lib/app/testagram_app.dart. A native route is not proof of feature parity.",
+  "source_route_declarations": 214,
+  "unique_source_routes": 212,
+  "flutter_native_routes": [
+    "/",
+    "/ad-analytics",
+    "/ad-performance",
+    "/admin",
+    "/admin/ad-config",
+    "/admin/ads",
+    "/admin/ads-management",
+    "/admin/ads-review",
+    "/admin/fraud",
+    "/admin/governance",
+    "/admin/identity-verification",
+    "/admin/overview",
+    "/admin/platform-revenue",
+    "/admin/revenue",
+    "/admin/seo",
+    "/admin/staff-recruitment",
+    "/admin/users",
+    "/admin/verifications",
+    "/ai",
+    "/ai-bot-setup",
+    "/analytics",
+    "/appeals",
+    "/auth",
+    "/blocked",
+    "/bookmarks",
+    "/boost-analytics/:postId",
+    "/boost-create",
+    "/c/:name",
+    "/c/:name/chat",
+    "/c/:name/events",
+    "/c/:name/members",
+    "/c/:name/posts",
+    "/c/:name/shop",
+    "/call/:callId",
+    "/challenge/:id",
+    "/channel/:handle",
+    "/communities",
+    "/create-ad",
+    "/creator-studio",
+    "/creator-studio/:section",
+    "/credits",
+    "/daily-rewards",
+    "/discover",
+    "/discover/fediverse",
+    "/discover/popular",
+    "/discover/suggested",
+    "/explore",
+    "/fediverse",
+    "/fediverse/analytics",
+    "/fediverse/controls",
+    "/fediverse/discover",
+    "/fediverse/feed",
+    "/fediverse/identity",
+    "/fediverse/inbox",
+    "/fediverse/instances",
+    "/fediverse/mastodon",
+    "/fediverse/organic-discovery",
+    "/fediverse/profile",
+    "/fediverse/profile/analytics",
+    "/fediverse/profile/followers",
+    "/fediverse/profile/following",
+    "/fediverse/profile/gifts",
+    "/fediverse/profile/likes",
+    "/fediverse/profile/media",
+    "/fediverse/profile/podcasts",
+    "/fediverse/profile/posts",
+    "/fediverse/profile/replies",
+    "/fediverse/profile/series",
+    "/fediverse/profile/threads",
+    "/fediverse/profile/tips",
+    "/fediverse/profile/videos",
+    "/fediverse/relay",
+    "/fraud-detection",
+    "/hashtag/:tag",
+    "/hashtags",
+    "/help",
+    "/history",
+    "/interests",
+    "/iptv",
+    "/jobs",
+    "/leaderboard",
+    "/leaderboard/challenges",
+    "/leaderboard/creators",
+    "/lists",
+    "/lists/:id",
+    "/marketplace",
+    "/messages",
+    "/monetization",
+    "/my-ads",
+    "/news",
+    "/news/:id",
+    "/notification-preferences",
+    "/notifications",
+    "/orders",
+    "/p/:productId",
+    "/payouts",
+    "/platform-inbox",
+    "/podcasts/analytics",
+    "/podcasts/search",
+    "/policy",
+    "/polls",
+    "/post-analytics",
+    "/post-analytics/:postId",
+    "/post-remote",
+    "/post-remote/likes",
+    "/post-remote/quotes",
+    "/post-remote/replies",
+    "/post-remote/reply/:replyId",
+    "/post-remote/reposts",
+    "/post/:postId",
+    "/post/:postId/likes",
+    "/post/:postId/quote",
+    "/post/:postId/quote-likes",
+    "/post/:postId/quotes",
+    "/post/:postId/replies",
+    "/post/:postId/reply/:replyId",
+    "/post/:postId/reposts",
+    "/premium",
+    "/privacy",
+    "/products",
+    "/profile",
+    "/profile-features",
+    "/profile/:username",
+    "/profile/:username/analytics",
+    "/profile/:username/followers",
+    "/profile/:username/following",
+    "/profile/:username/gifts",
+    "/profile/:username/likes",
+    "/profile/:username/media",
+    "/profile/:username/podcasts",
+    "/profile/:username/posts",
+    "/profile/:username/replies",
+    "/profile/:username/series",
+    "/profile/:username/threads",
+    "/profile/:username/tips",
+    "/profile/:username/videos",
+    "/referral",
+    "/referrals",
+    "/regulator",
+    "/regulator/analytics",
+    "/regulator/announce",
+    "/regulator/audit",
+    "/regulator/employees",
+    "/regulator/features",
+    "/regulator/moderation",
+    "/regulator/platform",
+    "/regulator/reports",
+    "/regulator/wallets",
+    "/revenue-analytics",
+    "/rewards",
+    "/ride",
+    "/scheduled",
+    "/search",
+    "/seller/:username",
+    "/series",
+    "/sessions",
+    "/settings",
+    "/settings/account",
+    "/settings/appearance",
+    "/settings/connections",
+    "/settings/notifications",
+    "/settings/privacy",
+    "/setup",
+    "/shop",
+    "/shorts",
+    "/space-recording/:id",
+    "/space/:id",
+    "/space/:id/recordings",
+    "/spaces",
+    "/spaces/:id",
+    "/sports",
+    "/staff",
+    "/start-stream",
+    "/story-analytics",
+    "/stream/:streamId",
+    "/team-chat",
+    "/terms",
+    "/thread/:id",
+    "/thread/:threadId/likes",
+    "/thread/:threadId/quote-likes/:quoteId",
+    "/thread/:threadId/quotes",
+    "/thread/:threadId/replies",
+    "/thread/:threadId/reply-likes/:replyId",
+    "/thread/:threadId/reposts",
+    "/threads",
+    "/threads/create",
+    "/trending/:topic",
+    "/tv",
+    "/tv-studio",
+    "/tv-studio/:streamId",
+    "/tv-studio/:streamId/guests",
+    "/tv/channels",
+    "/tv/live/:streamId",
+    "/tv/reels",
+    "/verify",
+    "/verify-identity",
+    "/videos",
+    "/videos/watchlater",
+    "/wallet",
+    "/wallet/analytics",
+    "/wallet/converter",
+    "/wallet/history",
+    "/wallet/mpesa",
+    "/wallet/pocket",
+    "/wallet/receive",
+    "/wallet/referrals",
+    "/wallet/reminders",
+    "/wallet/savings",
+    "/wallet/scheduled",
+    "/wallet/security",
+    "/wallet/send",
+    "/wishlist"
+  ],
+  "counts": {
+    "unique_source_routes_including_wildcard": 212,
+    "source_routes_excluding_wildcard": 211,
+    "native_route_matches": 164,
+    "native_shell_routes": 47,
+    "legacy_web_fallbacks": 0
+  },
+  "routes": [
+    {
+      "path": "/",
+      "domain": "general",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/ad-analytics",
+      "domain": "advertising",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/ad-performance",
+      "domain": "advertising",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin",
+      "domain": "administration",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/ads",
+      "domain": "advertising",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/ads-management",
+      "domain": "advertising",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/ads-review",
+      "domain": "advertising",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/admin/fraud",
+      "domain": "administration",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/governance",
+      "domain": "administration",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/identity-verification",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/admin/overview",
+      "domain": "administration",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/platform-revenue",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/admin/revenue",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/admin/seo",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/admin/staff-recruitment",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/admin/users",
+      "domain": "administration",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/admin/verifications",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/ai",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/ai-bot-setup",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/analytics",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/appeals",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/auth",
+      "domain": "authentication",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/blocked",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/bookmarks",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/boost-analytics/:postId",
+      "domain": "advertising",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/boost-create",
+      "domain": "advertising",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/c/:name",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/c/:name/chat",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/c/:name/events",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/c/:name/members",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/c/:name/posts",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/c/:name/shop",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/call/:callId",
+      "domain": "messaging",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/challenge/:id",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/channel/:handle",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/communities",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/create-ad",
+      "domain": "advertising",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/creator-studio",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/creator-studio/analytics",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/creator-studio/earnings",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/creator-studio/overview",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/creator-studio/revenue",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/creator-studio/videos",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/credits",
+      "domain": "commerce",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/daily-rewards",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/discover",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/discover/fediverse",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/discover/popular",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/discover/suggested",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/explore",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/analytics",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/controls",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/discover",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/feed",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/identity",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/inbox",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/mastodon",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/organic-discovery",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/analytics",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/followers",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/following",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/gifts",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/likes",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/media",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/podcasts",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/posts",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/replies",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/series",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/threads",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/tips",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/profile/videos",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fediverse/relay",
+      "domain": "fediverse",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/fraud-detection",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/hashtag/:tag",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/hashtags",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/help",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/history",
+      "domain": "media",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/interests",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/iptv",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/jobs",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/leaderboard",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/leaderboard/challenges",
+      "domain": "creator",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/leaderboard/creators",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/lists",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/lists/:id",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/marketplace",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/messages",
+      "domain": "messaging",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/monetization",
+      "domain": "advertising",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/my-ads",
+      "domain": "advertising",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/news",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/news/:id",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/notification-preferences",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/notifications",
+      "domain": "general",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/orders",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/p/:productId",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/payouts",
+      "domain": "advertising",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/platform-inbox",
+      "domain": "messaging",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/podcasts/analytics",
+      "domain": "creator",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/podcasts/search",
+      "domain": "creator",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/policy",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/polls",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-analytics",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-analytics/:postId",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-remote",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-remote/likes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-remote/quotes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-remote/replies",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-remote/reply/:replyId",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post-remote/reposts",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/likes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/quote",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/quote-likes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/quotes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/replies",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/reply/:replyId",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/post/:postId/reposts",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/premium",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/privacy",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/products",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile-features",
+      "domain": "social",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/profile/:username",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/analytics",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/followers",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/following",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/gifts",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/likes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/media",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/podcasts",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/posts",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/replies",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/series",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/threads",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/tips",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/:username/videos",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/profile/complete",
+      "domain": "authentication",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/referral",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/referrals",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/regulator",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/analytics",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/announce",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/audit",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/employees",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/features",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/moderation",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/platform",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/reports",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/regulator/wallets",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/revenue-analytics",
+      "domain": "advertising",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/rewards",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/ride",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/scheduled",
+      "domain": "general",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/search",
+      "domain": "discovery",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/seller/:username",
+      "domain": "commerce",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/series",
+      "domain": "creator",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/sessions",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/settings",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/settings/account",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/settings/appearance",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/settings/connections",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/settings/notifications",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/settings/privacy",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/shop",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/shorts",
+      "domain": "media",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/space-recording/:id",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/spaces",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/spaces/:id",
+      "domain": "communities",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/sports",
+      "domain": "discovery",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/staff",
+      "domain": "administration",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/start-stream",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/story-analytics",
+      "domain": "media",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/stream/:streamId",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/team-chat",
+      "domain": "messaging",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/terms",
+      "domain": "settings",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:id",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:threadId/likes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:threadId/quote-likes/:quoteId",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:threadId/quotes",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:threadId/replies",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:threadId/reply-likes/:replyId",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/thread/:threadId/reposts",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/threads",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/threads/create",
+      "domain": "social",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/trending/:topic",
+      "domain": "discovery",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/tv",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/tv-studio",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/tv-studio/:streamId",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/tv-studio/:streamId/guests",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/tv/channels",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/tv/live/:streamId",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/tv/reels",
+      "domain": "tv_and_live",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/verify",
+      "domain": "authentication",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/verify-identity",
+      "domain": "authentication",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/videos",
+      "domain": "media",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/videos/watchlater",
+      "domain": "media",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/analytics",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/converter",
+      "domain": "commerce",
+      "status": "native_shell",
+      "note": "A native Flutter migration surface is registered. The dedicated feature workflow, backend integration, permissions, failure recovery, and web/Android tests remain unaccepted."
+    },
+    {
+      "path": "/wallet/history",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/mpesa",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/pocket",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/receive",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/referrals",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/reminders",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/savings",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/scheduled",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/security",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wallet/send",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    },
+    {
+      "path": "/wishlist",
+      "domain": "commerce",
+      "status": "native_partial",
+      "note": "An explicit Flutter route exists. Feature-level, backend, permission, failure-recovery, web and Android parity still require acceptance."
+    }
+  ]
+}

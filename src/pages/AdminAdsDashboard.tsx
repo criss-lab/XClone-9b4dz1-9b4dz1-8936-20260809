@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { TopBar } from '@/components/layout/TopBar';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
+import { useGovernance } from '@/lib/governance';
 import {
   CheckCircle2, XCircle, Clock, Eye, MousePointer, DollarSign,
   Loader2, RefreshCw, BadgeCheck, Megaphone, AlertTriangle,
@@ -28,6 +29,7 @@ const STATUS_CONFIG: Record<AdStatus, { label: string; color: string; icon: Reac
 
 export default function AdminAdsDashboard() {
   const { user } = useAuth();
+  const { governance, loading: governanceLoading } = useGovernance();
   useSEO({ noindex: true, title: 'Admin — Ads Dashboard', url: '/admin/ads' });
   const navigate = useNavigate();
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
@@ -42,8 +44,9 @@ export default function AdminAdsDashboard() {
 
   useEffect(() => {
     if (!user) { navigate('/auth'); return; }
-    checkAdmin();
-  }, [user]);
+    if (governanceLoading) return;
+    void checkAdmin();
+  }, [user?.id, governanceLoading, governance.is_owner]);
 
   const checkAdmin = async () => {
     if (!user) return;
@@ -97,11 +100,8 @@ export default function AdminAdsDashboard() {
       toast.success('Ad approved and activated');
       const ad = ads.find(a => a.id === adId);
       if (ad?.user_id) {
-        await supabase.from('notifications').insert({
-          user_id: ad.user_id,
-          type: 'ad_active',
-          from_user_id: user!.id,
-        }).catch(() => {});
+        await supabase.from('notifications').insert({ recipient_id: ad.user_id, kind: 'ad_active', actor_id: user!.id,
+         }).catch(() => {});
         // platform_inbox message
         await supabase.from('platform_inbox').insert({
           user_id: ad.user_id,
@@ -133,11 +133,8 @@ export default function AdminAdsDashboard() {
       toast.success('Ad rejected');
       const ad = ads.find(a => a.id === adId);
       if (ad?.user_id) {
-        await supabase.from('notifications').insert({
-          user_id: ad.user_id,
-          type: 'ad_rejected',
-          from_user_id: user!.id,
-        }).catch(() => {});
+        await supabase.from('notifications').insert({ recipient_id: ad.user_id, kind: 'ad_rejected', actor_id: user!.id,
+         }).catch(() => {});
         // platform_inbox message with rejection reason
         await supabase.from('platform_inbox').insert({
           user_id: ad.user_id,

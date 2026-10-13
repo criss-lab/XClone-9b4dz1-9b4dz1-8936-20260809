@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useSEO } from '@/hooks/useSEO';
 import { TopBar } from '@/components/layout/TopBar';
+import { SettingsMiniSidebar } from '@/components/layout/SettingsMiniSidebar';
 import { useAuth } from '@/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -14,11 +15,10 @@ import {
   Copy, AtSign, Globe, UserX, BadgeCheck, Crown,
 } from 'lucide-react';
 import { useNotificationSound } from '@/hooks/useNotificationSound';
-import { applyTheme, getStoredThemeChoice } from '@/components/layout/ThemeToggle';
+import { applyAppearance, applyTheme, getStoredAppearance, THEME_PRESETS, type AppearanceSettings, type ThemeChoice, type ThemePresetId } from '@/theme/themes';
 import { authService } from '@/lib/auth';
 import { toast } from 'sonner';
 
-type ThemeChoice = 'light' | 'dark' | 'system';
 
 // esbuild guard: module-level locale constants
 const LOCALE_KEY = 'ts-locale';
@@ -45,6 +45,7 @@ function isDarkScheduleActive(): boolean {
 const THEME_IDS: ThemeChoice[] = ['light', 'dark', 'system'];
 const THEME_LABELS = ['Light', 'Dark', 'System'];
 const THEME_CLS = ['text-yellow-500', 'text-slate-400', 'text-blue-400'];
+const RADIUS_OPTIONS: NonNullable<AppearanceSettings['radius']>[] = ['compact', 'rounded', 'pill'];
 
 // esbuild guard: no explicit complex union type annotation on module-level array
 const SOUND_PREVIEW_ITEMS = [
@@ -64,13 +65,17 @@ function ThemeIcon({ id, cls, active }: { id: ThemeChoice; cls: string; active: 
   return <Monitor className={iconCls} />;
 }
 
-export default function SettingsPage() {
-  useSEO({ noindex: true, title: 'Settings', url: '/settings' });
+export default function SettingsPage({ section = 'all' }: { section?: 'all' | 'account' | 'appearance' | 'connections' | 'notifications' | 'privacy' }) {
+  useSEO({ noindex: true, title: section === 'all' ? 'Settings' : `Settings · ${section}`, url: section === 'all' ? '/settings' : `/settings/${section}` });
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState(true);
   const [privateAccount, setPrivateAccount] = useState(false);
-  const [themeChoice, setThemeChoice] = useState(getStoredThemeChoice);
+  const [discoverableByUsername, setDiscoverableByUsername] = useState(true);
+  const [savingPrivacyDiscovery, setSavingPrivacyDiscovery] = useState(false);
+  const [appearance, setAppearance] = useState<AppearanceSettings>(() => getStoredAppearance());
+  const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => getStoredAppearance().mode);
+  const [savingAppearance, setSavingAppearance] = useState(false);
   // 2FA toggle
   const [twoFaEnabled, setTwoFaEnabled] = useState(() => localStorage.getItem(TWO_FA_KEY) !== 'false');
   // Dark mode schedule
@@ -114,7 +119,7 @@ export default function SettingsPage() {
     localStorage.setItem(DARK_SCHEDULE_KEY, v ? 'true' : 'false');
     if (!v) {
       // Restore theme choice
-      applyTheme(themeChoice);
+      applyAppearance(appearance);
     }
     toast.success(v ? 'Auto Dark Mode enabled (20:00 – 07:00)' : 'Auto Dark Mode disabled');
   };
@@ -131,10 +136,59 @@ export default function SettingsPage() {
     if (v) playSound('dm');
   };
 
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      const { data } = await (supabase.from('profiles') as any)
+        .select('appearance_settings')
+        .eq('id', user.id)
+        .maybeSingle();
+      const remote = data?.appearance_settings;
+      if (!remote || typeof remote !== 'object') return;
+      const merged: AppearanceSettings = { ...getStoredAppearance(), ...remote };
+      setAppearance(merged);
+      setThemeChoice(merged.mode);
+      applyAppearance(merged);
+    })();
+  }, [user?.id]);
+
+  // Load profile privacy/discovery settings
+  useEffect(() => {
+    if (!user) return;
+    supabase.from('profiles').select('protected_account, discoverable_by_username').eq('id', user.id).single()
+      .then(({ data }) => {
+        if (!data) return;
+        setPrivateAccount(!!data.protected_account);
+        setDiscoverableByUsername(data.discoverable_by_username !== false);
+      });
+  }, [user?.id]);
+
+  const savePrivacyDiscovery = async (patch: { protected_account?: boolean; discoverable_by_username?: boolean }) => {
+    if (!user) return;
+    setSavingPrivacyDiscovery(true);
+    const { error } = await supabase.from('profiles').update(patch).eq('id', user.id);
+    setSavingPrivacyDiscovery(false);
+    if (error) {
+      toast.error(error.message || 'Failed to update privacy settings');
+      return;
+    }
+    toast.success('Privacy settings updated');
+  };
+
+  const togglePrivateAccount = (value: boolean) => {
+    setPrivateAccount(value);
+    void savePrivacyDiscovery({ protected_account: value });
+  };
+
+  const toggleUsernameDiscovery = (value: boolean) => {
+    setDiscoverableByUsername(value);
+    void savePrivacyDiscovery({ discoverable_by_username: value });
+  };
+
   // Verification + creator tier
   useEffect(() => {
     if (!user) return;
-    supabase.from('user_profiles').select('verified, creator_tier').eq('id', user.id).single()
+    supabase.from('profiles').select('verified, creator_tier').eq('id', user.id).single()
       .then(({ data }) => {
         if (!data) return;
         setVerifiedStatus(!!(data as any).verified);
@@ -152,7 +206,7 @@ export default function SettingsPage() {
   // Load connected accounts
   useEffect(() => {
     if (!user) return;
-    supabase.from('user_profiles').select('twitter_handle, instagram_handle, linkedin_url').eq('id', user.id).single()
+    supabase.from('profiles').select('twitter_handle, instagram_handle, linkedin_url').eq('id', user.id).single()
       .then(({ data }) => {
         if (!data) return;
         setTwitterHandle((data as any).twitter_handle ?? '');
@@ -175,19 +229,12 @@ export default function SettingsPage() {
     if (!darkScheduleEnabled) return;
     const applySchedule = () => {
       const shouldBeDark = isDarkScheduleActive();
-      const html = document.documentElement;
-      if (shouldBeDark) {
-        html.classList.add('dark');
-        html.classList.remove('light');
-      } else {
-        html.classList.remove('dark');
-        html.classList.add('light');
-      }
+      applyAppearance({ ...appearance, mode: shouldBeDark ? 'dark' : 'light' });
     };
     applySchedule();
     const iv = setInterval(applySchedule, 60_000);
     return () => clearInterval(iv);
-  }, [darkScheduleEnabled]);
+  }, [darkScheduleEnabled, appearance]);
 
   if (!user) {
     navigate('/auth');
@@ -217,7 +264,7 @@ export default function SettingsPage() {
     if (!user) return;
     setExporting(true);
     const [profileRes, postsRes, txRes] = await Promise.all([
-      supabase.from('user_profiles').select('*').eq('id', user.id).single(),
+      supabase.from('profiles').select('*').eq('id', user.id).single(),
       supabase.from('posts').select('id, content, created_at, likes_count, views_count').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100),
       supabase.from('wallet_transactions').select('type, amount, status, description, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(200),
     ]);
@@ -241,7 +288,7 @@ export default function SettingsPage() {
   const handleDeleteAccount = async () => {
     if (!user || deleteInput !== user.username) return;
     setDeleting(true);
-    await supabase.from('user_profiles').delete().eq('id', user.id);
+    await supabase.from('profiles').delete().eq('id', user.id);
     await authService.signOut();
     logout();
     navigate('/');
@@ -253,7 +300,7 @@ export default function SettingsPage() {
     const cleanTwitter = twitterHandle.trim().replace(/^@/, '') || null;
     const cleanInsta = instagramHandle.trim().replace(/^@/, '') || null;
     const cleanLinkedin = linkedinUrl.trim() || null;
-    const { error } = await supabase.from('user_profiles').update({
+    const { error } = await supabase.from('profiles').update({
       twitter_handle: cleanTwitter,
       instagram_handle: cleanInsta,
       linkedin_url: cleanLinkedin,
@@ -264,12 +311,37 @@ export default function SettingsPage() {
     setShowConnectedForm(false);
   };
 
+  const persistAppearance = async (next: AppearanceSettings) => {
+    setAppearance(next);
+    setThemeChoice(next.mode);
+    applyAppearance(next);
+    if (!user) return;
+    setSavingAppearance(true);
+    const { error } = await (supabase.from('profiles') as any)
+      .update({ appearance_settings: next })
+      .eq('id', user.id);
+    setSavingAppearance(false);
+    if (error) toast.error(error.message || 'Theme saved locally, but cloud sync failed');
+  };
+
   const selectTheme = (choice: ThemeChoice) => {
-    setThemeChoice(choice);
-    applyTheme(choice);
+    void persistAppearance({ ...appearance, mode: choice });
+  };
+
+  const selectPreset = (preset: ThemePresetId) => {
+    void persistAppearance({ ...appearance, preset, accent: undefined, background: undefined });
+  };
+
+  const updateAccent = (accent: string) => {
+    void persistAppearance({ ...appearance, accent: accent || undefined });
+  };
+
+  const updateRadius = (radius: AppearanceSettings['radius']) => {
+    void persistAppearance({ ...appearance, radius });
   };
 
   const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const activePreset = THEME_PRESETS.find(t => t.id === appearance.preset) ?? THEME_PRESETS[0];
   // esbuild guard: pre-compute referral link before JSX
   const referralLink = `${window.location.origin}/?ref=${user.username}`;
   const referralCountLabel = referralCount > 0 ? `${referralCount} referral${referralCount !== 1 ? 's' : ''}` : '';
@@ -278,7 +350,8 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen bg-background pb-20 md:pb-0">
       <TopBar title="Settings" showBack />
-      <div className="divide-y divide-border">
+      <SettingsMiniSidebar active={section} />
+      <div className="mx-auto w-full max-w-4xl divide-y divide-border">
 
         {/* ── Account ── */}
         <div className="p-4">
@@ -313,7 +386,21 @@ export default function SettingsPage() {
                   <p className="text-xs text-muted-foreground">Only followers see your posts</p>
                 </div>
               </div>
-              <Switch checked={privateAccount} onCheckedChange={setPrivateAccount} />
+              <Switch checked={privateAccount} onCheckedChange={togglePrivateAccount} disabled={savingPrivacyDiscovery} />
+            </div>
+
+            {/* Public discovery */}
+            <div className="flex items-center justify-between p-3 hover:bg-muted/50 rounded-xl transition-colors">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center">
+                  <Globe className="w-4 h-4 text-blue-500" />
+                </div>
+                <div>
+                  <p className="font-semibold text-sm">Discoverable by Username</p>
+                  <p className="text-xs text-muted-foreground">Let people find your profile by @username and display name</p>
+                </div>
+              </div>
+              <Switch checked={discoverableByUsername} onCheckedChange={toggleUsernameDiscovery} disabled={savingPrivacyDiscovery} />
             </div>
 
             {/* ── Verification Status ── */}
@@ -525,8 +612,12 @@ export default function SettingsPage() {
 
         {/* ── Appearance ── */}
         <div className="p-4">
-          <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Appearance</h2>
-          <div className="flex items-center gap-3 p-3 rounded-xl mb-2">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Appearance</h2>
+            {savingAppearance && <span className="text-[10px] text-muted-foreground">Saving…</span>}
+          </div>
+
+          <div className="flex items-center gap-3 p-3 rounded-xl mb-3 bg-muted/20 border border-border">
             <div className="w-9 h-9 rounded-full bg-purple-500/10 flex items-center justify-center shrink-0">
               <Palette className="w-4 h-4 text-purple-500" />
             </div>
@@ -534,13 +625,108 @@ export default function SettingsPage() {
               <p className="font-semibold text-sm">Theme</p>
               <p className="text-xs text-muted-foreground">
                 {themeChoice === 'system'
-                  ? `System (${effectiveTheme} mode)`
-                  : `${themeChoice.charAt(0).toUpperCase() + themeChoice.slice(1)} mode active`}
+                  ? `System (${effectiveTheme} mode) · ${activePreset.name}`
+                  : `${themeChoice.charAt(0).toUpperCase() + themeChoice.slice(1)} · ${activePreset.name}`}
               </p>
             </div>
           </div>
-          {/* Auto Dark Mode schedule */}
-          <div className="flex items-center justify-between p-3 hover:bg-muted/50 rounded-xl transition-colors">
+
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {THEME_IDS.map((id, i) => {
+              const label = THEME_LABELS[i];
+              const cls = THEME_CLS[i];
+              const active = themeChoice === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => selectTheme(id)}
+                  className={`relative flex flex-col items-center gap-2 p-3 border-2 rounded-2xl transition-all ${
+                    active ? 'border-primary bg-primary/8 shadow-sm' : 'border-border hover:border-muted-foreground/30 hover:bg-muted/40'
+                  }`}
+                >
+                  <ThemeIcon id={id} cls={cls} active={active} />
+                  <span className={`font-semibold text-xs ${active ? 'text-primary' : 'text-foreground'}`}>{label}</span>
+                  {active && <span className="absolute top-2 right-2 w-4 h-4 bg-primary rounded-full flex items-center justify-center"><Check className="w-2.5 h-2.5 text-primary-foreground" /></span>}
+                  {id === 'system' && <span className="text-[9px] text-muted-foreground leading-none">{effectiveTheme === 'dark' ? '(dark)' : '(light)'}</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="text-xs font-semibold text-muted-foreground mb-2">Choose a style</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+            {THEME_PRESETS.map(preset => {
+              const active = appearance.preset === preset.id;
+              const previewMode = effectiveTheme === 'dark' ? 'dark' : 'light';
+              const preview = preset[previewMode];
+              return (
+                <button
+                  key={preset.id}
+                  onClick={() => selectPreset(preset.id)}
+                  className={`relative overflow-hidden text-left rounded-2xl border-2 p-2 transition-all ${active ? 'border-primary shadow-sm' : 'border-border hover:border-primary/30'}`}
+                >
+                  <div
+                    className="h-14 rounded-xl border flex items-end justify-between p-2"
+                    style={{ background: `hsl(${preview['--background']})`, borderColor: `hsl(${preview['--border']})` }}
+                  >
+                    <span className="w-8 h-2 rounded-full" style={{ background: `hsl(${preview['--primary']})` }} />
+                    <span className="w-5 h-5 rounded-full" style={{ background: `hsl(${preview['--accent']})` }} />
+                  </div>
+                  <p className="text-xs font-bold mt-2">{preset.name}</p>
+                  <p className="text-[10px] text-muted-foreground">{preset.description}</p>
+                  {active && <Check className="absolute top-3 right-3 w-3.5 h-3.5 text-primary" />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="p-3 rounded-2xl bg-muted/20 border border-border space-y-3">
+            <p className="text-xs font-semibold">Customize</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-background border border-border">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Accent</p>
+                  <p className="text-[10px] text-muted-foreground truncate">Buttons & highlights</p>
+                </div>
+                <input
+                  type="color"
+                  value={appearance.accent || '#16a34a'}
+                  onChange={e => updateAccent(e.target.value)}
+                  className="w-9 h-9 rounded-lg border border-border bg-background cursor-pointer p-1 shrink-0"
+                  aria-label="Choose accent color"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-background border border-border">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Background</p>
+                  <p className="text-[10px] text-muted-foreground truncate">Main app surface</p>
+                </div>
+                <input
+                  type="color"
+                  value={appearance.background || (effectiveTheme === 'dark' ? '#000000' : '#ffffff')}
+                  onChange={e => void persistAppearance({ ...appearance, background: e.target.value })}
+                  className="w-9 h-9 rounded-lg border border-border bg-background cursor-pointer p-1 shrink-0"
+                  aria-label="Choose background color"
+                />
+              </div>
+            </div>
+            <div>
+              <p className="text-sm font-medium mb-2">Corner style</p>
+              <div className="grid grid-cols-3 gap-2">
+                {RADIUS_OPTIONS.map(radius => (
+                  <button
+                    key={radius}
+                    onClick={() => updateRadius(radius)}
+                    className={`py-2 rounded-xl border text-xs font-semibold capitalize ${appearance.radius === radius ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}`}
+                  >
+                    {radius}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between p-3 mt-3 hover:bg-muted/50 rounded-xl transition-colors">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-slate-500/10 flex items-center justify-center">
                 <Moon className="w-4 h-4 text-slate-500" />
@@ -553,39 +739,6 @@ export default function SettingsPage() {
               </div>
             </div>
             <Switch checked={darkScheduleEnabled} onCheckedChange={toggleDarkSchedule} />
-          </div>
-          <div className="grid grid-cols-3 gap-2 px-3 pb-1">
-            {THEME_IDS.map((id, i) => {
-              const label = THEME_LABELS[i];
-              const cls   = THEME_CLS[i];
-              const active = themeChoice === id;
-              return (
-                <button
-                  key={id}
-                  onClick={() => selectTheme(id)}
-                  className={`relative flex flex-col items-center gap-2 p-3.5 border-2 rounded-2xl transition-all ${
-                    active
-                      ? 'border-primary bg-primary/8 shadow-sm'
-                      : 'border-border hover:border-muted-foreground/30 hover:bg-muted/40'
-                  }`}
-                >
-                  <ThemeIcon id={id} cls={cls} active={active} />
-                  <span className={`font-semibold text-xs ${active ? 'text-primary' : 'text-foreground'}`}>
-                    {label}
-                  </span>
-                  {active && (
-                    <span className="absolute top-2 right-2 w-4 h-4 bg-primary rounded-full flex items-center justify-center">
-                      <Check className="w-2.5 h-2.5 text-primary-foreground" />
-                    </span>
-                  )}
-                  {id === 'system' && (
-                    <span className="text-[9px] text-muted-foreground leading-none">
-                      {effectiveTheme === 'dark' ? '(dark)' : '(light)'}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
           </div>
         </div>
 
@@ -787,7 +940,7 @@ export default function SettingsPage() {
               {SOUND_PREVIEW_ITEMS.map(({ type, label, emoji, desc }) => (
                 <button
                   key={type}
-                  onClick={() => playSound(type)}
+                  onClick={() => playSound(type as Parameters<typeof playSound>[0])}
                   className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-background/70 active:scale-[0.98] transition-all group"
                 >
                   <div className="flex items-center gap-3">
