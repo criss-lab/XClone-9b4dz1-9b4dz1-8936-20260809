@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { formatNumber } from '@/lib/utils';
 import { FunctionsHttpError } from '@supabase/supabase-js';
+import { PayPalTopUp } from '@/components/features/PayPalTopUp';
 
 const sonnerToast = toast;
 const USD_TO_KES = 130;
@@ -42,7 +43,7 @@ function MpesaStatusBadge({ liveStatus }: { liveStatus: 'pending' | 'completed' 
 
 export function WalletDashboard() {
   const { user } = useAuth();
-  const { wallet, loading: walletLoading, fetchWallet, updatePaymentMethods } = useWallet();
+  const { wallet, loading: walletLoading, fetchWallet, updatePaymentMethods, phoneVerified, phoneIdentity } = useWallet();
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -102,11 +103,9 @@ export function WalletDashboard() {
   }, [wallet]);
 
   useEffect(() => {
-    if (mpesaPhone) {
-      setDepositPhone(mpesaPhone);
-      setWithdrawPhone(mpesaPhone);
-    }
-  }, [mpesaPhone]);
+    if (mpesaPhone) setDepositPhone(mpesaPhone);
+    if (phoneVerified && phoneIdentity?.phone_e164) setWithdrawPhone(phoneIdentity.phone_e164);
+  }, [mpesaPhone, phoneVerified, phoneIdentity?.phone_e164]);
 
   // ── Poll pending M-Pesa transactions for live status ─────────────
   const pollMpesaStatuses = async (txList: any[]) => {
@@ -195,9 +194,9 @@ export function WalletDashboard() {
           if (statusData?.status === 'completed') {
             clearInterval(interval);
             setDepositPolling(false);
-            // Credit wallet via RPC (also logs transaction)
-            await supabase.rpc('add_to_wallet', { p_user_id: user!.id, p_amount: parseFloat(depositAmount) });
-            toast.success(`Deposit of KES ${kesAmount.toLocaleString()} confirmed! +$${parseFloat(depositAmount).toFixed(2)} added to wallet.`);
+            // The M-Pesa callback/status pipeline already settles the canonical wallet
+            // transaction atomically. Never credit the wallet a second time from the browser.
+            toast.success(`Deposit of KES ${kesAmount.toLocaleString()} confirmed and credited.`);
             setShowDeposit(false);
             setDepositAmount('');
             fetchWallet();
@@ -220,6 +219,7 @@ export function WalletDashboard() {
   const handleMpesaWithdraw = async () => {
     if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) { toast.error('Enter a valid amount'); return; }
     if (parseFloat(withdrawAmount) > (wallet?.balance || 0)) { toast.error('Insufficient balance'); return; }
+    if (!phoneVerified || !phoneIdentity?.phone_e164) { toast.error('Verify your M-Pesa number in Wallet Security before withdrawing'); return; }
     if (withdrawPhone.replace(/\D/g, '').length < 9) { toast.error('Enter a valid M-Pesa phone number'); return; }
 
     setProcessingWithdraw(true);
@@ -235,18 +235,9 @@ export function WalletDashboard() {
         throw new Error(msg);
       }
 
-      if (wallet) {
-        await supabase.from('wallet_transactions').insert({
-          wallet_id: wallet.id,
-          user_id: user!.id,
-          type: 'withdrawal',
-          amount: parseFloat(withdrawAmount),
-          payment_method: 'mpesa',
-          status: 'pending',
-          description: `M-Pesa withdrawal to ${withdrawPhone} — KES ${kesAmount.toLocaleString()}`,
-        });
-      }
-
+      // mpesa-b2c-payout reserves/debits the wallet and creates the pending
+      // canonical transaction before contacting Safaricom. Do not insert a
+      // second browser-side transaction here.
       toast.success('Withdrawal initiated! Funds will arrive shortly.');
       setShowWithdraw(false);
       setWithdrawAmount('');
@@ -364,41 +355,21 @@ export function WalletDashboard() {
         </div>
       )}
 
-      {/* ── Paybill Deposit ── */}
-      {showDeposit && (
-        <div className="bg-card border-2 border-green-600/10 rounded-2xl p-5 space-y-3">
-          <div className="flex items-center gap-2 mb-1">
-            <Building2 className="w-5 h-5 text-green-700" />
-            <h4 className="font-semibold text-sm">Or Deposit via Paybill</h4>
-          </div>
-          <div className="bg-green-600/5 border border-green-600/20 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Paybill Number</span>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-lg tracking-widest">174379</span>
-                <button onClick={() => { navigator.clipboard.writeText('174379'); sonnerToast.success('Copied!'); }} className="p-1 hover:bg-muted rounded">
-                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                </button>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Account Number</span>
-              <div className="flex items-center gap-2">
-                <span className="font-bold">{user?.id?.slice(0, 8).toUpperCase() || 'WALLET'}</span>
-                <button onClick={() => { navigator.clipboard.writeText(user?.id?.slice(0, 8).toUpperCase() || 'WALLET'); sonnerToast.success('Copied!'); }} className="p-1 hover:bg-muted rounded">
-                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                </button>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-start gap-2 text-xs text-muted-foreground">
-            <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            <span>Go to M-Pesa → Lipa na M-Pesa → Pay Bill → enter the numbers above. Funds credit within 5 minutes.</span>
+      {/* ── Manual Paybill is intentionally omitted until a production Paybill is configured. */}
+      {/* Manual Paybill is intentionally unavailable until the production Paybill is configured. */}
+      <div className="bg-card border border-border rounded-2xl p-5">
+        <div className="flex items-start gap-3">
+          <Building2 className="w-5 h-5 text-muted-foreground mt-0.5" />
+          <div>
+            <h4 className="font-semibold text-sm">Manual Paybill</h4>
+            <p className="text-xs text-muted-foreground mt-1">Manual Paybill details are hidden until Testagram has a verified production Paybill. Use the secure M-Pesa STK Push above for now.</p>
           </div>
         </div>
-      )}
+      </div>
 
       {/* ── Withdraw Form ── */}
+      <PayPalTopUp />
+
       {showWithdraw && (
         <div className="bg-card border-2 border-orange-500/20 rounded-2xl p-6 space-y-4">
           <div className="flex items-center gap-2 mb-2">
@@ -420,9 +391,9 @@ export function WalletDashboard() {
               )}
             </div>
             <div>
-              <label className="text-sm font-medium mb-1 block">M-Pesa Phone Number</label>
-              <Input type="tel" placeholder="0712 345 678" value={withdrawPhone}
-                onChange={(e) => setWithdrawPhone(e.target.value)} className="h-12" />
+              <label className="text-sm font-medium mb-1 block">Verified M-Pesa destination</label>
+              <Input type="tel" value={withdrawPhone} readOnly className="h-12 bg-muted/50" />
+              <p className={`text-xs mt-1 ${phoneVerified ? 'text-green-600' : 'text-orange-600'}`}>{phoneVerified ? '✓ Verified wallet payout destination' : 'Verify this number in Wallet Security before withdrawing.'}</p>
             </div>
           </div>
           <div className="bg-orange-500/5 border border-orange-500/20 rounded-lg p-3 text-xs text-muted-foreground">
@@ -432,7 +403,7 @@ export function WalletDashboard() {
           <div className="flex gap-3">
             <Button variant="outline" className="flex-1" onClick={() => setShowWithdraw(false)}>Cancel</Button>
             <Button className="flex-1 bg-orange-500 hover:bg-orange-600" onClick={handleMpesaWithdraw}
-              disabled={processingWithdraw || !withdrawAmount || parseFloat(withdrawAmount) > wallet.balance || !withdrawPhone}>
+              disabled={processingWithdraw || !withdrawAmount || parseFloat(withdrawAmount) > wallet.balance || !phoneVerified || !withdrawPhone}>
               {processingWithdraw ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowUpRight className="w-4 h-4 mr-2" />}
               Withdraw via M-Pesa
             </Button>

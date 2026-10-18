@@ -1,10 +1,10 @@
-import { useState } from 'react';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Menu, Home, Hash, Bell, Mail, Radio, Sparkles, Bookmark, List, History,
   Briefcase, BarChart3, DollarSign, ShoppingBag, Calendar, Crown, LogOut,
   Settings, HelpCircle, User, FileText, Globe, Trophy, Flame, UserSearch,
-  Gift, Wallet, Users, Megaphone, BadgeCheck, UserPlus, Shield, X,
+  Gift, Wallet, Users, Megaphone, BadgeCheck, UserPlus, Shield, X, Tv,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -18,6 +18,23 @@ export function MobileSidebarDrawer() {
   const location = useLocation();
   const { user, logout } = useAuth();
 
+  // Use a deterministic mobile drawer instead of a dialog animation layer.
+  // This avoids Radix overlay/content race conditions that can leave a black
+  // backdrop mounted while the drawer itself is visually hidden.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
   // ── Primary nav items (large bold text — X.com style) ───────────────────
   const primaryItems = [
     { icon: User,       label: 'Profile',            path: user ? `/profile/${user.username}` : '/auth', requireAuth: true },
@@ -25,6 +42,7 @@ export function MobileSidebarDrawer() {
     { icon: Crown,      label: 'Premium',             path: '/premium',         requireAuth: false },
     { icon: List,       label: 'Lists',               path: '/lists',           requireAuth: true },
     { icon: Users,      label: 'Communities',         path: '/communities',     requireAuth: false },
+    { icon: Tv,         label: 'World TV',             path: '/iptv',             requireAuth: false },
     { icon: Bookmark,   label: 'Bookmarks',           path: '/bookmarks',       requireAuth: true },
     { icon: Briefcase,  label: 'Creator Studio',      path: '/creator-studio',  requireAuth: true },
     { icon: Megaphone,  label: 'Ads',                 path: '/my-ads',          requireAuth: true },
@@ -50,9 +68,18 @@ export function MobileSidebarDrawer() {
   ];
 
   const goTo = (path: string, requireAuth?: boolean) => {
-    if (requireAuth && !user) navigate('/auth');
-    else navigate(path);
+    // Close the modal first so Radix can remove its focus trap/backdrop
+    // before React Router swaps the page underneath it.
     setOpen(false);
+    window.setTimeout(() => {
+      if (requireAuth && !user) navigate('/auth');
+      else navigate(path);
+    }, 0);
+  };
+
+  const closeAnd = (action: () => void) => {
+    setOpen(false);
+    window.setTimeout(action, 0);
   };
 
   const handleLogout = async () => {
@@ -63,14 +90,34 @@ export function MobileSidebarDrawer() {
   };
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
-        <Button variant="ghost" size="icon" className="lg:hidden">
-          <Menu className="w-6 h-6" />
-        </Button>
-      </SheetTrigger>
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="lg:hidden tg-touch-control"
+        aria-label="Open navigation menu"
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
+      >
+        <Menu className="w-6 h-6" />
+      </Button>
 
-      <SheetContent side="left" className="p-0 w-[300px] overflow-y-auto bg-background flex flex-col">
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 z-[2147483000] lg:hidden"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setOpen(false);
+          }}
+        >
+          <div className="absolute inset-0 bg-black/60" aria-hidden="true" />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Testagram navigation"
+            className="tg-drawer-surface fixed inset-y-0 left-0 z-[2147483001] flex w-[min(300px,85vw)] flex-col overflow-hidden bg-background shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
         {/* ── User card ─────────────────────────────────────────────────────── */}
         {user ? (
           <div className="p-4 border-b border-border">
@@ -158,7 +205,7 @@ export function MobileSidebarDrawer() {
               <h3 className="font-bold text-sm mb-0.5">Upgrade to Premium</h3>
               <p className="text-xs text-muted-foreground mb-3">Get verified and unlock exclusive features</p>
               <Button
-                onClick={() => { navigate('/premium'); setOpen(false); }}
+                onClick={() => closeAnd(() => navigate('/premium'))}
                 size="sm"
                 className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
               >
@@ -179,12 +226,16 @@ export function MobileSidebarDrawer() {
               <span>Log out</span>
             </button>
           ) : (
-            <Button onClick={() => { navigate('/auth'); setOpen(false); }} className="w-full rounded-full font-semibold">
+            <Button onClick={() => closeAnd(() => navigate('/auth'))} className="w-full rounded-full font-semibold">
               Sign in
             </Button>
           )}
         </div>
-      </SheetContent>
-    </Sheet>
+          
+          </aside>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
