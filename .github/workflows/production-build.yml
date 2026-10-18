@@ -1,0 +1,48 @@
+name: Production Build Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: production-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Data-plane safety gate
+        run: node scripts/verify-data-plane.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Production build
+        env:
+          VITE_TESTAGRAM_CDN_ENABLED: "true"
+          VITE_TESTAGRAM_CDN_URL: "https://media.testagram.site"
+        run: npm run build
+
+      - name: Test embedded Testagram CDN
+        working-directory: services/testagram-edge
+        run: |
+          go version
+          go test ./...
+          go vet ./...
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./cmd/edge
