@@ -107,7 +107,7 @@ export function MonetizationDashboard() {
     try {
       const [monRes, profileRes, earningsRes, subsRes, tipsRes, videosRes, walletRes, dailyRes, postCountRes, videoCountRes, rateRes] = await Promise.all([
         supabase.from('user_monetization').select('*').eq('user_id', user.id).maybeSingle(),
-        supabase.from('user_profiles').select('subscriber_count, followers_count, is_creator, can_monetize').eq('id', user.id).single(),
+        supabase.from('profiles').select('subscriber_count, follower_count, is_creator, can_monetize').eq('id', user.id).single(),
         supabase.from('creator_earnings').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
         supabase.from('creator_subscriptions').select('*').eq('creator_id', user.id).eq('status', 'active'),
         supabase.from('tips').select('*').eq('to_user_id', user.id),
@@ -215,7 +215,7 @@ export function MonetizationDashboard() {
 
   const enableMonetization = async () => {
     if (!user) return;
-    const subscriberCount = userProfile?.subscriber_count || userProfile?.followers_count || 0;
+    const subscriberCount = userProfile?.subscriber_count || userProfile?.follower_count || 0;
     if (subscriberCount < MON_MIN_FOLLOWERS) {
       toast.error(`You need ${MON_MIN_FOLLOWERS.toLocaleString()} followers to monetize`); return;
     }
@@ -228,7 +228,7 @@ export function MonetizationDashboard() {
     try {
       await supabase.from('user_monetization')
         .upsert({ user_id: user.id, is_monetized: true, eligibility_status: 'approved' }, { onConflict: 'user_id' });
-      await supabase.from('user_profiles')
+      await supabase.from('profiles')
         .update({ is_creator: true, can_monetize: true, creator_tier: 'basic' }).eq('id', user.id);
       toast.success('Monetization enabled! Start earning from your content.');
       fetchAll();
@@ -239,32 +239,22 @@ export function MonetizationDashboard() {
     if (!user) return;
     setClaimingReward(true);
     try {
-      const now = new Date();
-      const lastClaimed = dailyReward?.last_claimed_at ? new Date(dailyReward.last_claimed_at) : null;
-      if (lastClaimed && now.toDateString() === lastClaimed.toDateString()) {
-        toast.info('Daily reward already claimed! Come back tomorrow.'); return;
+      const { data, error } = await supabase.rpc('claim_daily_reward');
+      if (error) {
+        if (error.message?.includes('DAILY_REWARD_ALREADY_CLAIMED')) {
+          toast.info('Daily reward already claimed! Come back tomorrow.');
+          return;
+        }
+        throw error;
       }
-      const streak = dailyReward ? Math.min(dailyReward.streak_day + 1, 7) : 1;
-      const creditsEarned = streak * 10;
-
-      await supabase.from('daily_rewards').upsert({
-        user_id: user.id, streak_day: streak, credits_earned: creditsEarned,
-        last_claimed_at: now.toISOString(),
-      }, { onConflict: 'user_id' });
-      await supabase.from('user_wallets').upsert({
-        user_id: user.id, credits: (walletData?.credits || 0) + creditsEarned,
-      }, { onConflict: 'user_id' });
-      await supabase.from('credit_transactions').insert({
-        user_id: user.id, amount: creditsEarned, reason: 'daily_reward',
-        metadata: { streak_day: streak },
-      });
-      setCredits(prev => prev + creditsEarned);
-      setDailyReward({ ...dailyReward, streak_day: streak, last_claimed_at: now.toISOString() });
-      toast.success(`Day ${streak} reward claimed! +${creditsEarned} credits`);
+      const earned = Number(data?.credits_earned ?? 0);
+      const streak = Number(data?.streak_day ?? 1);
+      setCredits(Number(data?.credits_total ?? credits + earned));
+      setDailyReward({ ...dailyReward, streak_day: streak, last_claimed_at: new Date().toISOString(), credits_earned: earned });
+      toast.success(`Day ${streak} reward claimed! +${earned} credits`);
     } catch (err: any) { toast.error(err.message || 'Failed to claim reward'); }
     finally { setClaimingReward(false); }
   };
-
   const canClaimDaily = () => {
     if (!dailyReward?.last_claimed_at) return true;
     return new Date().toDateString() !== new Date(dailyReward.last_claimed_at).toDateString();
@@ -373,7 +363,7 @@ ${tableHtml}
     </div>
   );
 
-  const subscriberCount = userProfile?.subscriber_count || userProfile?.followers_count || 0;
+  const subscriberCount = userProfile?.subscriber_count || userProfile?.follower_count || 0;
   const followersMet = subscriberCount >= MON_MIN_FOLLOWERS;
   const postsMet     = postCount >= MON_MIN_POSTS;
   const videosMet    = videoCount >= MON_MIN_VIDEOS;
