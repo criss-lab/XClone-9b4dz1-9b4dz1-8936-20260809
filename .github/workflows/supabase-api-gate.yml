@@ -1,0 +1,118 @@
+name: Supabase API Connection Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_ref:
+        description: "Supabase production project ref"
+        required: true
+        default: ffrhglgkukgsuhxenena
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+      - ".github/workflows/supabase-api-gate.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-api-gate
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify Supabase Management API and Data API
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ inputs.project_ref || vars.SUPABASE_PROJECT_ID || 'ffrhglgkukgsuhxenena' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install deterministic Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.40.7
+
+      - name: Verify Management API authentication
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_ACCESS_TOKEN}" ]]; then
+            echo "::error::SUPABASE_ACCESS_TOKEN is not configured for the production GitHub environment."
+            exit 1
+          fi
+          if [[ -z "${SUPABASE_PROJECT_ID}" ]]; then
+            echo "::error::SUPABASE_PROJECT_ID is not configured."
+            exit 1
+          fi
+          printf '::add-mask::%s\n' "${SUPABASE_ACCESS_TOKEN}"
+          response_file="/tmp/supabase-projects.json"
+          http_status="$(curl --silent --show-error --output "${response_file}" --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            -H "Accept: application/json" \
+            "https://api.supabase.com/v1/projects")"
+          case "${http_status}" in
+            200) ;;
+            401)
+              echo "::error::Supabase Management API rejected SUPABASE_ACCESS_TOKEN (HTTP 401 Unauthorized). Refresh/replace the token in the GitHub production environment."
+              exit 1
+              ;;
+            403)
+              echo "::error::Supabase Management API denied this token (HTTP 403 Forbidden). Check token scope/account access."
+              exit 1
+              ;;
+            *)
+              echo "::error::Supabase Management API returned HTTP ${http_status}."
+              cat "${response_file}" || true
+              exit 1
+              ;;
+          esac
+          if ! jq -e --arg ref "${SUPABASE_PROJECT_ID}" '.[] | select(.ref == $ref)' "${response_file}" >/dev/null; then
+            echo "::error::Authenticated successfully, but target project ${SUPABASE_PROJECT_ID} was not returned for this Supabase account."
+            exit 1
+          fi
+          echo "Supabase Management API authentication: OK"
+          echo "Target project: ${SUPABASE_PROJECT_ID}"
+
+      - name: Verify Supabase Data API
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_URL}" ]]; then
+            echo "::error::SUPABASE_URL is not configured for the production GitHub environment."
+            exit 1
+          fi
+          if [[ -z "${SUPABASE_ANON_KEY}" ]]; then
+            echo "::error::A publishable/anon Supabase key is not configured for the production GitHub environment."
+            exit 1
+          fi
+          printf '::add-mask::%s\n' "${SUPABASE_ANON_KEY}"
+          status="$(curl --silent --show-error --output /tmp/supabase-health.json --write-out '%{http_code}' \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${SUPABASE_URL}/rest/v1/profiles?select=id&limit=1")"
+          case "${status}" in
+            200|206) echo "Supabase Data API: OK" ;;
+            *) echo "::error::Supabase Data API health check failed with HTTP ${status}."; exit 1 ;;
+          esac
+
+      - name: Emit connection receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SUPABASE_MANAGEMENT_API=CONNECTED"
+          echo "SUPABASE_DATA_API=CONNECTED"
+          echo "SUPABASE_PROJECT_ID=${SUPABASE_PROJECT_ID}"
+          echo "SECRETS_EXPOSED=NO"

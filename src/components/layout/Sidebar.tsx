@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,18 @@ import { supabase } from '@/lib/supabase';
 import { formatNumber } from '@/lib/utils';
 import { useFediversePolling } from '@/hooks/useFediversePolling';
 import { useIsRegulator } from '@/hooks/useFeatureUnlock';
+import { useGovernance } from '@/lib/governance';
+
+function runWhenIdle(task: () => void, timeout = 1200) {
+  if (typeof window === 'undefined') return;
+  const ric = (window as any).requestIdleCallback;
+  if (typeof ric === 'function') {
+    const id = ric(task, { timeout });
+    return () => (window as any).cancelIdleCallback?.(id);
+  }
+  const id = window.setTimeout(task, 80);
+  return () => window.clearTimeout(id);
+}
 
 interface Community {
   id: string;
@@ -29,19 +41,23 @@ export function Sidebar() {
   const location = useLocation();
   const { user, logout } = useAuth();
   const isReg = useIsRegulator();
+  const { governance } = useGovernance();
   const [communities, setCommunities] = useState<Community[]>([]);
   const [trendingCommunities, setTrendingCommunities] = useState<Community[]>([]);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showCommunities, setShowCommunities] = useState(true);
   const [showTrending, setShowTrending] = useState(true);
+  const [showLibrary, setShowLibrary] = useState(true);
+  const [showCreator, setShowCreator] = useState(true);
+  const [showAdmin, setShowAdmin] = useState(false);
   const [isEmployee, setIsEmployee] = useState(false);
 
   // Check employee status for team-chat link visibility
   useEffect(() => {
-    if (!user || isReg) { setIsEmployee(isReg); return; }
-    supabase.from('employee_assignments').select('id').eq('user_id', user.id).eq('is_active', true).maybeSingle()
-      .then(({ data }) => setIsEmployee(!!data));
-  }, [user?.id, isReg]);
+    if (!user || isReg || governance.is_owner) { setIsEmployee(isReg || governance.is_owner); return; }
+    return runWhenIdle(() => { supabase.from('employee_assignments').select('id').eq('user_id', user.id).eq('is_active', true).maybeSingle()
+      .then(({ data }) => setIsEmployee(!!data)); });
+  }, [user?.id, isReg, governance.is_owner]);
 
   // ── Unread counts ────────────────────────────────────────────────────────
   const [unreadNotifs, setUnreadNotifs] = useState(0);
@@ -60,9 +76,9 @@ export function Sidebar() {
       const { count } = await supabase.from('user_ads').select('id', { count: 'exact', head: true }).eq('status', 'pending');
       setPendingAdsBadge(count ?? 0);
     };
-    checkAdminAds();
+    const cancel = runWhenIdle(() => { checkAdminAds(); });
     const iv = setInterval(checkAdminAds, 30_000);
-    return () => clearInterval(iv);
+    return () => { cancel?.(); clearInterval(iv); };
   }, [user?.id]);
 
   // Poll help ticket reply badge
@@ -126,7 +142,7 @@ export function Sidebar() {
         if (mounted) setUnreadMessages(0);
       }
     };
-    fetchCounts();
+    const cancel = runWhenIdle(fetchCounts);
     // Poll every 15s for near-real-time badges
     const iv = setInterval(fetchCounts, 15_000);
 
@@ -146,7 +162,7 @@ export function Sidebar() {
       }, () => { if (mounted) fetchCounts(); })
       .subscribe();
 
-    return () => { mounted = false; clearInterval(iv); supabase.removeChannel(sub); };
+    return () => { mounted = false; cancel?.(); clearInterval(iv); supabase.removeChannel(sub); };
   }, [user?.id]);
 
   // Clear badges when visiting relevant pages
@@ -160,9 +176,9 @@ export function Sidebar() {
   }, [location.pathname]);
 
   useEffect(() => {
-    if (user) fetchUserCommunities();
-    fetchTrendingCommunities();
-  }, [user]);
+    const cancel = runWhenIdle(() => { if (user) void fetchUserCommunities(); void fetchTrendingCommunities(); });
+    return () => cancel?.();
+  }, [user?.id]);
 
   const fetchUserCommunities = async () => {
     if (!user) return;
@@ -187,10 +203,11 @@ export function Sidebar() {
   const navItems = [
     { icon: Home, label: 'Home', path: '/', requireAuth: false, badge: 0 },
     { icon: Hash, label: 'Explore', path: '/explore', requireAuth: false, badge: 0 },
-    { icon: FileText, label: 'Threads', path: '/threads', requireAuth: false, badge: 0 },
+    { icon: MessageSquare, label: 'Threads', path: '/threads', requireAuth: false, badge: 0 },
     { icon: Bell, label: 'Notifications', path: '/notifications', requireAuth: true, badge: unreadNotifs },
     { icon: Mail, label: 'Messages', path: '/messages', requireAuth: true, badge: unreadMessages },
     { icon: Radio, label: 'Spaces', path: '/spaces', requireAuth: false, badge: 0 },
+    { icon: Radio, label: 'World Live TV', path: '/iptv', requireAuth: false, badge: 0 },
     { icon: Sparkles, label: 'AI', path: '/ai', requireAuth: false, badge: 0 },
     { icon: Globe, label: 'Fediverse', path: '/fediverse', requireAuth: false, badge: unreadFed },
     { icon: Trophy, label: 'Leaderboard', path: '/leaderboard', requireAuth: false, badge: 0 },
@@ -198,6 +215,7 @@ export function Sidebar() {
 
   const creatorTools = [
     { icon: Briefcase, label: 'Creator Studio', path: '/creator-studio', requireAuth: true },
+    { icon: Radio, label: 'TV Production Studio', path: '/tv-studio', requireAuth: true },
     { icon: BarChart3, label: 'Analytics', path: '/analytics', requireAuth: true },
     { icon: DollarSign, label: 'Monetization', path: '/monetization', requireAuth: true },
     { icon: ShoppingBag, label: 'Products', path: '/products', requireAuth: true },
@@ -216,12 +234,13 @@ export function Sidebar() {
         .eq('status', 'pending');
       setScheduledBadge(count ?? 0);
     };
-    fetchScheduled();
+    const cancel = runWhenIdle(fetchScheduled);
     const iv = setInterval(fetchScheduled, 60_000);
-    return () => clearInterval(iv);
+    return () => { cancel?.(); clearInterval(iv); };
   }, [user?.id]);
 
   const adminTools = [
+    { icon: Briefcase, label: 'Staff Recruitment', path: '/admin/staff-recruitment', requireAuth: true, badge: 0 },
     { icon: LineChart, label: 'Revenue Analytics', path: '/revenue-analytics', requireAuth: true, badge: 0 },
     { icon: TrendingUp, label: 'Admin Revenue', path: '/admin/revenue', requireAuth: true, badge: 0 },
     { icon: Megaphone, label: 'Ad Review', path: '/admin/ads-review', requireAuth: true, badge: pendingAdsBadge },
@@ -229,6 +248,7 @@ export function Sidebar() {
   ];
 
   const userTools = [
+    { icon: Briefcase, label: 'Testagram Jobs', path: '/jobs', requireAuth: true },
     { icon: Bookmark, label: 'Bookmarks', path: '/bookmarks', requireAuth: true },
     { icon: List, label: 'Lists', path: '/lists', requireAuth: true },
     { icon: History, label: 'History', path: '/history', requireAuth: true },
@@ -247,6 +267,9 @@ export function Sidebar() {
   ];
 
   // Team chat — employees & regulator only
+  const staffItems = (governance.is_admin || governance.is_owner) ? [
+    { icon: ShieldCheck, label: governance.is_owner ? 'Owner Workspace' : 'Staff Workspace', path: '/staff', requireAuth: true },
+  ] : [];
   const teamItems = isEmployee ? [
     { icon: MessageSquare, label: 'Team Chat', path: '/team-chat', requireAuth: true },
   ] : [];
@@ -271,11 +294,11 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="hidden lg:flex lg:flex-col w-72 h-screen sticky top-0 border-r border-border overflow-y-auto">
+    <aside className="hidden lg:flex lg:flex-col w-72 h-screen sticky top-0 border-r border-border/70 overflow-y-auto bg-background/80 backdrop-blur-xl">
       {/* Logo */}
-      <div className="flex items-center space-x-2 p-4 border-b border-border">
-        <img src="/tsocial-logo.png" alt="Tsocial" className="w-10 h-10 rounded-xl object-cover" />
-        <span className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Tsocial</span>
+      <div className="flex items-center space-x-3 px-4 py-5 border-b border-border/70">
+        <img src="/tsocial-logo.png" alt="Tsocial" className="w-10 h-10 rounded-2xl object-cover ring-1 ring-border shadow-sm" />
+        <span className="text-2xl font-bold bg-gradient-to-r from-primary to-emerald-500 bg-clip-text text-transparent">Testagram</span>
       </div>
 
       {/* Main Navigation */}
@@ -333,6 +356,9 @@ export function Sidebar() {
                   </button>
                 );
               })}
+
+              {/* Staff Workspace — governance assignment */}
+              {staffItems.map((item) => { const Icon = item.icon; const isActive = location.pathname === item.path; return <button key={item.path} onClick={() => handleNavClick(item.path, item.requireAuth)} className={`flex items-center space-x-3 px-4 py-2 rounded-lg transition-colors w-full text-left text-sm ${isActive ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground'}`}><Icon className="w-4 h-4 text-primary"/><span>{item.label}</span><span className="ml-auto text-[9px] bg-primary/10 text-primary font-bold px-1.5 py-0.5 rounded-full">{governance.is_owner ? 'Owner' : (governance.role ?? 'Staff')}</span></button>; })}
 
               {/* Team Chat — employees only */}
               {teamItems.map((item) => {
