@@ -48,20 +48,20 @@ export default function StoryAnalyticsDashboard() {
       // Fetch all user's stories
       const { data: storiesData } = await supabase
         .from('stories')
-        .select('id, media_url, media_type, caption, views_count, created_at, expires_at')
-        .eq('user_id', user.id)
+        .select('id, media_asset_id, caption, created_at, expires_at, metadata, media_assets(media_url,media_type)')
+        .eq('owner_id', user.id)
         .order('created_at', { ascending: false })
         .limit(50);
 
       const stories = storiesData ?? [];
       setTotalStories(stories.length);
 
-      const totalV = stories.reduce((s, st) => s + (st.views_count ?? 0), 0);
+      const totalV = stories.reduce((s, st) => s + Number((st.metadata as any)?.views_count ?? 0), 0);
       setTotalViews(totalV);
       setAvgViewsPerStory(stories.length > 0 ? Math.round(totalV / stories.length) : 0);
 
       // Sort by views for top stories
-      const sorted = [...stories].sort((a, b) => (b.views_count ?? 0) - (a.views_count ?? 0));
+      const sorted = [...stories].sort((a, b) => Number((b.metadata as any)?.views_count ?? 0) - Number((a.metadata as any)?.views_count ?? 0));
       setTopStories(sorted.slice(0, 10));
       setActiveStories(stories.filter(s => new Date(s.expires_at) > new Date()).slice(0, 5));
 
@@ -249,28 +249,28 @@ export default function StoryAnalyticsDashboard() {
                 return (
                   <div key={story.id} className="flex items-center gap-3">
                     <div className="w-12 h-16 rounded-xl overflow-hidden bg-muted shrink-0">
-                      {story.media_type === 'video'
-                        ? <video src={`${story.media_url}#t=0.5`} className="w-full h-full object-cover" muted preload="metadata" />
-                        : story.media_url
-                          ? <img src={story.media_url} alt="" className="w-full h-full object-cover" loading="lazy" />
+                      {story.media_assets?.media_type === 'video'
+                        ? <video src={`${story.media_assets?.media_url}#t=0.5`} className="w-full h-full object-cover" muted preload="metadata" />
+                        : story.media_assets?.media_url
+                          ? <img src={story.media_assets?.media_url} alt="" className="w-full h-full object-cover" loading="lazy" />
                           : <div className="w-full h-full flex items-center justify-center bg-primary/10">
                               <ImageIcon className="w-5 h-5 text-primary/50" />
                             </div>}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-0.5">
-                        {story.media_type === 'video'
+                        {story.media_assets?.media_type === 'video'
                           ? <Play className="w-3 h-3 text-primary shrink-0" />
                           : <ImageIcon className="w-3 h-3 text-primary shrink-0" />}
                         <span className="text-xs font-semibold text-muted-foreground">
-                          {story.media_type === 'video' ? 'Video' : 'Image'} story
+                          {story.media_assets?.media_type === 'video' ? 'Video' : 'Image'} story
                         </span>
                       </div>
                       {story.caption && (
                         <p className="text-sm font-medium line-clamp-1">{story.caption}</p>
                       )}
                       <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                        <span className="flex items-center gap-0.5"><Eye className="w-3 h-3" />{formatNumber(story.views_count ?? 0)}</span>
+                        <span className="flex items-center gap-0.5"><Eye className="w-3 h-3" />{formatNumber(Number((story.metadata as any)?.views_count ?? 0))}</span>
                         <span className="flex items-center gap-0.5"><Clock className="w-3 h-3" />Expires {expiresIn}</span>
                       </div>
                     </div>
@@ -300,23 +300,23 @@ export default function StoryAnalyticsDashboard() {
             </div>
             <div className="space-y-2">
               {topStories.slice(0, 8).map((story, idx) => {
-                const maxViews = topStories[0]?.views_count ?? 1;
-                const barPct = Math.max(4, Math.round(((story.views_count ?? 0) / maxViews) * 100));
+                const maxViews = Number((topStories[0]?.metadata as any)?.views_count ?? 1);
+                const barPct = Math.max(4, Math.round((Number((story.metadata as any)?.views_count ?? 0) / maxViews) * 100));
                 return (
                   <div key={story.id} className="flex items-center gap-3">
                     <span className={`text-xs font-black w-5 shrink-0 text-center ${
                       idx === 0 ? 'text-yellow-500' : idx === 1 ? 'text-slate-400' : idx === 2 ? 'text-amber-600' : 'text-muted-foreground'
                     }`}>{idx + 1}</span>
                     <div className="w-9 h-12 rounded-lg overflow-hidden bg-muted shrink-0">
-                      {story.media_url
-                        ? <img src={story.media_url} alt="" className="w-full h-full object-cover" loading="lazy" />
+                      {story.media_assets?.media_url
+                        ? <img src={story.media_assets?.media_url} alt="" className="w-full h-full object-cover" loading="lazy" />
                         : <div className="w-full h-full flex items-center justify-center bg-primary/10">
                             <ImageIcon className="w-3 h-3 text-primary/50" />
                           </div>}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-muted-foreground truncate">
-                        {story.caption?.slice(0, 40) || (story.media_type === 'video' ? 'Video story' : 'Image story')}
+                        {story.caption?.slice(0, 40) || (story.media_assets?.media_type === 'video' ? 'Video story' : 'Image story')}
                       </p>
                       <div className="flex items-center gap-2 mt-1">
                         <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
@@ -325,7 +325,7 @@ export default function StoryAnalyticsDashboard() {
                             style={{ width: barPct + '%' }}
                           />
                         </div>
-                        <span className="text-[10px] font-bold text-primary shrink-0">{formatNumber(story.views_count ?? 0)}</span>
+                        <span className="text-[10px] font-bold text-primary shrink-0">{formatNumber(Number((story.metadata as any)?.views_count ?? 0))}</span>
                       </div>
                     </div>
                     <button

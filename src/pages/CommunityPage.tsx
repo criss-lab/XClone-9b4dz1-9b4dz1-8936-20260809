@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { TopBar } from '@/components/layout/TopBar';
 import { PostCard } from '@/components/features/PostCard';
@@ -29,6 +29,8 @@ import { formatNumber } from '@/lib/utils';
 import { toast as sonnerToast } from 'sonner';
 import { formatDistanceToNow, isPast } from 'date-fns';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { ExoClickInlineAd } from '@/components/features/ExoClickInlineAd';
+import { backendCapabilities } from '@/services/backendClient';
 
 // ── Module-level constants (esbuild-safe) ────────────────────────────────────
 const LEADERBOARD_MEDALS = ['🥇', '🥈', '🥉'] as const;
@@ -39,7 +41,7 @@ const NFT_TIERS = [
   { min: 5,  tier: 'epic',      emoji: '🔮', label: 'Epic',      color: 'from-purple-500/20 to-violet-500/20', border: 'border-purple-500/30' },
   { min: 1,  tier: 'rare',      emoji: '🏅', label: 'Rare',      color: 'from-amber-500/20 to-yellow-500/20', border: 'border-amber-500/30' },
 ] as const;
-const CHAT_EMOJIS = ['❤️', '🔥', '😂', '👏', '🎉', '💯'] as const;
+const CHAT_EMOJIS = ['❤️'] as const;
 const COMM_TAB_LIST = ['posts', 'members', 'chat', 'events'] as const;
 type CommPageTab = typeof COMM_TAB_LIST[number];
 const GIF_URL_RE = /^https:\/\/(media\.tenor|c\.tenor|media1\.tenor|media\.giphy|i\.giphy)\.com\//;
@@ -60,7 +62,7 @@ interface CommunityMember {
   user_profiles: { username: string; avatar_url?: string; verified: boolean; };
 }
 
-export default function CommunityPage() {
+export default function CommunityPage({ section, standalone = false }: { section?: CommPageTab | 'shop'; standalone?: boolean }) {
   const { name } = useParams<{ name: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -78,13 +80,15 @@ export default function CommunityPage() {
   });
 
   const [posts, setPosts] = useState<Post[]>([]);
+  const [postsError, setPostsError] = useState<string | null>(null);
   const [isMember, setIsMember] = useState(false);
+  const [memberStatus, setMemberStatus] = useState<'active' | 'pending' | null>(null);
   const [userRole, setUserRole] = useState<string>('member');
   const [members, setMembers] = useState<CommunityMember[]>([]);
 
   const shopUnlocked = useFeatureUnlock('community_shop');
   const nftUnlocked  = useFeatureUnlock('nft_badges');
-  const [activeTab, setActiveTab] = useState<CommPageTab | 'shop'>('posts');
+  const [activeTab, setActiveTab] = useState<CommPageTab | 'shop'>(section ?? 'posts');
 
   // Shop state
   const [shopProducts, setShopProducts] = useState<any[]>([]);
@@ -117,21 +121,19 @@ export default function CommunityPage() {
   }, []);
 
   const handleMintNft = useCallback(async () => {
-    if (!user || !community) return;
+    if (!user || !community || !isMember) return;
     setMintingNft(true);
-    const { data: userPosts } = await supabase.from('posts').select('likes_count').eq('community_id', community.id).eq('user_id', user.id);
-    const totalLikes = (userPosts ?? []).reduce((s: number, p: any) => s + (p.likes_count ?? 0), 0);
-    const nftDef = NFT_TIERS.find(t => totalLikes >= t.min) ?? NFT_TIERS[2];
-    const { error } = await supabase.from('community_nft_badges').upsert({
-      community_id: community.id, owner_id: user.id,
-      badge_name: `${community.display_name} ${nftDef.label} Badge`,
-      badge_emoji: nftDef.emoji, badge_tier: nftDef.tier,
-    }, { onConflict: 'community_id,owner_id' });
-    if (error) { sonnerToast.error('Could not mint badge'); setMintingNft(false); return; }
-    sonnerToast.success(`${nftDef.emoji} ${nftDef.label} Badge minted!`);
-    fetchNftBadges(community.id);
-    setMintingNft(false);
-  }, [user, community, fetchNftBadges]);
+    try {
+      const { error } = await supabase.rpc('mint_community_badge', { p_community_id: community.id });
+      if (error) throw error;
+      sonnerToast.success('🏅 Community badge minted!');
+      await fetchNftBadges(community.id);
+    } catch (error: any) {
+      sonnerToast.error(error?.message || 'Could not mint badge');
+    } finally {
+      setMintingNft(false);
+    }
+  }, [user, community, isMember, fetchNftBadges]);
 
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [showRulesModal, setShowRulesModal] = useState(false);
@@ -161,10 +163,17 @@ export default function CommunityPage() {
   const handleSupportCommunity = useCallback(async () => {
     if (!user || !community || !supportAmount) return;
     setSendingSupport(true);
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: supportAmount });
-    if (deductErr) { sonnerToast.error('Insufficient wallet balance'); setSendingSupport(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: community.created_by, p_amount: supportAmount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: community.created_by, amount: supportAmount, message: `Support for c/${community.name}` }).catch(() => {});
+    const { error: transferErr } = await supabase.rpc('send_wallet_tip', {
+      p_to_user_id: community.created_by,
+      p_amount: supportAmount,
+      p_note: `Support for c/${community.name}`,
+    });
+    if (transferErr) {
+      const message = transferErr.message?.includes('INSUFFICIENT_FUNDS') ? 'Insufficient wallet balance' : transferErr.message || 'Unable to send support';
+      sonnerToast.error(message);
+      setSendingSupport(false);
+      return;
+    }
     await supabase.from('platform_inbox').insert({ user_id: community.created_by, subject: `💰 Your community received a $${supportAmount} support tip!`, body: `@${user.username ?? 'A member'} sent $${supportAmount} to support c/${community.name}.`, type: 'update', icon_emoji: '💰' }).catch(() => {});
     sonnerToast.success(`$${supportAmount} support sent!`);
     setSupportSent(true); setShowSupportDialog(false); setSupportAmount(null); setSendingSupport(false);
@@ -185,7 +194,7 @@ export default function CommunityPage() {
         agg[row.user_id].likes += row.likes_count ?? 0;
         agg[row.user_id].posts += 1;
       }
-      setLeaderboard(Object.values(agg).sort((a, b) => b.likes - a.likes).slice(0, 3));
+      setLeaderboard((Object.values(agg) as Array<{ profile: any; likes: number; posts: number }>).sort((a, b) => b.likes - a.likes).slice(0, 3));
     }
     setLeaderboardFetched(true);
     setLoadingLeaderboard(false);
@@ -196,7 +205,7 @@ export default function CommunityPage() {
   const fetchWeeklyDigest = useCallback(async (communityId: string) => {
     const since7d = new Date(Date.now() - 7 * 86400000).toISOString();
     const { data } = await supabase.from('posts')
-      .select('id, content, likes_count, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, likes_count, created_at, user_profiles:profiles(username, avatar_url)')
       .eq('community_id', communityId).gte('created_at', since7d)
       .order('likes_count', { ascending: false }).limit(3);
     setDigestPosts(data ?? []);
@@ -217,6 +226,8 @@ export default function CommunityPage() {
   }, []);
 
   // Chat state
+  const isAdmin = ['owner', 'moderator'].includes(userRole);
+
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatInput, setChatInput] = useState('');
   // @mention autocomplete state
@@ -231,7 +242,7 @@ export default function CommunityPage() {
       const q = match[1].toLowerCase();
       setMentionQuery(q);
       const suggestions = members
-        .map(m => ({ id: m.user_profiles?.id ?? m.user_id ?? '', username: m.user_profiles?.username ?? '', avatar_url: m.user_profiles?.avatar_url ?? null }))
+        .map(m => ({ id: (m.user_profiles as any)?.id ?? m.user_id ?? '', username: m.user_profiles?.username ?? '', avatar_url: m.user_profiles?.avatar_url ?? null }))
         .filter(m => m.username && (q.length === 0 || m.username.toLowerCase().includes(q)))
         .slice(0, 6);
       setMentionResults(suggestions);
@@ -275,31 +286,72 @@ export default function CommunityPage() {
   const reactionsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showChatGifPicker, setShowChatGifPicker] = useState(false);
 
-  const handleSendGif = useCallback(async (gifUrl: string) => {
-    if (!user || !community || chatSending) return;
-    setShowChatGifPicker(false); setChatSending(true);
-    await supabase.from('community_chat').insert({ community_id: community.id, user_id: user.id, message: gifUrl });
-    const rawData = await supabase.from('community_chat')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
+  const fetchChat = useCallback(async () => {
+    if (!community) return;
+    const { data } = await supabase.from('community_chat')
+      .select('*, profiles(id, username, avatar_url, verified_tier)')
       .eq('community_id', community.id).order('created_at', { ascending: true }).limit(100);
-    if (rawData.data) setChatMessages(rawData.data);
-    setChatSending(false);
-  }, [user, community, chatSending]);
+    if (data) {
+      setChatMessages(data);
+      const ids = data.map((m: any) => m.id);
+      if (ids.length) {
+        const [{ data: rr }, { data: pp }] = await Promise.all([
+          supabase.from('community_chat_reactions').select('message_id,emoji').in('message_id', ids),
+          supabase.from('community_chat_pins').select('message_id').eq('community_id', community.id),
+        ]);
+        const grouped: Record<string, Record<string, number>> = {};
+        for (const row of rr ?? []) grouped[row.message_id] = { ...(grouped[row.message_id] ?? {}), [row.emoji]: (grouped[row.message_id]?.[row.emoji] ?? 0) + 1 };
+        const reactionIds = Object.keys(grouped);
+        setReactionMsgIds(reactionIds); setReactionData(reactionIds.map(id => grouped[id]));
+        setPinnedChatIds((pp ?? []).map((row: any) => row.message_id));
+      } else {
+        setReactionMsgIds([]); setReactionData([]); setPinnedChatIds([]);
+      }
+    }
+  }, [community]);
+
+  const handleSendGif = useCallback(async (gifUrl: string) => {
+    if (!user || !community || chatSending || !isMember || !GIF_URL_RE.test(gifUrl)) return;
+    setShowChatGifPicker(false); setChatSending(true);
+    try {
+      const { error } = await supabase.rpc('send_community_chat', { p_community_id: community.id, p_message: gifUrl });
+      if (error) throw error;
+      await fetchChat();
+    } catch (error: any) {
+      sonnerToast.error(error?.message || 'Could not send GIF');
+    } finally {
+      setChatSending(false);
+    }
+  }, [user, community, chatSending, isMember, fetchChat]);
 
   const [showCommunityPollDialog, setShowCommunityPollDialog] = useState(false);
   const handleCommunityPollCreated = useCallback(async (pollData: { question: string; options: string[]; duration: number }) => {
     if (!user || !community) return;
     setShowCommunityPollDialog(false);
-    const { data: pollPost, error: ppErr } = await supabase.from('posts')
-      .insert({ user_id: user.id, content: pollData.question, community_id: community.id }).select().single();
-    if (ppErr || !pollPost) { sonnerToast.error('Failed to create poll'); return; }
-    const pollExpAt = new Date(Date.now() + pollData.duration * 60 * 1000);
-    const { data: pollRow, error: prErr } = await supabase.from('polls')
-      .insert({ post_id: pollPost.id, question: pollData.question, expires_at: pollExpAt.toISOString() }).select().single();
-    if (prErr || !pollRow) { sonnerToast.error('Failed to create poll'); return; }
-    await supabase.from('poll_options').insert(pollData.options.map((opt: string) => ({ poll_id: pollRow.id, option_text: opt })));
-    sonnerToast.success('Community poll created! 📊');
-    fetchPosts();
+    try {
+      // Use the canonical atomic post capability so the community post,
+      // poll and options are created together against the current schema.
+      await backendCapabilities.createPost({
+        content: pollData.question,
+        communityId: community.id,
+        poll: {
+          question: pollData.question,
+          options: pollData.options,
+          durationMinutes: pollData.duration,
+        },
+      });
+      sonnerToast.success('Community poll created! 📊');
+      setPostsCursor(null);
+      await fetchPosts(true);
+    } catch (error: any) {
+      console.error('Community poll creation failed', {
+        communityId: community.id,
+        code: error?.code,
+        message: error?.message,
+        details: error?.details,
+      });
+      sonnerToast.error(error?.message || 'Failed to create poll');
+    }
   }, [user, community]);
 
   const triggerFloat = useCallback((emoji: string) => {
@@ -309,45 +361,35 @@ export default function CommunityPage() {
     reactionsTimerRef.current = setTimeout(() => setFloatingReactions(prev => prev.filter(r => r.id !== fr.id)), 2000);
   }, []);
 
-  const fetchChat = useCallback(async () => {
-    if (!community) return;
-    const { data } = await supabase.from('community_chat')
-      .select('*, user_profiles(id, username, avatar_url, verified)')
-      .eq('community_id', community.id).order('created_at', { ascending: true }).limit(100);
-    if (data) {
-      setChatMessages(data);
-      try { const rr = localStorage.getItem(`chat_reactions_${community.id}`); if (rr) { const parsed = JSON.parse(rr); const ids = Object.keys(parsed); setReactionMsgIds(ids); setReactionData(ids.map((k: string) => parsed[k])); } } catch { /* ignore */ }
-      const raw = localStorage.getItem(`chat_pinned_${community.id}`);
-      if (raw) setPinnedChatIds(JSON.parse(raw));
-    }
-  }, [community]);
 
-  const handleAddReaction = useCallback((msgId: string, emoji: string) => {
-    if (!community) return;
-    setReactionForMsg(msgId, prev => {
-      const updated = { ...prev, [emoji]: (prev[emoji] ?? 0) + 1 };
-      return updated;
-    });
-    triggerFloat(emoji);
-    setShowEmojiPickerFor(null);
-  }, [community, triggerFloat]);
 
-  const handlePinChatMessage = useCallback((msgId: string) => {
-    if (!community) return;
-    setPinnedChatIds(prev => {
-      const updated = prev.includes(msgId) ? prev.filter(id => id !== msgId) : [...prev, msgId];
-      localStorage.setItem(`chat_pinned_${community.id}`, JSON.stringify(updated));
-      return updated;
-    });
-    setShowRoleMenu(null);
-  }, [community]);
+  const handleAddReaction = useCallback(async (msgId: string, emoji: string) => {
+    if (!community || !isMember) return;
+    try {
+      const { error } = await supabase.rpc('toggle_community_chat_reaction', { p_message_id: msgId, p_emoji: emoji });
+      if (error) throw error;
+      triggerFloat(emoji); setShowEmojiPickerFor(null); await fetchChat();
+    } catch (error: any) { sonnerToast.error(error?.message || 'Could not update reaction'); }
+  }, [community, isMember, triggerFloat, fetchChat]);
+
+  const handlePinChatMessage = useCallback(async (msgId: string) => {
+    if (!community || !['owner', 'moderator'].includes(userRole)) return;
+    try {
+      const { error } = await supabase.rpc('toggle_community_chat_pin', { p_message_id: msgId });
+      if (error) throw error;
+      setShowRoleMenu(null); await fetchChat();
+    } catch (error: any) { sonnerToast.error(error?.message || 'Could not update pin'); }
+  }, [community, userRole, fetchChat]);
+
+  useEffect(() => { if (section) setActiveTab(section); }, [section]);
 
   useEffect(() => {
-    if (activeTab === 'chat' && community) {
-      fetchChat();
-      chatPollingRef.current = setInterval(fetchChat, 5000);
-    } else { if (chatPollingRef.current) clearInterval(chatPollingRef.current); }
-    return () => { if (chatPollingRef.current) clearInterval(chatPollingRef.current); };
+    if (activeTab !== 'chat' || !community) return;
+    void fetchChat();
+    const channel = supabase.channel(`community-chat-${community.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_chat', filter: `community_id=eq.${community.id}` }, () => { void fetchChat(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); if (chatPollingRef.current) clearInterval(chatPollingRef.current); };
   }, [activeTab, community?.id]);
 
   useEffect(() => { if (activeTab === 'chat') chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages, activeTab]);
@@ -357,8 +399,17 @@ export default function CommunityPage() {
     const text = chatInput.trim(); const replyInfo = replyingTo;
     setChatInput(''); setReplyingTo(null); setChatSending(true);
     const msgContent = replyInfo ? `[↩ @${replyInfo.username}: "${replyInfo.text.slice(0, 40)}…"] ${text}` : text;
-    await supabase.from('community_chat').insert({ community_id: community.id, user_id: user.id, message: msgContent });
-    await fetchChat();
+    try {
+      const { error } = await supabase.rpc('send_community_chat', { p_community_id: community.id, p_message: msgContent });
+      if (error) throw error;
+      await fetchChat();
+    } catch (error: any) {
+      sonnerToast.error(error?.message || 'Could not send message');
+      setChatInput(text);
+      setReplyingTo(replyInfo);
+      setChatSending(false);
+      return;
+    }
     setChatSending(false);
     // Send @mention notifications to mentioned users
     const mentionMatches = text.match(/@(\w+)/g);
@@ -366,7 +417,7 @@ export default function CommunityPage() {
       const mentionedUsernames = mentionMatches.map(m => m.slice(1)).filter((u, i, a) => a.indexOf(u) === i).filter(u => u !== user.username);
       if (mentionedUsernames.length > 0) {
         const { data: mentionedProfiles } = await supabase
-          .from('user_profiles')
+          .from('profiles')
           .select('id, username')
           .in('username', mentionedUsernames.slice(0, 5));
         if (mentionedProfiles && mentionedProfiles.length > 0) {
@@ -398,61 +449,61 @@ export default function CommunityPage() {
 
   const fetchEvents = useCallback(async (communityId: string) => {
     setLoadingEvents(true);
-    const { data } = await supabase.from('scheduled_posts')
-      .select('id, content, scheduled_for, created_at, user_profiles:user_id(username, avatar_url)')
-      .eq('user_id', community?.created_by ?? '').order('scheduled_for', { ascending: true }).limit(20);
-    const commKey = `community_events_${communityId}`;
     try {
-      const raw = localStorage.getItem(commKey);
-      const localEvents: any[] = raw ? JSON.parse(raw) : [];
-      const combined = [...localEvents, ...(data ?? [])];
-      const unique = combined.filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i);
-      setEvents(unique.sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime()));
-    } catch { setEvents(data ?? []); }
-    try { const rsvpRawData = localStorage.getItem(`rsvp_${communityId}`); if (rsvpRawData) setRsvpArr(JSON.parse(rsvpRawData)); } catch { /* ignore */ }
-    setLoadingEvents(false);
-  }, [community?.created_by]);
+      const [{ data: eventData, error: eventError }, { data: rsvpData, error: rsvpError }] = await Promise.all([
+        supabase.from('community_events')
+          .select('id, community_id, created_by, title, description, scheduled_for, created_at, user_profiles:created_by(username, avatar_url)')
+          .eq('community_id', communityId).order('scheduled_for', { ascending: true }).limit(50),
+        user ? supabase.from('community_event_rsvps').select('event_id').eq('user_id', user.id) : Promise.resolve({ data: [], error: null } as any),
+      ]);
+      if (eventError) throw eventError;
+      if (rsvpError) throw rsvpError;
+      setEvents((eventData ?? []).map((e: any) => ({ ...e, content: e.description ? `${e.title}\n\n${e.description}` : e.title })));
+      setRsvpArr((rsvpData ?? []).map((r: any) => r.event_id));
+    } catch (error: any) {
+      console.error('fetchEvents error:', error);
+      setEvents([]);
+      setRsvpArr([]);
+    } finally {
+      setLoadingEvents(false);
+    }
+  }, [user?.id]);
 
-  const handleRsvp = useCallback((eventId: string) => {
-    if (!community) return;
-    setRsvpArr(prev => {
-      const wasIn = prev.indexOf(eventId) >= 0;
-      const next = wasIn ? prev.filter(id => id !== eventId) : [...prev, eventId];
-      localStorage.setItem(`rsvp_${community.id}`, JSON.stringify(next));
+  const handleRsvp = useCallback(async (eventId: string) => {
+    if (!community || !user || !isMember) return;
+    const wasIn = rsvpArr.indexOf(eventId) >= 0;
+    try {
+      const result = wasIn
+        ? await supabase.from('community_event_rsvps').delete().eq('event_id', eventId).eq('user_id', user.id)
+        : await supabase.from('community_event_rsvps').insert({ event_id: eventId, user_id: user.id });
+      if (result.error) throw result.error;
+      setRsvpArr(prev => wasIn ? prev.filter(id => id !== eventId) : [...prev, eventId]);
       sonnerToast.success(!wasIn ? "You're going! 🎉" : 'RSVP cancelled');
-      // Schedule 1-hour-before reminder notification when RSVPing
-      if (!wasIn && user) {
-        const ev = events.find((e: any) => e.id === eventId);
-        if (ev) {
-          const evMs = new Date(ev.scheduled_for).getTime();
-          const now  = Date.now();
-          const reminderMs = evMs - 60 * 60 * 1000; // 1 hour before
-          const evTitle = (ev.content ?? '').split('\n')[0] ?? 'Event';
-          if (reminderMs > now) {
-            // Store pending reminder in localStorage for polling
-            try {
-              const rKey = `event_reminders_${user.id}`;
-              const existing: any[] = JSON.parse(localStorage.getItem(rKey) ?? '[]');
-              const deduped = existing.filter((r: any) => r.eventId !== eventId);
-              deduped.push({ eventId, communityId: community.id, communityName: community.name, title: evTitle, reminderAt: reminderMs });
-              localStorage.setItem(rKey, JSON.stringify(deduped));
-            } catch { /* ignore */ }
-          }
-        }
-      }
-      return next;
-    });
-  }, [community, user, events]);
+    } catch (error: any) {
+      sonnerToast.error(error?.message || 'Could not update RSVP');
+    }
+  }, [community, user, isMember, rsvpArr]);
 
   const handleCreateEvent = async () => {
-    if (!user || !community || !eventForm.title.trim() || !eventForm.scheduled_for) return;
+    if (!user || !community || !isMember || !eventForm.title.trim() || !eventForm.scheduled_for) return;
     setCreatingEvent(true);
-    const newEvent = { id: `local_${Date.now()}`, content: eventForm.title.trim() + (eventForm.description ? `\n\n${eventForm.description}` : ''), scheduled_for: new Date(eventForm.scheduled_for).toISOString(), created_at: new Date().toISOString(), user_profiles: { username: user.username ?? 'you', avatar_url: null } };
-    const commKey = `community_events_${community.id}`;
-    try { const raw = localStorage.getItem(commKey); const existing: any[] = raw ? JSON.parse(raw) : []; existing.push(newEvent); localStorage.setItem(commKey, JSON.stringify(existing)); } catch { /* ignore */ }
-    setEvents(prev => [...prev, newEvent].sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime()));
-    setShowCreateEvent(false); setEventForm({ title: '', description: '', scheduled_for: '' }); setCreatingEvent(false);
-    sonnerToast.success('Event added!');
+    try {
+      const { error } = await supabase.rpc('create_community_event', {
+        p_community_id: community.id,
+        p_title: eventForm.title.trim(),
+        p_description: eventForm.description.trim() || null,
+        p_scheduled_for: new Date(eventForm.scheduled_for).toISOString(),
+      });
+      if (error) throw error;
+      setShowCreateEvent(false);
+      setEventForm({ title: '', description: '', scheduled_for: '' });
+      await fetchEvents(community.id);
+      sonnerToast.success('Event created!');
+    } catch (error: any) {
+      sonnerToast.error(error?.message || 'Could not create event');
+    } finally {
+      setCreatingEvent(false);
+    }
   };
 
   useEffect(() => { if (activeTab === 'events' && community) fetchEvents(community.id); }, [activeTab, community?.id]);
@@ -498,9 +549,15 @@ export default function CommunityPage() {
       };
       if (editIconFile) iconUrl = await uploadImage(editIconFile, `communities/icons/${user!.id}`);
       if (editBannerFile) bannerUrl = await uploadImage(editBannerFile, `communities/banners/${user!.id}`);
-      const { error } = await supabase.from('communities').update({ display_name: editForm.display_name.trim() || community.display_name, description: editForm.description.trim(), icon_url: iconUrl, banner_url: bannerUrl }).eq('id', community.id);
+      const { data: updated, error } = await supabase.rpc('update_community_profile', {
+        p_community_id: community.id,
+        p_display_name: editForm.display_name.trim() || community.display_name,
+        p_description: editForm.description.trim(),
+        p_icon_url: iconUrl,
+        p_banner_url: bannerUrl,
+      });
       if (error) throw error;
-      setCommunity(prev => prev ? { ...prev, display_name: editForm.display_name.trim() || prev.display_name, description: editForm.description.trim(), icon_url: iconUrl ?? prev.icon_url, banner_url: bannerUrl ?? prev.banner_url } : null);
+      setCommunity(updated as Community);
       setShowEditDialog(false); sonnerToast.success('Community updated!');
     } catch (err: any) { toast({ title: 'Error', description: err.message, variant: 'destructive' }); }
     finally { setSavingEdit(false); }
@@ -515,11 +572,17 @@ export default function CommunityPage() {
   useEffect(() => {
     if (community?.rules) setRules(Array.isArray(community.rules) ? community.rules.map((r: any) => typeof r === 'string' ? r : r.text ?? r.rule ?? String(r)) : []);
   }, [community?.rules]);
-  useEffect(() => { if (community && isMember) fetchPosts(); else if (community && !community.is_private) fetchPosts(); }, [community, isMember]);
+  useEffect(() => {
+    if (community && (isMember || !community.is_private)) {
+      setPostsCursor(null);
+      setHasMorePosts(true);
+      fetchPosts(true);
+    }
+  }, [community?.id, isMember]);
   useEffect(() => {
     if (!community) return;
     const sub = supabase.channel(`community-posts-${community.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts', filter: `community_id=eq.${community.id}` }, () => { fetchPosts(); }).subscribe();
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts', filter: `community_id=eq.${community.id}` }, () => { fetchPosts(true); }).subscribe();
     return () => { supabase.removeChannel(sub); };
   }, [community?.id]);
   useEffect(() => { if (community?.id) { fetchWeeklyDigest(community.id); fetchRelatedSpaces(community.name, community.display_name); } }, [community?.id]);
@@ -570,22 +633,49 @@ export default function CommunityPage() {
       if (error) throw error;
       setCommunity(data);
       if (user) {
-        const { data: memberData } = await supabase.from('community_members').select('id, role').eq('community_id', data.id).eq('user_id', user.id).maybeSingle();
-        setIsMember(!!memberData);
+        const { data: memberData } = await supabase.from('community_members').select('id, role, status').eq('community_id', data.id).eq('user_id', user.id).maybeSingle();
+        setIsMember(memberData?.status === 'active');
+        setMemberStatus(memberData?.status === 'active' || memberData?.status === 'pending' ? memberData.status : null);
         if (memberData) setUserRole(memberData.role);
       }
-      const { data: membersData } = await supabase.from('community_members').select('*, user_profiles(username, avatar_url, verified)').eq('community_id', data.id).order('role', { ascending: true }).limit(20);
+      const { data: membersData } = await supabase.from('community_members').select('*, user_profiles:profiles(id, username, avatar_url, verified)').eq('community_id', data.id).order('role', { ascending: true }).limit(20);
       if (membersData) setMembers(membersData);
     } catch { toast({ title: 'Community not found', variant: 'destructive' }); navigate('/communities'); }
     finally { setLoading(false); }
   };
 
-  const fetchPosts = async () => {
+  const [postsCursor, setPostsCursor] = useState<string | null>(null);
+  const [hasMorePosts, setHasMorePosts] = useState(true);
+
+  const fetchPosts = async (reset = true) => {
     if (!community) return;
     setLoadingPosts(true);
     try {
-      const { data } = await supabase.from('posts').select('*, user_profiles(*)').eq('community_id', community.id).order('created_at', { ascending: false });
-      if (data) setPosts(data);
+      let query = supabase.from('posts')
+        .select('*, user_profiles:profiles!posts_author_id_fkey(*)')
+        .eq('community_id', community.id)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(25);
+      if (!reset && postsCursor) query = query.lt('created_at', postsCursor);
+      const { data, error } = await query;
+      if (error) {
+        console.error('Community posts query failed', {
+          communityId: community.id,
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+        });
+        if (reset) setPostsError(error.message || 'Unable to load community posts');
+        throw error;
+      }
+      if (reset) setPostsError(null);
+      const page = Array.isArray(data) ? data : [];
+      setPosts(prev => reset ? page : [...prev, ...page]);
+      setHasMorePosts(page.length === 25);
+      if (page.length) setPostsCursor(page[page.length - 1].created_at);
+      if (reset && !page.length) setPostsCursor(null);
     } catch (err) { console.error('fetchPosts error:', err); }
     finally { setLoadingPosts(false); }
   };
@@ -593,23 +683,40 @@ export default function CommunityPage() {
   const handleJoinToggle = async () => {
     if (!user) { navigate('/auth'); return; }
     if (!community) return;
+    if (memberStatus === 'pending') { toast({ title: 'Request pending', description: 'The community owner has not approved your request yet.' }); return; }
     try {
       if (isMember) {
-        if (userRole === 'owner') { toast({ title: 'Error', description: 'Owners cannot leave.', variant: 'destructive' }); return; }
-        await supabase.from('community_members').delete().match({ community_id: community.id, user_id: user.id });
-        setIsMember(false); toast({ title: 'Left community' });
+        if (userRole === 'owner') {
+          toast({ title: 'Error', description: 'Owners cannot leave.', variant: 'destructive' });
+          return;
+        }
+        const { error } = await supabase.rpc('leave_community', { p_community_id: community.id });
+        if (error) throw error;
+        setIsMember(false);
+        setMemberStatus(null);
+        setUserRole('member');
+        toast({ title: 'Left community' });
       } else {
-        await supabase.from('community_members').insert({ community_id: community.id, user_id: user.id });
-        setIsMember(true); toast({ title: '✅ Joined community!' });
+        const { error } = await supabase.rpc('join_community', { p_community_id: community.id });
+        if (error) throw error;
+        const { data: joinedMembership } = await supabase.from('community_members').select('status, role').eq('community_id', community.id).eq('user_id', user.id).maybeSingle();
+        const nextStatus = joinedMembership?.status === 'pending' ? 'pending' : 'active';
+        setMemberStatus(nextStatus);
+        setIsMember(nextStatus === 'active');
+        if (joinedMembership?.role) setUserRole(joinedMembership.role);
+        toast({ title: nextStatus === 'pending' ? 'Request sent' : '✅ Joined community!', description: nextStatus === 'pending' ? 'The community owner must approve your request.' : undefined });
       }
       fetchCommunity();
-    } catch (error: any) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); }
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
   };
+
 
   const handlePromoteRole = async (memberId: string, _userId: string, newRole: 'member' | 'moderator') => {
     if (!community || !isOwner) return;
     setPromotingMemberId(memberId);
-    const { error } = await supabase.from('community_members').update({ role: newRole }).eq('id', memberId).eq('community_id', community.id);
+    const { data: updated, error } = await supabase.rpc('set_community_member_role', { p_membership_id: memberId, p_role: newRole });
     if (error) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); }
     else { setMembers(prev => prev.map(m => m.id === memberId ? { ...m, role: newRole } : m)); toast({ title: newRole === 'moderator' ? '🛡 Promoted to Moderator' : 'Role changed to Member' }); }
     setPromotingMemberId(null); setShowRoleMenu(null);
@@ -627,7 +734,7 @@ export default function CommunityPage() {
   const handleModDeletePost = async (postId: string) => {
     if (!isAdmin) return;
     if (!window.confirm('Delete this post as moderator?')) return;
-    const { error } = await supabase.from('posts').delete().eq('id', postId);
+    const { error } = await supabase.rpc('moderate_community_post', { p_post_id: postId });
     if (error) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); return; }
     setPosts(prev => prev.filter(p => p.id !== postId));
     toast({ title: 'Post deleted by moderator' });
@@ -637,7 +744,6 @@ export default function CommunityPage() {
   if (!community) return null;
 
   const isOwner = userRole === 'owner';
-  const isAdmin = ['owner', 'moderator'].includes(userRole);
   const canSeeContent = !community.is_private || isMember;
   const onlineMembersEstimate = Math.max(1, Math.floor(community.member_count * 0.04));
 
@@ -679,8 +785,8 @@ export default function CommunityPage() {
             </div>
           </div>
           {user && (
-            <Button onClick={handleJoinToggle} variant={isMember ? 'outline' : 'default'} className="rounded-full flex-shrink-0" size="sm">
-              {isMember ? 'Joined' : (<><UserPlus className="w-4 h-4 mr-1" />Join</>)}
+            <Button onClick={handleJoinToggle} variant={isMember || memberStatus === 'pending' ? 'outline' : 'default'} className="rounded-full flex-shrink-0" size="sm">
+              {memberStatus === 'pending' ? 'Requested' : isMember ? 'Joined' : (<><UserPlus className="w-4 h-4 mr-1" />Join</>)}
             </Button>
           )}
         </div>
@@ -843,13 +949,27 @@ export default function CommunityPage() {
                 <div key={idx} className="flex items-start gap-3 p-3 rounded-xl border border-border bg-muted/20">
                   <div className="w-7 h-7 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-sm shrink-0">{idx + 1}</div>
                   <p className="flex-1 text-sm leading-relaxed pt-0.5">{rule}</p>
-                  {editingRules && <button onClick={async () => { const updated = rules.filter((_, i) => i !== idx); setSavingRules(true); await supabase.from('communities').update({ rules: updated }).eq('id', community.id); setRules(updated); setSavingRules(false); }} className="p-1 text-muted-foreground hover:text-destructive"><Trash2 className="w-3.5 h-3.5" /></button>}
+                  {editingRules && <button onClick={async () => {
+                    const updated = rules.filter((_, i) => i !== idx);
+                    setSavingRules(true);
+                    const { error } = await supabase.rpc('update_community_rules', { p_community_id: community.id, p_rules: updated });
+                    if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' }); else setRules(updated);
+                    setSavingRules(false);
+                  }} className="p-1 text-muted-foreground hover:text-destructive"><Trash2 className="w-3.5 h-3.5" /></button>}
                 </div>
               ))}
               {editingRules && isAdmin && (
                 <div className="mt-2 space-y-2">
                   <textarea value={newRuleText} onChange={e => setNewRuleText(e.target.value)} rows={2} placeholder="Describe the rule…" className="w-full px-4 py-3 rounded-xl border border-border bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary" />
-                  <button disabled={!newRuleText.trim() || savingRules} onClick={async () => { if (!newRuleText.trim()) return; const updated = [...rules, newRuleText.trim()]; setSavingRules(true); await supabase.from('communities').update({ rules: updated }).eq('id', community.id); setRules(updated); setNewRuleText(''); setSavingRules(false); toast({ title: 'Rule added' }); }} className="w-full py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+                  <button disabled={!newRuleText.trim() || savingRules} onClick={async () => {
+                    if (!newRuleText.trim()) return;
+                    const updated = [...rules, newRuleText.trim()];
+                    setSavingRules(true);
+                    const { error } = await supabase.rpc('update_community_rules', { p_community_id: community.id, p_rules: updated });
+                    if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+                    else { setRules(updated); setNewRuleText(''); toast({ title: 'Rule added' }); }
+                    setSavingRules(false);
+                  }} className="w-full py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
                     {savingRules ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}Add Rule
                   </button>
                 </div>
@@ -866,7 +986,7 @@ export default function CommunityPage() {
             const TabIcon = tab === 'posts' ? MessageSquare : tab === 'members' ? Users : tab === 'chat' ? MessageCircle : CalendarDays;
             const tabLabel = tab === 'posts' ? 'Posts' : tab === 'members' ? 'Members' : tab === 'chat' ? 'Chat' : 'Events';
             return (
-              <button key={tab} onClick={() => setActiveTab(tab)}
+              <button key={tab} onClick={() => { setActiveTab(tab); if (community?.name) navigate(`/c/${community.name}/${tab}`); }}
                 className={`flex-shrink-0 flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-colors min-w-0 ${activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'}`}>
                 <TabIcon className="w-4 h-4" />
                 {tabLabel}
@@ -875,7 +995,7 @@ export default function CommunityPage() {
             );
           })}
           {shopUnlocked && (
-            <button onClick={() => setActiveTab('shop')}
+            <button onClick={() => { setActiveTab('shop'); if (community?.name) navigate(`/c/${community.name}/shop`); }}
               className={`flex-shrink-0 flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-colors min-w-0 ${activeTab === 'shop' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'}`}>
               <ShoppingBag className="w-4 h-4" /> Shop
             </button>
@@ -924,11 +1044,18 @@ export default function CommunityPage() {
             )}
             {loadingPosts ? (
               <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+            ) : postsError ? (
+              <div className="flex flex-col items-center text-center py-12 px-6">
+                <div className="w-12 h-12 rounded-full bg-destructive/10 flex items-center justify-center mb-3"><Image className="w-6 h-6 text-destructive" /></div>
+                <p className="font-semibold">Community posts could not be loaded</p>
+                <p className="text-xs text-muted-foreground mt-1 max-w-sm">{postsError}</p>
+                <button onClick={() => void fetchPosts(true)} className="mt-4 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-bold">Retry</button>
+              </div>
             ) : posts.length === 0 ? (
               <div className="flex flex-col items-center text-center py-12 text-muted-foreground"><Image className="w-12 h-12 mb-3 opacity-40" /><p className="font-semibold">No posts yet</p></div>
             ) : (
-              [...posts].sort((a, b) => (pinnedPostIds.has(b.id) ? 1 : 0) - (pinnedPostIds.has(a.id) ? 1 : 0)).map(post => (
-                <div key={post.id} className="relative">
+              [...posts].sort((a, b) => (pinnedPostIds.has(b.id) ? 1 : 0) - (pinnedPostIds.has(a.id) ? 1 : 0)).map((post, index) => (
+                <Fragment key={post.id}><div className="relative">
                   {pinnedPostIds.has(post.id) && <div className="flex items-center gap-1.5 px-4 pt-2 pb-0 text-xs font-semibold text-amber-600"><Pin className="w-3 h-3" /> Pinned</div>}
                   <PostCard post={post} onUpdate={fetchPosts} />
                   {isAdmin && (
@@ -951,8 +1078,15 @@ export default function CommunityPage() {
                       )}
                     </div>
                   )}
-                </div>
+                </div>{index===4&&<ExoClickInlineAd surface="community"/>}</Fragment>
               ))
+            )}
+            {hasMorePosts && (
+              <div className="flex justify-center py-4 border-t border-border">
+                <Button variant="outline" size="sm" className="rounded-full" onClick={() => fetchPosts(false)} disabled={loadingPosts}>
+                  {loadingPosts ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load more posts'}
+                </Button>
+              </div>
             )}
           </div>
         )
@@ -1218,7 +1352,14 @@ export default function CommunityPage() {
                       <div className="absolute right-0 mt-1 w-48 bg-background border border-border rounded-xl shadow-xl z-50 overflow-hidden">
                         {member.role === 'member' && <button onClick={() => handlePromoteRole(member.id, member.user_id, 'moderator')} disabled={promotingMemberId === member.id} className="w-full flex items-center gap-2 px-3 py-3 text-sm hover:bg-muted text-blue-600">{promotingMemberId === member.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}Promote to Moderator</button>}
                         {member.role === 'moderator' && <button onClick={() => handlePromoteRole(member.id, member.user_id, 'member')} disabled={promotingMemberId === member.id} className="w-full flex items-center gap-2 px-3 py-3 text-sm hover:bg-muted text-orange-600">{promotingMemberId === member.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldOff className="w-4 h-4" />}Remove Moderator</button>}
-                        <button onClick={async () => { if (!window.confirm(`Remove @${member.user_profiles?.username}?`)) return; await supabase.from('community_members').delete().eq('id', member.id); setMembers(prev => prev.filter(m => m.id !== member.id)); setShowRoleMenu(null); toast({ title: 'Member removed' }); }} className="w-full flex items-center gap-2 px-3 py-3 text-sm hover:bg-destructive/10 text-destructive border-t border-border"><Trash2 className="w-4 h-4" />Remove</button>
+                        <button onClick={async () => {
+                          if (!window.confirm(`Remove @${member.user_profiles?.username}?`)) return;
+                          const { error } = await supabase.rpc('remove_community_member', { p_membership_id: member.id });
+                          if (error) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); return; }
+                          setMembers(prev => prev.filter(m => m.id !== member.id));
+                          setShowRoleMenu(null);
+                          toast({ title: 'Member removed' });
+                        }} className="w-full flex items-center gap-2 px-3 py-3 text-sm hover:bg-destructive/10 text-destructive border-t border-border"><Trash2 className="w-4 h-4" />Remove</button>
                       </div>
                     </>
                   )}
