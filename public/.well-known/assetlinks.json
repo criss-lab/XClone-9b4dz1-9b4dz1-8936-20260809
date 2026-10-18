@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.xclone.app",
+      "sha256_cert_fingerprints": [
+        "E7:17:82:7E:F5:85:3D:0C:EF:A0:A4:B3:57:70:9C:C9:C8:0F:CF:15:F7:CD:67:55:5A:1B:DA:07:51:3A:6A:C9"
+      ]
+    }
+  }
+]

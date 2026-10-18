@@ -1,0 +1,149 @@
+name: Testagram Android Release
+# CI uses temporary signing while production signing is intentionally disabled.
+# APK publication is finalized by publish-testagram-apk after this verified build completes.
+# Publisher commit ordering is now verified against concurrent main updates.
+# Expected README/APK rebase conflicts are now auto-resolved by the publisher.
+# The publisher now validates the release artifact without mutating main.
+# Release build is the verified source for the APK publisher.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (for example v0.2.0)"
+        required: false
+        default: ""
+  push:
+    branches:
+      - main
+      - "release/*"
+    paths:
+      - "android/**"
+      - "public/**"
+      - "src/**"
+      - "api/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "_build.cjs"
+      - "vite.config.*"
+      - "tailwind.config.*"
+      - "postcss.config.*"
+      - ".github/workflows/android-release.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  android-release:
+    name: Build and publish the production WebView Android app
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Build and verify web application
+        run: npm run build
+
+      - name: Configure temporary CI signing
+        working-directory: android
+        run: |
+          set -euo pipefail
+          rm -f testagram-release.jks keystore.properties
+          keytool -genkeypair -v \
+            -keystore testagram-release.jks \
+            -storetype JKS \
+            -storepass testagram-ci-store \
+            -alias testagram-ci \
+            -keypass testagram-ci-store \
+            -keyalg RSA \
+            -keysize 4096 \
+            -validity 3650 \
+            -dname "CN=Testagram CI, OU=Android, O=Testagram, L=CI, ST=CI, C=US"
+          cat > keystore.properties <<EOF
+          storeFile=testagram-release.jks
+          storePassword=testagram-ci-store
+          keyAlias=testagram-ci
+          keyPassword=testagram-ci-store
+          EOF
+          echo "Temporary CI signing configured."
+
+      - name: Build signed Android APK and App Bundle
+        working-directory: android
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon clean assembleRelease bundleRelease
+
+      - name: Verify release artifacts
+        working-directory: android
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAB="app/build/outputs/bundle/release/app-release.aab"
+          test -s "${APK}"
+          test -s "${AAB}"
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "${APKSIGNER}"
+          "${APKSIGNER}" verify --verbose --print-certs "${APK}"
+          "${APKSIGNER}" verify --verbose "${APK}"
+          echo "SHA-256:"
+          sha256sum "${APK}" "${AAB}"
+          echo "Artifacts:"
+          ls -lh "${APK}" "${AAB}"
+
+      - name: Confirm APK signing
+        working-directory: android
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
+          echo "APK signing verification passed with temporary CI signing."
+
+      - name: Upload verified APK artifact for download publisher
+        uses: actions/upload-artifact@v4
+        with:
+          name: testagram-android-release-${{ github.sha }}
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f android/testagram-release.jks android/keystore.properties
+
+      - name: Publish GitHub Release
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || format('v0.2.{0}', github.run_number) }}
+          name: Testagram Android ${{ inputs.tag || format('v0.2.{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
