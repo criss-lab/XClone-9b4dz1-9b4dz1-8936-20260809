@@ -3,6 +3,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { backendCapabilities, requireAccessToken } from '@/services/backendClient';
 import { pingGoogleSitemap } from '@/lib/pingGoogle';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -16,6 +17,7 @@ import { GifPicker } from './GifPicker';
 import { toast as sonnerToast } from 'sonner';
 import * as federation from '@/api/federation';
 import { detectEmbed, ComposeEmbedPreview, OGLinkCard } from './EmbedRenderer';
+import { uploadTestagramMedia, attachTestagramMedia, deleteTestagramMedia } from '@/services/mediaClient';
 
 interface ComposePostProps {
   onSuccess?: () => void;
@@ -74,12 +76,40 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
   const [embedPlatform, setEmbedPlatform] = useState(null as string | null);
   const { toast } = useToast();
 
+  // Daily content allowance: posts + threads share one 10/day quota.
+  const [creationQuota, setCreationQuota] = useState({ used: 0, remaining: 10, limit: 10 });
+  const loadCreationQuota = useCallback(async () => {
+    if (!user) return;
+    const { data, error } = await supabase.rpc('get_daily_content_creation_status');
+    if (!error && data) {
+      const row = Array.isArray(data) ? data[0] : data;
+      if (row) {
+        setCreationQuota({
+          used: Number(row.used ?? 0),
+          remaining: Number(row.remaining ?? 10),
+          limit: Number(row.daily_limit ?? 10),
+        });
+      }
+    }
+  }, [user]);
+
+  useEffect(() => {
+    void loadCreationQuota();
+  }, [loadCreationQuota]);
+
   // ── @Mentions Autocomplete ─────────────────────────────────────────────────
   const textareaRef = useRef(null as HTMLTextAreaElement | null);
   const [mentionQuery, setMentionQuery] = useState(null as string | null);
   const [mentionResults, setMentionResults] = useState([]);
   const [mentionIdx, setMentionIdx] = useState(0);
   const mentionSearchRef = useRef(null as string | null);
+  const mentionSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hashtagSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRevisionRef = useRef(0);
+  const [hashtagQuery, setHashtagQuery] = useState(null as string | null);
+  const [hashtagResults, setHashtagResults] = useState<any[]>([]);
+  const [hashtagIdx, setHashtagIdx] = useState(0);
+  const hashtagSearchRef = useRef(null as string | null);
 
   // Load draft on mount
   useEffect(() => {
@@ -92,10 +122,10 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     } catch { /* ignore */ }
   }, []);
 
-  // Auto-save draft every 5s while typing
+  // Persist drafts without creating/tearing down a timer on every keystroke.
   useEffect(() => {
-    if (!content.trim()) return;
     if (draftAutoSaveRef.current) clearInterval(draftAutoSaveRef.current);
+    if (!content.trim()) return;
     draftAutoSaveRef.current = setInterval(() => {
       try {
         const nowIso = new Date().toISOString();
@@ -103,7 +133,9 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
         setDraftSavedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       } catch { /* ignore */ }
     }, 5000);
-    return () => { if (draftAutoSaveRef.current) clearInterval(draftAutoSaveRef.current); };
+    return () => {
+      if (draftAutoSaveRef.current) clearInterval(draftAutoSaveRef.current);
+    };
   }, [content]);
 
   const restoreDraft = () => {
@@ -122,29 +154,120 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     setHasDraft(false);
   };
 
-  const handleContentChange = useCallback(async (val: string) => {
+  // Keep keystrokes on the main thread. Network-backed mention/hashtag
+  // lookups are deliberately debounced and never awaited from onChange.
+  // Awaiting a search for every character can queue many promises, rerender
+  // suggestion state repeatedly, and make low-memory mobile Chrome unresponsive.
+  const handleContentChange = useCallback((val: string) => {
     setContent(val);
-    // Link preview detection (first URL) — detect embed type
+
+    const revision = ++inputRevisionRef.current;
+    if (mentionSearchTimerRef.current) clearTimeout(mentionSearchTimerRef.current);
+    if (hashtagSearchTimerRef.current) clearTimeout(hashtagSearchTimerRef.current);
+
     const urlMatch = val.match(/https?:\/\/[^\s]+/);
-    if (urlMatch) {
-      const isEmbed = !!detectEmbed(urlMatch[0]);
-      setLinkPreview({ url: urlMatch[0], isEmbed });
-    } else {
-      setLinkPreview(null);
-    }
+    setLinkPreview(urlMatch
+      ? { url: urlMatch[0], isEmbed: !!detectEmbed(urlMatch[0]) }
+      : null);
+
     const ta = textareaRef.current;
     const pos = ta?.selectionStart ?? val.length;
     const before = val.slice(0, pos);
     const atMatch = before.match(/@(\w*)$/);
-    if (!atMatch) { setMentionQuery(null); setMentionResults([]); return; }
-    const q = atMatch[1];
-    setMentionQuery(q);
-    setMentionIdx(0);
-    mentionSearchRef.current = q;
-    if (q.length === 0) { setMentionResults([]); return; }
-    const { data } = await supabase.from('user_profiles').select('id, username, avatar_url').ilike('username', `${q}%`).limit(5);
-    if (mentionSearchRef.current === q) setMentionResults(data ?? []);
-  }, [linkPreview]);
+    const hashMatch = before.match(/(^|\s)#([\w-]*)$/);
+
+    setMentionResults([]);
+    setHashtagResults([]);
+
+    if (atMatch) {
+      const q = atMatch[1];
+      mentionSearchRef.current = q;
+      setHashtagQuery(null);
+      setMentionQuery(q);
+      setMentionIdx(0);
+
+      // Showing an empty popup for a bare '@' is unnecessary work.
+      if (q.length < 2) return;
+
+      mentionSearchTimerRef.current = setTimeout(() => {
+        void (async () => {
+          try {
+            const local = await backendCapabilities.searchUsers(q, 5);
+            if (revision !== inputRevisionRef.current || mentionSearchRef.current !== q) return;
+
+            let items: any[] = local.items as any[];
+            // Federation search is much more expensive than local search.
+            // Only invoke it when local search has no useful matches.
+            if (items.length === 0) {
+              try {
+                const remote = await federation.search('@' + q, 'users');
+                if (revision !== inputRevisionRef.current || mentionSearchRef.current !== q) return;
+                const remoteItems = (remote ?? []).slice(0, 5).map((a: any) => ({
+                  id: 'fed:' + String(a.uri ?? a.id ?? a.url),
+                  username: a.username ?? a.preferredUsername ?? 'user',
+                  display_name: a.display_name ?? a.displayName ?? a.username ?? 'Fediverse user',
+                  avatar_url: a.avatar ?? a.icon?.url ?? null,
+                  origin: 'fediverse',
+                  actor_uri: a.uri ?? a.actor_uri ?? a.url ?? null,
+                  acct: a.acct ?? null,
+                }));
+                const seen = new Set<string>();
+                items = [...items, ...remoteItems].filter((item: any) => {
+                  const key = String(item.acct ?? item.username).toLowerCase();
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                }).slice(0, 5);
+              } catch {
+                // Remote autocomplete is optional; typing must never depend on it.
+              }
+            }
+            if (revision === inputRevisionRef.current && mentionSearchRef.current === q) {
+              setMentionResults(items);
+            }
+          } catch {
+            if (revision === inputRevisionRef.current && mentionSearchRef.current === q) {
+              setMentionResults([]);
+            }
+          }
+        })();
+      }, 250);
+      return;
+    }
+
+    setMentionQuery(null);
+    if (!hashMatch) {
+      setHashtagQuery(null);
+      return;
+    }
+
+    const q = hashMatch[2].toLowerCase();
+    hashtagSearchRef.current = q;
+    setHashtagQuery(q);
+    setHashtagIdx(0);
+
+    if (q.length < 2) return;
+
+    hashtagSearchTimerRef.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const { data } = await supabase.from('hashtags')
+            .select('id,tag,usage_count,post_count,federated_post_count')
+            .ilike('tag', q + '%')
+            .order('usage_count', { ascending: false })
+            .order('federated_post_count', { ascending: false })
+            .limit(8);
+          if (revision === inputRevisionRef.current && hashtagSearchRef.current === q) {
+            setHashtagResults(data ?? []);
+          }
+        } catch {
+          if (revision === inputRevisionRef.current && hashtagSearchRef.current === q) {
+            setHashtagResults([]);
+          }
+        }
+      })();
+    }, 250);
+  }, []);
 
   const insertMention = useCallback((username: string) => {
     const ta = textareaRef.current;
@@ -177,13 +300,30 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     sonnerToast.success('Embed URL added to post');
   };
 
+  const insertHashtag = useCallback((tag: string) => {
+    const ta = textareaRef.current;
+    const pos = ta?.selectionStart ?? content.length;
+    const before = content.slice(0, pos);
+    const after = content.slice(pos);
+    const replaced = before.replace(/(^|\s)#([\w-]*)$/, '$1#' + tag.replace(/^#/, '') + ' ');
+    setContent(replaced + after);
+    setHashtagQuery(null); setHashtagResults([]);
+    setTimeout(() => { if (ta) { ta.focus(); ta.setSelectionRange(replaced.length, replaced.length); } }, 0);
+  }, [content]);
+
   const handleMentionKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (hashtagQuery !== null && hashtagResults.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setHashtagIdx(i => Math.min(i + 1, hashtagResults.length - 1)); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setHashtagIdx(i => Math.max(i - 1, 0)); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && hashtagResults[hashtagIdx]) { e.preventDefault(); insertHashtag(hashtagResults[hashtagIdx].tag); return; }
+      if (e.key === 'Escape') { setHashtagQuery(null); setHashtagResults([]); return; }
+    }
     if (mentionResults.length === 0 || mentionQuery === null) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIdx(i => Math.min(i + 1, mentionResults.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIdx(i => Math.max(i - 1, 0)); }
-    else if ((e.key === 'Enter' || e.key === 'Tab') && mentionResults[mentionIdx]) { e.preventDefault(); insertMention(mentionResults[mentionIdx].username); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && mentionResults[mentionIdx]) { e.preventDefault(); insertMention(mentionResults[mentionIdx].acct ?? mentionResults[mentionIdx].username); }
     else if (e.key === 'Escape') { setMentionQuery(null); setMentionResults([]); }
-  }, [mentionResults, mentionQuery, mentionIdx, insertMention]);
+  }, [mentionResults, mentionQuery, mentionIdx, insertMention, hashtagQuery, hashtagResults, hashtagIdx, insertHashtag]);
 
   // ── AI Caption Generator ─────────────────────────────────────────────────
   const [showCaptionGen, setShowCaptionGen] = useState(false);
@@ -269,7 +409,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     const videoElement = document.createElement('video');
     videoElement.src = videoUrl;
     videoElement.onloadedmetadata = () => {
-      const maxDuration = user?.creator_tier !== 'free' ? 3600 : 600;
+      const maxDuration = (user as any)?.creator_tier !== 'free' ? 3600 : 600;
       if (videoElement.duration > maxDuration) {
         sonnerToast.error(`Video duration cannot exceed ${Math.floor(maxDuration / 60)} minutes`);
         URL.revokeObjectURL(videoUrl); return;
@@ -324,78 +464,132 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
     violationCheckedRef.current = false; // reset for next post
     setLoading(true);
     try {
+      // Capture one canonical session JWT for the whole publish transaction.
+      // Uploading media must never cause the subsequent post/attach calls to
+      // silently re-read a different/empty Auth state.
+      const publishAccessToken = await requireAccessToken();
       let imageUrls: string[] = [];
+      let uploadedMediaIds: string[] = [];
       let videoUrl = null;
 
       if (images.length > 0) {
-        sonnerToast.loading(`Uploading ${images.length} image(s)...`);
-        for (let i = 0; i < images.length; i++) {
-          const image = images[i];
-          const fileExt = image.name.split('.').pop();
-          const fileName = `${user!.id}/${Date.now()}_${i}.${fileExt}`;
-          const { error: uploadError } = await supabase.storage.from('posts').upload(fileName, image, { cacheControl: '3600', upsert: false });
-          if (uploadError) { sonnerToast.error(`Failed to upload image ${i + 1}`); continue; }
-          const { data: { publicUrl } } = supabase.storage.from('posts').getPublicUrl(fileName);
-          imageUrls.push(publicUrl);
+        sonnerToast.loading(`Uploading ${images.length} image(s) in parallel…`);
+        try {
+          // Upload the selected images concurrently. The composer already caps
+          // selection at four files, so this removes unnecessary serial waiting
+          // without creating unbounded browser/network fan-out.
+          const uploadedImages = await Promise.all(
+            images.map(file => uploadTestagramMedia(file, null, null, publishAccessToken)),
+          );
+          for (const media of uploadedImages) {
+            if (!media.public_url) throw new Error('The media service did not return a usable file URL.');
+            imageUrls.push(media.public_url);
+            uploadedMediaIds.push(String(media.media_id || (media as any).id || ''));
+          }
+        } catch (uploadError: any) {
+          sonnerToast.dismiss();
+          await Promise.allSettled(uploadedMediaIds.map(mediaId => deleteTestagramMedia(mediaId, publishAccessToken)));
+          sonnerToast.error(uploadError?.message ?? 'Could not upload the selected images. Please try again.');
+          setLoading(false);
+          return;
         }
         sonnerToast.dismiss();
-        if (imageUrls.length > 0) sonnerToast.success(`${imageUrls.length} image(s) uploaded!`);
+        if (imageUrls.length > 0) sonnerToast.loading(`${imageUrls.length} image(s) uploaded — publishing post…`);
       }
 
       if (video) {
-        sonnerToast.loading('Uploading video...');
-        const fileExt = video.name.split('.').pop();
-        const fileName = `videos/${user!.id}/${Date.now()}.${fileExt}`;
-        const { data: uploadData, error: uploadError } = await supabase.storage.from('posts').upload(fileName, video, { cacheControl: '3600', upsert: false });
-        if (uploadError) { sonnerToast.dismiss(); sonnerToast.error(`Upload failed: ${uploadError.message}`); setLoading(false); return; }
-        const { data: { publicUrl } } = supabase.storage.from('posts').getPublicUrl(fileName);
-        videoUrl = publicUrl;
-        sonnerToast.dismiss();
-        sonnerToast.success('Video uploaded!');
+        sonnerToast.loading('Uploading video to secure media storage...');
+        try {
+          const media = await uploadTestagramMedia(video,null,null,publishAccessToken);
+          if (!media.public_url) throw new Error('The media service did not return a usable file URL.');
+          videoUrl = media.public_url;
+          uploadedMediaIds.push(media.media_id);
+          sonnerToast.dismiss();
+          sonnerToast.success('Video uploaded securely!');
+        } catch (uploadError: any) {
+          sonnerToast.dismiss();
+          sonnerToast.error(`Upload failed: ${uploadError?.message ?? 'unknown error'}`);
+          setLoading(false);
+          return;
+        }
       }
 
       if (scheduledDate) {
-        const { error: scheduleError } = await supabase.from('scheduled_posts').insert({ user_id: user!.id, content: content.trim(), image_url: imageUrls[0] ?? gifUrl ?? null, video_url: videoUrl, scheduled_for: scheduledDate.toISOString(), status: 'pending' });
-        if (scheduleError) throw scheduleError;
-        setContent(''); setImages([]); setVideo(null); setPollData(null); setGifUrl(null); setScheduledDate(null); setTaggedProducts([]);
+        if (images.length > 0 || video || gifUrl || pollData || taggedProducts.length > 0) {
+          throw new Error('Scheduled posts currently support text only. Remove media, poll, GIF, or product tags before scheduling.');
+        }
+        await backendCapabilities.schedulePost(content.trim(), scheduledDate.toISOString());
+        setContent('');
+      void loadCreationQuota(); setScheduledDate(null);
         toast({ title: 'Success', description: 'Post scheduled successfully' });
         onSuccess?.();
         setLoading(false);
         return;
       }
 
-      const postPayload: any = { user_id: user!.id, content: content.trim() || '', community_id: communityId || null, media_urls: [], media_count: 0, is_video: false };
+      const mediaUrls = imageUrls.length > 0 ? imageUrls : (gifUrl ? [gifUrl] : []);
 
-      if (videoUrl && video) {
-        postPayload.video_url = videoUrl; postPayload.is_video = true; postPayload.image_url = null;
-      } else if (imageUrls.length > 0) {
-        postPayload.image_url = imageUrls[0]; postPayload.media_urls = imageUrls; postPayload.media_count = imageUrls.length;
-      } else if (gifUrl) {
-        postPayload.image_url = gifUrl; postPayload.media_urls = [gifUrl]; postPayload.media_count = 1;
-      }
-
-      const { data: postData, error: postError } = await supabase.from('posts').insert(postPayload).select().single();
-      if (postError) throw postError;
-
-      if (pollData && postData) {
-        const expiresAt = new Date(Date.now() + pollData.duration * 60 * 1000);
-        const { data: poll, error: pollError } = await supabase.from('polls').insert({ post_id: postData.id, question: pollData.question, expires_at: expiresAt.toISOString() }).select().single();
-        if (pollError) throw pollError;
-        await supabase.from('poll_options').insert(pollData.options.map((opt: string) => ({ poll_id: poll.id, option_text: opt })));
-      }
-
-      if (taggedProducts.length > 0 && postData) {
-        await supabase.from('product_tags').insert(taggedProducts.map(p => ({ post_id: postData.id, product_id: p.id }))).select().then(() => {});
-      }
-
-      const mentionMatches = content.match(/@(\w+)/g);
-      if (mentionMatches && postData) {
-        const uniqueUsernames = [...new Set(mentionMatches.map(m => m.slice(1).toLowerCase()))];
-        const { data: mentionedUsers } = await supabase.from('user_profiles').select('id, username').in('username', uniqueUsernames).neq('id', user!.id);
-        if (mentionedUsers && mentionedUsers.length > 0) {
-          await supabase.from('notifications').insert(mentionedUsers.map(mu => ({ user_id: mu.id, type: 'mention', from_user_id: user!.id, post_id: postData.id })));
-          await supabase.from('mentions').insert(mentionedUsers.map(mu => ({ post_id: postData.id, mentioned_user_id: mu.id }))).select().then(() => {});
+      // A remote Fediverse quote target is an ActivityPub URI, not a local post UUID.
+      // Deliver it through federation instead of sending the URI into the local posts FK.
+      if (quotedPostId && /^https:\/\//i.test(quotedPostId)) {
+        if (mediaUrls.length > 0 || videoUrl || pollData || taggedProducts.length > 0) {
+          throw new Error('Remote Fediverse quotes currently support text only.');
         }
+        await federation.quoteStatus(quotedPostId, content.trim());
+        setContent(''); setImages([]); setVideo(null); setPollData(null); setGifUrl(null); setScheduledDate(null); setTaggedProducts([]);
+        sonnerToast.success('Quote posted to the remote Fediverse post.');
+        onSuccess?.();
+        setLoading(false);
+        return;
+      }
+
+      let postResult: { post_id: string; poll_id?: string | null; created: boolean };
+      try {
+        postResult = await backendCapabilities.createPost({
+        content: content.trim() || '',
+        communityId,
+        mediaUrls,
+        mediaCount: mediaUrls.length,
+        imageUrl: imageUrls[0] ?? gifUrl ?? undefined,
+        videoUrl: videoUrl ?? undefined,
+        isVideo: !!videoUrl,
+        quotedPostId: quotedPostId ?? undefined,
+        productIds: taggedProducts.map((p: any) => String(p.id)),
+        poll: pollData ? {
+          question: pollData.question,
+          options: pollData.options,
+          durationMinutes: pollData.duration,
+        } : undefined,
+      }, publishAccessToken);
+      } catch (createError) {
+        await Promise.allSettled(uploadedMediaIds.map(mediaId => deleteTestagramMedia(mediaId, publishAccessToken)));
+        throw createError;
+      }
+      const resolvedPostId = String((postResult as any)?.post_id || (postResult as any)?.id || (postResult as any)?.post?.id || (postResult as any)?.data?.post_id || '');
+      if (!resolvedPostId) throw new Error('Post was created but the backend did not return its post ID. Media cannot be attached safely.');
+      const postData = { id: resolvedPostId };
+
+      // Bind uploaded media assets to the newly-created post. The binary upload
+      // happens before post creation so the R2 transfer is never coupled to a DB
+      // insert; this second step makes the relationship authoritative.
+      if (uploadedMediaIds.length > 0) {
+        try {
+          sonnerToast.loading('Finalizing media attachments…');
+          await Promise.all(uploadedMediaIds.map((mediaId) => attachTestagramMedia(mediaId, resolvedPostId, publishAccessToken)));
+        } catch (mediaAttachError: any) {
+          await Promise.allSettled(uploadedMediaIds.map(mediaId => deleteTestagramMedia(mediaId, publishAccessToken)));
+          throw new Error(mediaAttachError?.message ?? 'Post media could not be linked to the post.');
+        }
+      }
+
+      // Persist local quote linkage separately from post creation so quote
+      // metadata cannot be silently dropped by an older create-post path.
+      if (quotedPostId && !/^https:\/\//i.test(quotedPostId)) {
+        const { error: quoteError } = await supabase.rpc('testagram_record_local_quote', {
+          p_post_id: resolvedPostId,
+          p_quoted_post_id: quotedPostId,
+        });
+        if (quoteError) throw quoteError;
       }
 
       if (postToFediverse) {
@@ -404,10 +598,12 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
       }
 
       setContent(''); setImages([]); setVideo(null); setPollData(null); setGifUrl(null); setScheduledDate(null); setTaggedProducts([]); setPostToFediverse(false);
+      void loadCreationQuota();
       // Clear draft on successful post
       localStorage.removeItem(DRAFT_KEY);
       setHasDraft(false);
       setDraftSavedAt(null);
+      sonnerToast.dismiss();
       sonnerToast.success('Post created successfully!');
       toast({ title: 'Success', description: 'Post created successfully' });
       pingGoogleSitemap();
@@ -446,18 +642,7 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
                 : `🏆 Your post entered the "${firstChallenge.title}" challenge!`,
               { duration: 6000, action: { label: 'View', onClick: () => window.location.href = `/challenge/${firstChallenge.id}` } }
             );
-            // Insert platform_inbox notification
-            await supabase.from('platform_inbox').insert({
-              user_id: user!.id,
-              subject: `🏆 You entered the "${firstChallenge.title}" challenge!`,
-              body: `Your post with #${uniqueTags[0] ?? ''} was entered into the active challenge "${firstChallenge.title}"${
-                firstChallenge.prize ? ` — Prize: ${firstChallenge.prize}` : ''
-              }. Check the leaderboard to see how you rank!`,
-              type: 'update',
-              icon_emoji: '🏆',
-              cta_label: 'View Challenge',
-              cta_url: `/challenge/${firstChallenge.id}`,
-            }).catch(() => {});
+            // Challenge delivery remains read/toast-only here; notification writes are server-owned.
           }
         }
       }
@@ -465,8 +650,10 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
       onSuccess?.();
     } catch (error: any) {
       console.error('Post error:', error);
-      sonnerToast.error(error.message || 'Failed to create post');
-      toast({ title: 'Error', description: error.message || 'Failed to create post', variant: 'destructive' });
+      // One publish failure = one user-facing error. Previously both Sonner and
+      // the app toast rendered the same backend error, making a single auth
+      // failure look like two separate failures.
+      sonnerToast.error(error?.message || 'Failed to create post');
     } finally {
       setLoading(false);
     }
@@ -534,15 +721,28 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
               onClick={async () => {
                 const validParts = threadParts.filter(p => p.trim());
                 if (validParts.length < 2) { sonnerToast.error('Add at least 2 parts to post a thread'); return; }
-                setLoading(true);
-                for (let idx = 0; idx < validParts.length; idx++) {
-                  const part = validParts[idx];
-                  const label = validParts.length > 1 ? ` \ud83e\uddf5 ${idx + 1}/${validParts.length}\n\n` : '';
-                  await supabase.from('posts').insert({ user_id: user!.id, content: label + part.trim(), community_id: communityId || null });
+                if (creationQuota.remaining < validParts.length) {
+                  sonnerToast.error(`You have ${creationQuota.remaining} creation${creationQuota.remaining === 1 ? '' : 's'} remaining today; this thread needs ${validParts.length}.`);
+                  return;
                 }
-                setLoading(false); setShowThreadMode(false); setThreadParts(['', '']);
-                sonnerToast.success(`Thread posted (${validParts.length} parts)!`);
-                onSuccess?.();
+                setLoading(true);
+                try {
+                  for (let idx = 0; idx < validParts.length; idx++) {
+                    const part = validParts[idx];
+                    const label = validParts.length > 1 ? ` 🧵 ${idx + 1}/${validParts.length}\n\n` : '';
+                    await backendCapabilities.createPost({ content: label + part.trim(), communityId });
+                  }
+                  setShowThreadMode(false);
+                  setThreadParts(['', '']);
+                  void loadCreationQuota();
+                  sonnerToast.success(`Thread posted (${validParts.length} parts)!`);
+                  onSuccess?.();
+                } catch (error: any) {
+                  void loadCreationQuota();
+                  sonnerToast.error(error?.message || 'Thread could not be completed. Any posts already created remain published.');
+                } finally {
+                  setLoading(false);
+                }
               }}
               className="ml-auto flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-full font-bold text-sm disabled:opacity-50 hover:opacity-90">
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Post Thread
@@ -620,18 +820,31 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
               className="min-h-[80px] border-0 resize-none focus-visible:ring-0 p-0 text-lg bg-transparent w-full"
               maxLength={700}
             />
+            {/* #Hashtag suggestions — includes hashtags discovered from federated content */}
+            {hashtagQuery !== null && hashtagResults.length > 0 && (
+              <div className="absolute z-50 left-0 mt-1 w-72 bg-popover border border-border rounded-xl shadow-xl overflow-hidden">
+                {hashtagResults.map((h, i) => (
+                  <button key={h.id} onMouseDown={e => { e.preventDefault(); insertHashtag(h.tag); }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${i === hashtagIdx ? 'bg-primary/10' : 'hover:bg-muted'}`}>
+                    <span className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0"><Hash className="w-3.5 h-3.5 text-primary"/></span>
+                    <span className="min-w-0 flex-1"><span className="font-semibold text-sm block truncate">#{h.tag}</span><span className="text-[10px] text-muted-foreground">{Number(h.usage_count ?? 0) + Number(h.federated_post_count ?? 0)} posts discovered</span></span>
+                    {Number(h.federated_post_count ?? 0) > 0 && <Globe className="w-3.5 h-3.5 text-sky-500 shrink-0" aria-label="Fediverse hashtag"/>}
+                  </button>
+                ))}
+              </div>
+            )}
             {/* @Mentions dropdown */}
             {mentionQuery !== null && mentionResults.length > 0 && (
               <div className="absolute z-50 left-0 mt-1 w-64 bg-popover border border-border rounded-xl shadow-xl overflow-hidden">
                 {mentionResults.map((u, i) => (
-                  <button key={u.id} onMouseDown={e => { e.preventDefault(); insertMention(u.username); }}
+                  <button key={u.id} onMouseDown={e => { e.preventDefault(); insertMention(u.acct ?? u.username); }}
                     className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${i === mentionIdx ? 'bg-primary/10' : 'hover:bg-muted'}`}>
                     <div className="w-7 h-7 rounded-full bg-muted overflow-hidden flex-shrink-0">
                       {u.avatar_url
                         ? <img src={u.avatar_url} alt={u.username} className="w-full h-full object-cover" />
                         : <div className="w-full h-full flex items-center justify-center text-xs font-bold">{u.username[0]?.toUpperCase()}</div>}
                     </div>
-                    <p className="font-semibold text-sm truncate">@{u.username}</p>
+                    <p className="font-semibold text-sm truncate">@{u.acct ?? u.username}</p>
                     <AtSign className="w-3 h-3 text-primary ml-auto flex-shrink-0" />
                   </button>
                 ))}
@@ -726,62 +939,38 @@ export function ComposePost({ onSuccess, communityId }: ComposePostProps) {
             </div>
           )}
 
-          {/* Toolbar */}
-          <div className="flex items-center justify-between mt-3 pt-3 border-t border-border overflow-x-auto">
-            <div className="flex space-x-2">
-              <label className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors flex-shrink-0">
-                <Image className="w-5 h-5" />
+          {/* Creation tools — responsive grid keeps every action reachable without crowding. */}
+          <div className="mt-3 pt-3 border-t border-border space-y-3">
+            <div className="grid grid-cols-4 sm:grid-cols-8 lg:grid-cols-11 gap-1" role="toolbar" aria-label="Post creation tools">
+              <label className="flex h-10 w-full items-center justify-center cursor-pointer hover:bg-primary/10 rounded-xl text-primary transition-colors" title="Add images">
+                <Image className="w-5 h-5" aria-hidden="true" /><span className="sr-only">Add images</span>
                 <input type="file" accept="image/*" multiple className="hidden" onChange={handleImageChange} disabled={loading || !!video || !!gifUrl || images.length >= 4} />
               </label>
-              <label className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors flex-shrink-0">
-                <Video className="w-5 h-5" />
+              <label className="flex h-10 w-full items-center justify-center cursor-pointer hover:bg-primary/10 rounded-xl text-primary transition-colors" title="Add video">
+                <Video className="w-5 h-5" aria-hidden="true" /><span className="sr-only">Add video</span>
                 <input type="file" accept="video/*" className="hidden" onChange={handleVideoChange} disabled={loading || images.length > 0 || !!gifUrl} />
               </label>
-              <button onClick={() => setShowGifDialog(true)} disabled={loading || images.length > 0 || !!video} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Add GIF">
-                <Smile className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowPollDialog(true)} disabled={loading || !!pollData} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Add poll">
-                <BarChart3 className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowScheduleDialog(true)} disabled={loading || !!scheduledDate} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Schedule post">
-                <Calendar className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowProductDialog(true)} disabled={loading} className="cursor-pointer p-2 hover:bg-primary/10 rounded-full text-primary transition-colors disabled:opacity-50 flex-shrink-0" title="Tag products">
-                <ShoppingBag className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowThreadMode(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showThreadMode ? 'bg-primary/20 text-primary' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="Thread composer">
-                <Hash className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowCaptionGen(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showCaptionGen ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="AI Caption Generator">
-                <Sparkles className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowAiWriter(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showAiWriter ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="AI Post Writer">
-                <Wand2 className="w-5 h-5" />
-              </button>
-              <button onClick={() => setPostToFediverse(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${postToFediverse ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title={postToFediverse ? 'Will post to Fediverse' : 'Also post to Fediverse'}>
-                <Globe className="w-5 h-5" />
-              </button>
-              <button onClick={() => setShowEmbedDialog(v => !v)} disabled={loading}
-                className={`cursor-pointer p-2 rounded-full transition-colors disabled:opacity-50 flex-shrink-0 ${showEmbedDialog ? 'bg-blue-500/20 text-blue-600' : 'hover:bg-primary/10 text-muted-foreground'}`}
-                title="Embed media (YouTube, Spotify, CodePen…)">
-                <Link2 className="w-5 h-5" />
-              </button>
+              <button type="button" onClick={() => setShowGifDialog(true)} disabled={loading || images.length > 0 || !!video} className="flex h-10 w-full items-center justify-center rounded-xl text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Add GIF" aria-label="Add GIF"><Smile className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowPollDialog(true)} disabled={loading || !!pollData} className="flex h-10 w-full items-center justify-center rounded-xl text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Add poll" aria-label="Add poll"><BarChart3 className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowScheduleDialog(true)} disabled={loading || !!scheduledDate} className="flex h-10 w-full items-center justify-center rounded-xl text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Schedule post" aria-label="Schedule post"><Calendar className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowProductDialog(true)} disabled={loading} className="flex h-10 w-full items-center justify-center rounded-xl text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Tag products" aria-label="Tag products"><ShoppingBag className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowThreadMode(v => !v)} disabled={loading || creationQuota.remaining <= 0} className={`flex h-10 w-full items-center justify-center rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${showThreadMode ? 'bg-primary/20 text-primary' : 'hover:bg-primary/10 text-muted-foreground'}`} title="Thread composer" aria-label="Thread composer"><Hash className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowCaptionGen(v => !v)} disabled={loading} className={`flex h-10 w-full items-center justify-center rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${showCaptionGen ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'hover:bg-primary/10 text-muted-foreground'}`} title="AI Caption Generator" aria-label="AI Caption Generator"><Sparkles className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowAiWriter(v => !v)} disabled={loading} className={`flex h-10 w-full items-center justify-center rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${showAiWriter ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`} title="AI Post Writer" aria-label="AI Post Writer"><Wand2 className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setPostToFediverse(v => !v)} disabled={loading} className={`flex h-10 w-full items-center justify-center rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${postToFediverse ? 'bg-purple-500/20 text-purple-600 dark:text-purple-400' : 'hover:bg-primary/10 text-muted-foreground'}`} title={postToFediverse ? 'Will post to Fediverse' : 'Also post to Fediverse'} aria-label="Post to Fediverse"><Globe className="w-5 h-5" /></button>
+              <button type="button" onClick={() => setShowEmbedDialog(v => !v)} disabled={loading} className={`flex h-10 w-full items-center justify-center rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${showEmbedDialog ? 'bg-blue-500/20 text-blue-600' : 'hover:bg-primary/10 text-muted-foreground'}`} title="Embed media" aria-label="Embed media"><Link2 className="w-5 h-5" /></button>
             </div>
-            <div className="flex items-center space-x-3 flex-shrink-0">
-              {images.length > 0 && <span className="text-sm text-muted-foreground">{images.length}/4 images</span>}
-              {content.length > 0 && <span className={`text-sm ${content.length > 680 ? 'text-destructive' : 'text-muted-foreground'}`}>{content.length}/700</span>}
-              {postToFediverse && <span className="flex items-center gap-1 text-xs text-purple-500 font-medium"><Globe className="w-3 h-3" />+Fediverse</span>}
-              <Button onClick={handlePost} disabled={loading || (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData) || content.length > 700} className="rounded-full px-6 font-semibold">
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Post'}
-              </Button>
+            <div className="grid grid-cols-1 sm:grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+              <div className="inline-flex w-fit max-w-full items-center gap-2 px-2.5 py-1.5 rounded-full bg-muted/60 border border-border text-xs whitespace-nowrap" title="Posts and threads share this daily limit">
+                <span className={creationQuota.remaining === 0 ? 'text-destructive font-bold' : 'text-muted-foreground'}>{creationQuota.used}/{creationQuota.limit} today</span>
+                <span className={creationQuota.remaining === 0 ? 'text-destructive font-semibold' : 'text-primary font-semibold'}>{creationQuota.remaining} remaining</span>
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground sm:justify-end">
+                {images.length > 0 && <span className="whitespace-nowrap">{images.length}/4 images</span>}
+                {content.length > 0 && <span className={`whitespace-nowrap ${content.length > 680 ? 'text-destructive' : ''}`}>{content.length}/700</span>}
+                {postToFediverse && <span className="flex items-center gap-1 whitespace-nowrap text-xs text-purple-500 font-medium"><Globe className="w-3 h-3" />+Fediverse</span>}
+              </div>
+              <Button type="button" onClick={handlePost} disabled={loading || creationQuota.remaining <= 0 || (!content.trim() && images.length === 0 && !video && !gifUrl && !pollData) || content.length > 700} className="w-full sm:w-auto rounded-full px-6 font-semibold">{loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Post'}</Button>
             </div>
           </div>
 

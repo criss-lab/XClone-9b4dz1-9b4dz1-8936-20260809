@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { VerifiedTick } from '@/components/ui/VerifiedTick';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsRegulator } from '@/hooks/useFeatureUnlock';
@@ -9,7 +10,7 @@ import { EditProfileDialog } from '@/components/features/EditProfileDialog';
 import { RevenueAnalyticsWidget } from '@/components/features/RevenueAnalyticsWidget';
 import { StoryHighlights } from '@/components/features/StoryHighlights';
 import CreatorMonetizationHub, { SubscriptionTiersDisplay, TipGoalWidget, SubscriberBadge } from '@/components/features/CreatorMonetizationHub';
-import { Calendar, MapPin, Link as LinkIcon, BadgeCheck, Loader2, Twitter, Instagram, Linkedin, MessageCircle, Globe, ShieldCheck, X, Trophy, Flame, DollarSign, Gift, Check, Share2, Copy, Plus, Star, Eye, Crown, Sparkles, MoreHorizontal, Ban, VolumeX, Volume2, Flag, Send, Rss, Play, Heart, BookOpen, ChevronRight, Headphones, Clock, Users, Pencil, ExternalLink } from 'lucide-react';
+import { Calendar, MapPin, Link as LinkIcon, Loader2, Twitter, Instagram, Linkedin, MessageCircle, Globe, ShieldCheck, X, Trophy, Flame, DollarSign, Gift, Check, Share2, Copy, Plus, Star, Eye, Crown, Sparkles, MoreHorizontal, Ban, VolumeX, Volume2, Flag, Send, Rss, Play, Heart, BookOpen, ChevronRight, Headphones, Clock, Users, Pencil, ExternalLink } from 'lucide-react';
 import { sendActivityNotification } from '@/components/layout/AuthProvider';
 import { toast } from 'sonner';
 import { useSEO, buildProfileLD, buildOgImageUrl } from '@/hooks/useSEO';
@@ -17,7 +18,11 @@ import { usePremium } from '@/hooks/usePremium';
 import { formatDistanceToNow } from 'date-fns';
 import { formatNumber } from '@/lib/utils';
 import { Post } from '@/types/app-types';
+import { listProfileLikes } from '@/features/likes/likesService';
+import { listProfileReplies } from '@/features/replies/repliesService';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { ProfileGovernanceCard } from '@/components/features/ProfileGovernanceCard';
+import { AdvertiserSurface } from '@/components/features/AdvertiserSurface';
 import { AreaChart, Area, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 function ProfileAdBanner() { return <PageAdBanner />; }
@@ -152,11 +157,7 @@ function SocialLinksEditor({
     const cleanTw = tw.trim().replace(/^@/, '') || null;
     const cleanIg = ig.trim().replace(/^@/, '') || null;
     const cleanLi = li.trim() || null;
-    const { error } = await supabase.from('user_profiles').update({
-      twitter_handle: cleanTw,
-      instagram_handle: cleanIg,
-      linkedin_url: cleanLi,
-    }).eq('id', userId);
+    const { error } = await supabase.from('profiles').update({ social_links: { twitter: cleanTw, instagram: cleanIg, linkedin: cleanLi } }).eq('id', userId);
     setSaving(false);
     if (error) { toast.error('Failed to save social links'); return; }
     toast.success('Social links updated!');
@@ -228,6 +229,7 @@ export default function ProfilePage() {
   const { username } = useParams();
   const { user: currentUser } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   // ── CRITICAL: All hooks must be at top level — never after conditional returns ──
   const isRegulator = useIsRegulator();
   const { isActive: isPremiumUser } = usePremium();
@@ -245,7 +247,15 @@ export default function ProfilePage() {
   const [media, setMedia] = useState([]);
   const [likedPosts, setLikedPosts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('Posts');
+  const activeTab = (() => {
+    const section = location.pathname.split('/').filter(Boolean).pop()?.toLowerCase();
+    const byPath: Record<string, string> = {
+      posts: 'Posts', threads: 'Threads', replies: 'Replies', media: 'Media', videos: 'Videos',
+      podcasts: 'Podcasts', series: 'Series', likes: 'Likes', tips: 'Tips', gifts: 'Gifts',
+      followers: 'Followers', following: 'Following', analytics: 'Analytics',
+    };
+    return byPath[section ?? ''] ?? 'Posts';
+  })();
   const [isFollowing, setIsFollowing] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [verifyBannerDismissed, setVerifyBannerDismissed] = useState(false);
@@ -356,7 +366,7 @@ export default function ProfilePage() {
     supabase
       .from('stories')
       .select('id', { count: 'exact', head: true })
-      .eq('user_id', profile.id)
+      .eq('owner_id', profile.id)
       .gt('expires_at', new Date().toISOString())
       .then(({ count }) => setProfileHasStories((count ?? 0) > 0));
   }, [profile?.id]);
@@ -408,21 +418,16 @@ export default function ProfilePage() {
     const GIFT_PRICE = 4.99;
     setGiftingPremium(true);
     try {
-      const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: currentUser.id, p_amount: GIFT_PRICE });
-      if (deductErr) { toast.error(`Insufficient wallet balance. You need $${GIFT_PRICE} to gift premium.`); return; }
-      const expiresAt = new Date();
-      expiresAt.setMonth(expiresAt.getMonth() + 1);
-      const { error } = await supabase.from('premium_subscriptions').upsert({
-        user_id: profile.id, plan: 'monthly', status: 'active', price: GIFT_PRICE,
-        started_at: new Date().toISOString(), expires_at: expiresAt.toISOString(),
-      }, { onConflict: 'user_id' });
+      const idempotencyKey = `premium-gift:${currentUser.id}:${profile.id}:${crypto.randomUUID()}`;
+      const { data, error } = await supabase.rpc('send_premium_gift', { p_recipient_id: profile.id, p_amount: GIFT_PRICE, p_idempotency_key: idempotencyKey });
       if (error) throw error;
+      const expiresAt = new Date(data?.expires_at ?? Date.now() + 30 * 86400000);
       await supabase.from('platform_inbox').insert({
         user_id: profile.id, subject: '🎁 Someone gifted you Premium!',
         body: `@${currentUser.username} gifted you 1 month of Premium! Enjoy an ad-free experience until ${expiresAt.toLocaleDateString()}.`,
         type: 'update', icon_emoji: '👑', cta_label: 'View Premium Benefits', cta_url: '/premium',
       }).catch(() => {});
-      await supabase.from('notifications').insert({ user_id: profile.id, type: 'tip', from_user_id: currentUser.id }).catch(() => {});
+      await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'tip', actor_id: currentUser.id  }).catch(() => {});
       toast.success(`🎁 Premium gifted to @${profile.username} for 1 month!`);
       setShowGiftPremiumDialog(false);
     } catch (err: any) {
@@ -435,17 +440,22 @@ export default function ProfilePage() {
   const handleSubscribe = async (tier: string, price: number) => {
     if (!currentUser) { navigate('/auth'); return; }
     setSubscribing(true);
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: currentUser.id, p_amount: price });
-    if (deductErr) { toast.error('Insufficient wallet balance. Top up your wallet first.'); setSubscribing(false); return; }
+    const idempotencyKey = `profile-subscription:${currentUser.id}:${profile.id}:${tier}:${crypto.randomUUID()}`;
+    const { data: transfer, error: transferError } = await supabase.rpc('p2p_wallet_transfer', {
+      p_from_user_id: currentUser.id, p_to_user_id: profile.id, p_amount: price,
+      p_note: `Subscription to @${profile.username} — ${tier}`, p_idempotency_key: idempotencyKey,
+    });
+    if (transferError) { toast.error(transferError.message || 'Subscription payment failed'); setSubscribing(false); return; }
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + 1);
-    const { error } = await supabase.from('creator_subscriptions').upsert({
-      creator_id: profile.id, subscriber_id: currentUser.id, tier, price, status: 'active',
-      expires_at: expiresAt.toISOString(),
+    const { error } = await supabase.from('subscriptions').upsert({
+      creator_id: profile.id, subscriber_id: currentUser.id, plan: tier, status: 'active',
+      started_at: new Date().toISOString(), ends_at: expiresAt.toISOString(), provider: 'internal',
+      provider_reference: transfer?.reference ?? null,
     }, { onConflict: 'creator_id,subscriber_id' });
-    if (error) { toast.error('Subscription failed'); setSubscribing(false); return; }
-    await supabase.from('creator_earnings').insert({ user_id: profile.id, source: 'subscription', amount: price, status: 'paid' }).catch(() => {});
-    await supabase.from('notifications').insert({ user_id: profile.id, type: 'follow', from_user_id: currentUser.id }).catch(() => {});
+    if (error) { toast.error('Subscription record failed'); setSubscribing(false); return; }
+    await supabase.from('creator_earnings').insert({ creator_id: profile.id, source_type: 'subscription', source_id: null, amount: price, currency: 'USD', status: 'paid' }).then(() => {}).catch(() => {});
+    await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'follow', actor_id: currentUser.id  }).catch(() => {});
     toast.success(`Subscribed to @${profile.username} on ${tier} tier!`);
     setActiveSubscription({ tier, price, status: 'active' });
     setShowSubscribeDialog(false);
@@ -454,7 +464,7 @@ export default function ProfilePage() {
 
   const handleUnsubscribe = async () => {
     if (!currentUser || !profile) return;
-    await supabase.from('creator_subscriptions').update({ status: 'cancelled' }).eq('creator_id', profile.id).eq('subscriber_id', currentUser.id);
+    await supabase.from('subscriptions').update({ status: 'cancelled' }).eq('creator_id', profile.id).eq('subscriber_id', currentUser.id);
     setActiveSubscription(null);
     toast.success('Subscription cancelled');
   };
@@ -506,25 +516,26 @@ export default function ProfilePage() {
 
   const fetchSubscription = async (creatorId: string) => {
     if (!currentUser) return;
-    const { data } = await supabase.from('creator_subscriptions').select('*').eq('creator_id', creatorId).eq('subscriber_id', currentUser.id).eq('status', 'active').maybeSingle();
-    setActiveSubscription(data ?? null);
+    const { data, error } = await supabase.from('subscriptions').select('*').eq('creator_id', creatorId).eq('subscriber_id', currentUser.id).eq('status', 'active').maybeSingle();
+    if (error) console.error('[profile] subscription query failed', { creatorId, error });
+    setActiveSubscription(data ? { tier: data.plan, price: null, status: data.status, ends_at: data.ends_at } : null);
   };
 
   const fetchTipGoal = async (userId: string) => {
-    const { data: mon } = await supabase.from('user_monetization').select('monthly_tip_goal').eq('user_id', userId).maybeSingle();
-    setTipGoal(mon?.monthly_tip_goal ?? null);
+    const { data: mon } = await supabase.from('user_monetization').select('total_earnings').eq('user_id', userId).maybeSingle();
+    setTipGoal(null);
     const startOfMonth = new Date();
     startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
-    const { data: monthTips } = await supabase.from('tips').select('from_user_id, amount').eq('to_user_id', userId).gte('created_at', startOfMonth.toISOString()).order('amount', { ascending: false });
-    const total = (monthTips ?? []).reduce((s: number, t: any) => s + Number(t.amount), 0);
+    const { data: monthTips, error: monthTipsError } = await supabase.from('tips').select('from_user_id, amount').eq('to_user_id', userId).gte('created_at', startOfMonth.toISOString()).order('amount', { ascending: false });
+    if (monthTipsError) console.error('[profile] monthly tips query failed', { userId, monthTipsError });
+    const total = (monthTips ?? []).reduce((s: number, t: any) => s + Number(t.amount ?? 0), 0);
     setCurrentMonthTips(total);
-    // Use parallel arrays instead of index-sig objects (esbuild guard)
     const tipperIds: string[] = [];
     const tipperAmts: number[] = [];
     for (const t of (monthTips ?? [])) {
       const idx = tipperIds.indexOf(t.from_user_id);
-      if (idx >= 0) tipperAmts[idx] += Number(t.amount);
-      else { tipperIds.push(t.from_user_id); tipperAmts.push(Number(t.amount)); }
+      if (idx >= 0) tipperAmts[idx] += Number(t.amount ?? 0);
+      else { tipperIds.push(t.from_user_id); tipperAmts.push(Number(t.amount ?? 0)); }
     }
     const sorted = [...tipperAmts].sort((a, b) => b - a).slice(0, 3);
     setTopTippers(sorted.map((amount, i) => ({ rank: i + 1, amount })));
@@ -534,8 +545,7 @@ export default function ProfilePage() {
     if (!currentUser || !profile) return;
     const goal = Number(goalInput);
     if (!goal || goal <= 0) return;
-    const { error } = await supabase.from('user_monetization').upsert({ user_id: profile.id, monthly_tip_goal: goal }, { onConflict: 'user_id' });
-    if (error) { toast.error('Failed to save goal'); return; }
+    toast.info('Tip goals are not part of the canonical monetization schema yet.'); return;
     setTipGoal(goal);
     setEditingGoal(false);
     toast.success('Tip goal saved! 🎯');
@@ -543,11 +553,11 @@ export default function ProfilePage() {
 
   const fetchTipHistory = async (userId: string) => {
     setLoadingTips(true);
-    const { data: tips } = await supabase.from('tips').select('*').or(`from_user_id.eq.${userId},to_user_id.eq.${userId}`).order('created_at', { ascending: false }).limit(50);
+    const { data: tips, error } = await supabase.from('tips').select('*').or(`from_user_id.eq.${userId},to_user_id.eq.${userId}`).order('created_at', { ascending: false }).limit(50);
     if (!tips || tips.length === 0) { setTipHistory([]); setLoadingTips(false); return; }
     const allUids = tips.flatMap((t: any) => [t.from_user_id, t.to_user_id]) as string[];
     const uids = allUids.filter((u: string, i: number) => allUids.indexOf(u) === i);
-    const { data: profileRows } = await supabase.from('user_profiles').select('id, username, avatar_url').in('id', uids);
+    const { data: profileRows } = await supabase.from('profiles').select('id, username, avatar_url').in('id', uids);
     // Use parallel arrays instead of index-sig objects (esbuild guard)
     const pIds: string[] = [];
     const pData: any[] = [];
@@ -568,7 +578,7 @@ export default function ProfilePage() {
 
   useSEO({
     title: profile ? `@${profile.username} on Testagram` : 'Profile',
-    description: profile ? (profile.bio?.slice(0, 155) || `Follow @${profile.username} on Testagram — ${profile.followers_count?.toLocaleString() ?? 0} followers`) : 'View profile on Testagram',
+    description: profile ? (profile.bio?.slice(0, 155) || `Follow @${profile.username} on Testagram — ${profile.follower_count?.toLocaleString() ?? 0} followers`) : 'View profile on Testagram',
     image: profile ? buildOgImageUrl({ username: profile.username }) : undefined,
     url: profile ? `/profile/${profile.username}` : undefined,
     type: 'profile',
@@ -578,27 +588,24 @@ export default function ProfilePage() {
 
   const fetchGiftHistory = async (userId: string) => {
     setLoadingGifts(true);
-    const { data } = await supabase.from('premium_subscriptions').select('*').or(`user_id.eq.${userId}`).order('started_at', { ascending: false }).limit(50);
+    const { data } = await supabase.from('premium_gifts').select('*').or(`sender_id.eq.${userId},recipient_id.eq.${userId}`).order('created_at', { ascending: false }).limit(50);
     if (!data || data.length === 0) { setGiftHistory([]); setLoadingGifts(false); return; }
-    const { data: inbox } = await supabase.from('platform_inbox').select('body, sent_at, user_id').eq('user_id', userId).ilike('subject', '%gift%').order('sent_at', { ascending: false }).limit(30);
-    setGiftHistory(data.map((sub: any) => ({
-      ...sub,
-      inboxHint: (inbox ?? []).find((m: any) => Math.abs(new Date(m.sent_at).getTime() - new Date(sub.started_at).getTime()) < 60000),
-    })));
+    setGiftHistory(data);
     setLoadingGifts(false);
   };
 
   const fetchProfilePodcasts = async (userId: string) => {
     if (podcastsFetched) return;
     setLoadingPodcasts(true);
-    const { data } = await supabase.from('space_recordings').select('id, title, audio_url, video_url, has_video, duration, listener_count, created_at, spaces(title, artwork_url, category, episode_number, subscriber_only)').eq('user_id', userId).order('created_at', { ascending: false }).limit(30);
+    const { data, error } = await supabase.from('space_recordings').select('id, title, audio_url, video_url, duration, created_at, space_id, spaces(title, artwork_url, category, episode_number, subscriber_only)').eq('user_id', userId).order('created_at', { ascending: false }).limit(30);
+    if (error) console.error('[profile] podcasts query failed', { userId, error });
     setProfilePodcasts(data ?? []);
     setLoadingPodcasts(false);
     setPodcastsFetched(true);
   };
 
   const fetchPostImpressions = async (userId: string) => {
-    const { data: userPosts } = await supabase.from('posts').select('id').eq('user_id', userId).limit(50);
+    const { data: userPosts } = await supabase.from('posts').select('id').eq('author_id', userId).limit(50);
     if (!userPosts || userPosts.length === 0) return;
     const since = new Date(Date.now() - 29 * 86400000).toISOString();
     const { data } = await supabase.from('browsing_history').select('created_at').in('post_id', userPosts.map((p: any) => p.id)).eq('view_type', 'post').gte('created_at', since);
@@ -618,7 +625,8 @@ export default function ProfilePage() {
   const fetchProfileSeries = async (userId: string) => {
     if (profileSeriesFetched) return;
     setLoadingProfileSeries(true);
-    const { data } = await supabase.from('post_series').select('*').eq('user_id', userId).eq('is_public', true).order('item_count', { ascending: false }).limit(20);
+    const { data, error } = await supabase.from('post_series').select('*, post_series_items(count)').eq('owner_id', userId).order('created_at', { ascending: false }).limit(20);
+    if (error) console.error('[profile] series query failed', { userId, error });
     setProfileSeries(data ?? []);
     setLoadingProfileSeries(false);
     setProfileSeriesFetched(true);
@@ -627,19 +635,11 @@ export default function ProfilePage() {
   const togglePinPost = async (postId: string) => {
     if (!currentUser || !isOwnProfile) return;
     const newPinned = pinnedPostId === postId ? null : postId;
+    const { error } = await supabase.from('profiles').update({ pinned_post_id: newPinned }).eq('id', currentUser.id);
+    if (error) { toast.error('Could not save pinned post'); return; }
     setPinnedPostId(newPinned);
-    if (newPinned) {
-      localStorage.setItem(`pinned_post_${currentUser.id}`, newPinned);
-      toast.success('Post pinned to your profile');
-    } else {
-      localStorage.removeItem(`pinned_post_${currentUser.id}`);
-      toast.success('Post unpinned');
-    }
+    toast.success(newPinned ? 'Post pinned to your profile' : 'Post unpinned');
   };
-
-  useEffect(() => {
-    if (isOwnProfile && currentUser) setPinnedPostId(localStorage.getItem(`pinned_post_${currentUser.id}`));
-  }, [isOwnProfile, currentUser]);
 
   useEffect(() => { if (username) fetchProfile(); }, [username]);
 
@@ -667,22 +667,60 @@ export default function ProfilePage() {
   };
 
   const fetchAvailableStories = async (userId: string) => {
-    const { data } = await supabase.from('stories').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(30);
+    const { data } = await supabase.from('stories').select('*').eq('owner_id', userId).order('created_at', { ascending: false }).limit(30);
     setAvailableStories(data ?? []);
   };
 
   const handleCreateHighlight = async () => {
     if (!currentUser || !highlightTitle.trim()) return;
-    setCreatingHighlight(true);
-    const autoCover = selectedStoryIds.length > 0 ? (availableStories.find((s: any) => s.id === selectedStoryIds[0])?.media_url ?? null) : null;
-    const { error } = await supabase.from('user_highlights').insert({ user_id: currentUser.id, title: highlightTitle.trim(), cover_url: highlightCoverUrl ?? autoCover, story_ids: selectedStoryIds });
-    if (error) { toast.error('Failed to create highlight'); }
-    else {
-      toast.success('Highlight created!');
-      setShowCreateHighlight(false); setHighlightTitle(''); setHighlightCoverUrl(null); setSelectedStoryIds([]);
-      fetchHighlights(currentUser.id);
+    if (selectedStoryIds.length === 0) {
+      toast.error('Select at least one story before creating a highlight');
+      return;
     }
-    setCreatingHighlight(false);
+    setCreatingHighlight(true);
+    try {
+      const title = highlightTitle.trim();
+      if (title.length > 30) {
+        toast.error('Highlight name must be 30 characters or fewer');
+        return;
+      }
+      const selectedStories = selectedStoryIds
+        .map(id => availableStories.find((story: any) => story.id === id))
+        .filter(Boolean);
+      if (selectedStories.length !== selectedStoryIds.length) {
+        toast.error('One or more selected stories are no longer available. Refresh and try again.');
+        return;
+      }
+      const autoCover = selectedStories[0]?.media_url ?? null;
+      const nextSortOrder = highlights.length;
+      const { error } = await supabase.from('user_highlights').insert({
+        user_id: currentUser.id,
+        title,
+        cover_url: highlightCoverUrl ?? autoCover,
+        story_ids: selectedStoryIds,
+        sort_order: nextSortOrder,
+      });
+      if (error) {
+        console.error('[profile/highlights] create failed', {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+        });
+        throw error;
+      }
+      toast.success('Highlight created!');
+      setShowCreateHighlight(false);
+      setHighlightTitle('');
+      setHighlightCoverUrl(null);
+      setSelectedStoryIds([]);
+      await fetchHighlights(currentUser.id);
+    } catch (error: any) {
+      const message = error?.message || 'Failed to create highlight';
+      toast.error(message);
+    } finally {
+      setCreatingHighlight(false);
+    }
   };
 
   const handleDeleteHighlight = async (id: string) => {
@@ -696,15 +734,13 @@ export default function ProfilePage() {
     const amount = tipAmount ?? Number(customTipAmount);
     if (!amount || amount <= 0) { toast.error('Enter a valid tip amount'); return; }
     setSendingTip(true);
-    const { data: wallet } = await supabase.from('user_wallets').select('balance').eq('user_id', currentUser.id).maybeSingle();
-    if (!wallet || Number(wallet.balance) < amount) { toast.error('Insufficient wallet balance'); setSendingTip(false); return; }
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: currentUser.id, p_amount: amount });
-    if (deductErr) { toast.error('Could not deduct from wallet'); setSendingTip(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: profile.id, p_amount: amount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: currentUser.id, to_user_id: profile.id, amount, message: `Tip from @${currentUser.username}` }).catch(() => {});
-    await supabase.from('creator_earnings').insert({ user_id: profile.id, source: 'tips', amount, status: 'paid' }).catch(() => {});
-    await supabase.from('notifications').insert({ user_id: profile.id, type: 'tip', from_user_id: currentUser.id }).catch(() => {});
-    toast.success(`$${amount.toFixed(2)} tip sent to @${profile.username}!`);
+    const idempotencyKey = `profile-tip:${currentUser.id}:${profile.id}:${crypto.randomUUID()}`;
+    const { data: tipResult, error: tipErr } = await supabase.rpc('send_wallet_tip', { p_to_user_id: profile.id, p_amount: amount, p_note: `Tip to @${profile.username}`, p_idempotency_key: idempotencyKey });
+    if (tipErr) { toast.error(tipErr.message || 'Could not send tip'); setSendingTip(false); return; }
+    if (!tipResult?.success) { toast.error('Tip transaction was not completed'); setSendingTip(false); return; }
+    await supabase.from('creator_earnings').insert({ creator_id: profile.id, source_type: 'tip', source_id: tipResult.tip_id, amount, currency: tipResult.currency ?? 'KES', status: 'paid' }).then(() => {}).catch(() => {});
+    await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'tip', actor_id: currentUser.id  }).catch(() => {});
+    toast.success(`${tipResult.currency ?? 'KES'} ${amount.toFixed(2)} tip sent to @${profile.username}!`);
     setTipSent(true); setShowTipDialog(false); setTipAmount(null); setCustomTipAmount(''); setSendingTip(false);
     setTimeout(() => setTipSent(false), 3000);
   };
@@ -739,9 +775,24 @@ export default function ProfilePage() {
 
   const fetchProfile = async () => {
     try {
-      const { data: profileData, error: profileError } = await supabase.from('user_profiles').select('*').eq('username', username).single();
-      if (profileError) throw profileError;
-      setProfile(profileData);
+      const initialProfileQuery = username ? await supabase.from('profiles').select('*').eq('username', username).maybeSingle() : { data: null, error: null };
+      let profileData = initialProfileQuery.data;
+      if (!profileData && !username && currentUser) {
+        const ownProfileQuery = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+        profileData = ownProfileQuery.data;
+      }
+      if (!profileData) throw initialProfileQuery.error ?? new Error('Canonical profile not found');
+      const socialLinks = (profileData.social_links ?? {}) as { twitter?: string | null; instagram?: string | null; linkedin?: string | null };
+      // Critical path: render the canonical profile immediately. Non-critical profile
+      // enrichments must never block the profile shell from becoming visible.
+      const normalizedProfile = { ...profileData, twitter_handle: socialLinks.twitter ?? null, instagram_handle: socialLinks.instagram ?? null, linkedin_url: socialLinks.linkedin ?? null, cover_image: profileData.cover_url ?? null, verified: profileData.verified_tier !== 'none', total_earnings: 0 };
+      setPinnedPostId(profileData.pinned_post_id ?? null);
+      setProfile(normalizedProfile);
+      setLoading(false);
+      // Enrich non-critical fields after first paint.
+      void supabase.from('user_monetization').select('total_earnings').eq('user_id', profileData.id).maybeSingle()
+        .then(({ data }) => { if (data) setProfile((prev: any) => prev ? { ...prev, total_earnings: data.total_earnings ?? 0 } : prev); })
+        .catch(() => {});
       // Update meta tags inline (no IIFE in render — this is async data loading)
       const title = `@${profileData.username} on Testagram`;
       const desc = profileData.bio?.slice(0, 200) || `Follow @${profileData.username} on Testagram`;
@@ -751,30 +802,20 @@ export default function ProfilePage() {
       setM('og:title', title); setM('og:description', desc); setM('og:image', img);
       setM('og:url', `${window.location.origin}/profile/${profileData.username}`);
 
-      // Phase 1: critical path — posts + threads + media (renders the UI)
-      await Promise.all([
-        fetchPosts(profileData.id),
-        fetchThreads(profileData.id),
-        fetchMedia(profileData.id),
-      ]);
-      setLoading(false);
-      // Phase 2: background loads — deferred, non-blocking
-      Promise.all([
-        fetchReplies(profileData.id),
-        fetchLikedPosts(profileData.id),
-        fetchFollowers(profileData.id),
-        fetchFollowing(profileData.id),
-        fetchProfileStats(profileData.id),
-        fetchHighlights(profileData.id),
-        fetchTipHistory(profileData.id),
-        fetchTipGoal(profileData.id),
-        fetchProfileViews7d(profileData.id),
-        fetchSubscription(profileData.id),
-        trackProfileView(profileData.id),
-        fetchGiftHistory(profileData.id),
-        fetchPostImpressions(profileData.id),
-      ]).catch(() => {});
-      if (currentUser && currentUser.id !== profileData.id) checkBlockMuteStatus(profileData.id);
+      // Route-owned data lifecycle: load only the collection represented by the current profile route.
+      const loaders: Record<string, () => Promise<unknown>> = {
+        Tips: () => Promise.all([fetchTipHistory(profileData.id), fetchTipGoal(profileData.id), fetchProfileViews7d(profileData.id)]),
+        Gifts: () => fetchGiftHistory(profileData.id),
+        Podcasts: () => fetchProfilePodcasts(profileData.id),
+        Series: () => fetchProfileSeries(profileData.id),
+        Analytics: () => Promise.all([fetchProfileStats(profileData.id), fetchPostImpressions(profileData.id)]),
+      };
+      // Route-specific enrichment is non-blocking; the profile shell is already visible.
+      void loaders[activeTab]?.().catch(() => {});
+      // Shared secondary data is also deferred so a slow query cannot blank/delay the profile.
+      void Promise.allSettled([fetchHighlights(profileData.id), fetchSubscription(profileData.id)]);
+      if (activeTab === 'Posts' || activeTab === 'Videos') void trackProfileView(profileData.id).catch(() => {});
+      if (currentUser && currentUser.id !== profileData.id) void checkBlockMuteStatus(profileData.id).catch(() => {});
     } catch (error) {
       console.error('Error fetching profile:', error);
       setLoading(false);
@@ -813,43 +854,75 @@ export default function ProfilePage() {
   };
 
   const fetchPosts = async (userId: string) => {
-    const { data } = await supabase.from('posts').select('*, user_profiles (*)').eq('user_id', userId).order('created_at', { ascending: false });
-    const postList = data || [];
+    const { data, error } = await supabase.from('posts').select('*, profiles!posts_author_id_fkey(*)').eq('author_id', userId).order('created_at', { ascending: false });
+    if (error) {
+      console.error('[profile] posts query failed', { userId, error });
+      setPosts([]);
+      return;
+    }
+    // PostCard accepts the canonical `user_profiles` shape. Profile pages
+    // receive the joined author as `profiles`, so normalize it at the boundary
+    // instead of allowing the card to fall back to a placeholder identity.
+    const postList = (data || []).map((post: any) => ({
+      ...post,
+      user_profiles: post.user_profiles || post.profiles || null,
+    }));
     setPosts(postList);
     // Fire milestone alerts asynchronously — won't block UI
     checkImpressionMilestones(userId, postList).catch(() => {});
   };
   const fetchThreads = async (userId: string) => {
-    const { data } = await supabase.from('threads').select('*').eq('user_id', userId).eq('is_published', true).order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('threads').select('*').eq('owner_id', userId).is('deleted_at', null).order('created_at', { ascending: false });
+    if (error) console.error('[profile] threads query failed', { userId, error });
     setThreads(data || []);
   };
   const fetchReplies = async (userId: string) => {
-    const { data } = await supabase.from('replies').select('*, posts(*, user_profiles(*))').eq('user_id', userId).order('created_at', { ascending: false });
-    setReplies(data || []);
+    try {
+      setReplies(await listProfileReplies(userId, 100));
+    } catch (error) {
+      console.error('[profile] independent replies query failed', { userId, error });
+      setReplies([]);
+    }
   };
   const fetchMedia = async (userId: string) => {
-    const { data } = await supabase.from('posts').select('*, user_profiles (*)').eq('user_id', userId).or('image_url.not.is.null,video_url.not.is.null,media_urls.neq.[]').order('created_at', { ascending: false });
-    setMedia(data || []);
+    const { data, error } = await supabase
+      .from('posts')
+      .select('*, profiles!posts_author_id_fkey(*)')
+      .eq('author_id', userId)
+      .is('deleted_at', null)
+      .or('image_url.not.is.null,video_url.not.is.null,media_urls.neq.[]')
+      .order('created_at', { ascending: false });
+    if (error) console.error('[profile] media query failed', { userId, error });
+    setMedia((data || []).map((post: any) => ({
+      ...post,
+      user_profiles: post.user_profiles || post.profiles || null,
+    })));
   };
+
   const fetchLikedPosts = async (userId: string) => {
-    const { data } = await supabase.from('likes').select('posts(*, user_profiles(*))').eq('user_id', userId).order('created_at', { ascending: false });
-    setLikedPosts((data || []).map((item: any) => item.posts).filter(Boolean));
+    try {
+      setLikedPosts(await listProfileLikes(userId, 100));
+    } catch (error) {
+      console.error('[profile] independent likes query failed', { userId, error });
+      setLikedPosts([]);
+    }
   };
+
   const fetchFollowers = async (userId: string) => {
-    const { data } = await supabase.from('follows').select('follower:user_profiles!follows_follower_id_fkey(*)').eq('following_id', userId);
+    const { data } = await supabase.from('follows').select('follower:profiles!follows_follower_id_fkey(*)').eq('following_id', userId);
     setFollowers((data || []).map((item: any) => item.follower).filter(Boolean));
   };
   const fetchProfileStats = async (userId: string) => {
     const { data: reward } = await supabase.from('daily_rewards').select('streak_day').eq('user_id', userId).maybeSingle();
     setStreakDay(reward?.streak_day ?? 0);
-    const { data: pd } = await supabase.from('user_profiles').select('followers_count').eq('id', userId).maybeSingle();
+    const { data: pd } = await supabase.from('profiles').select('follower_count').eq('id', userId).maybeSingle();
     if (pd) {
-      const { count } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).gt('followers_count', pd.followers_count ?? 0);
+      const { count } = await supabase.from('profiles').select('*', { count: 'exact', head: true }).gt('follower_count', pd.follower_count ?? 0);
       setFollowerRank((count ?? 0) + 1);
     }
   };
   const fetchFollowing = async (userId: string) => {
-    const { data } = await supabase.from('follows').select('following:user_profiles!follows_following_id_fkey(*)').eq('follower_id', userId);
+    const { data } = await supabase.from('follows').select('following:profiles!follows_following_id_fkey(*)').eq('follower_id', userId);
     setFollowing((data || []).map((item: any) => item.following).filter(Boolean));
   };
   const checkFollowStatus = async () => {
@@ -863,7 +936,7 @@ export default function ProfilePage() {
       await supabase.from('follows').delete().eq('follower_id', currentUser.id).eq('following_id', profile.id);
     } else {
       await supabase.from('follows').insert({ follower_id: currentUser.id, following_id: profile.id });
-      await supabase.from('notifications').insert({ user_id: profile.id, type: 'follow', from_user_id: currentUser.id });
+      await supabase.from('notifications').insert({ recipient_id: profile.id, kind: 'follow', actor_id: currentUser.id  });
       await sendActivityNotification({ recipientUserId: profile.id, title: 'New Follower', body: `${currentUser.username} started following you`, data: { route: `/profile/${currentUser.username}`, type: 'follow', fromUserId: currentUser.id } });
     }
     setIsFollowing(!isFollowing);
@@ -874,8 +947,8 @@ export default function ProfilePage() {
     navigate(`/messages?to=${profile.username}`);
   };
 
-  useEffect(() => { if (activeTab === 'Podcasts' && profile?.id && !podcastsFetched) fetchProfilePodcasts(profile.id); }, [activeTab, profile?.id, podcastsFetched]);
-  useEffect(() => { if (activeTab === 'Series' && profile?.id && !profileSeriesFetched) fetchProfileSeries(profile.id); }, [activeTab, profile?.id, profileSeriesFetched]);
+  useEffect(() => { if (profile?.id && activeTab === 'Podcasts' && !podcastsFetched) void fetchProfilePodcasts(profile.id); }, [activeTab, profile?.id, podcastsFetched]);
+  useEffect(() => { if (profile?.id && activeTab === 'Series' && !profileSeriesFetched) void fetchProfileSeries(profile.id); }, [activeTab, profile?.id, profileSeriesFetched]);
 
   if (loading) return <ProfileSkeleton />;
 
@@ -888,18 +961,18 @@ export default function ProfilePage() {
   const profileStrikesColor = profileStrikes === 0 ? 'text-green-600' : profileStrikes === 1 ? 'text-orange-500' : 'text-red-600';
   const profileStrikesBorderBg = profileStrikes === 0 ? 'border-green-500/20 bg-green-500/5' : profileStrikes === 1 ? 'border-orange-500/20 bg-orange-500/5' : 'border-red-500/20 bg-red-500/5';
   const profileVideoPosts = posts.filter(p => p.is_video);
-  const profileTipsReceived = tipHistory.filter(t => t.to_user_id === profile?.id);
+  const profileTipsReceived = tipHistory.filter(t => t.recipient_id === profile?.id);
   const profileAchievementsAll = [
     { id: 'first_post',    emoji: '✍️', label: 'First Post',    unlocked: posts.length >= 1 },
     { id: 'verified',      emoji: '✅', label: 'Verified',       unlocked: !!profile?.verified },
     { id: 'video_creator', emoji: '🎬', label: 'Video Creator',  unlocked: profileVideoPosts.length >= 1 },
-    { id: 'followers_100', emoji: '👥', label: '100 Followers',  unlocked: (profile?.followers_count ?? 0) >= 100 },
-    { id: 'followers_1k',  emoji: '⭐', label: '1K Followers',   unlocked: (profile?.followers_count ?? 0) >= 1000 },
+    { id: 'followers_100', emoji: '👥', label: '100 Followers',  unlocked: (profile?.follower_count ?? 0) >= 100 },
+    { id: 'followers_1k',  emoji: '⭐', label: '1K Followers',   unlocked: (profile?.follower_count ?? 0) >= 1000 },
     { id: 'first_dollar',  emoji: '💰', label: 'First Dollar',   unlocked: Number(profile?.total_earnings ?? 0) >= 1 },
     { id: 'streak_7',      emoji: '🔥', label: '7-Day Streak',   unlocked: streakDay >= 7 },
     { id: 'tip_received',  emoji: '💝', label: 'Tip Received',   unlocked: profileTipsReceived.length >= 1 },
     { id: 'posts_10',      emoji: '📝', label: '10 Posts',       unlocked: posts.length >= 10 },
-    { id: 'followers_10k', emoji: '🌟', label: '10K Followers',  unlocked: (profile?.followers_count ?? 0) >= 10000 },
+    { id: 'followers_10k', emoji: '🌟', label: '10K Followers',  unlocked: (profile?.follower_count ?? 0) >= 10000 },
   ];
   const profileAchievementsUnlocked = profileAchievementsAll.filter(a => a.unlocked);
   // Pre-computed podcast/series stats (no IIFE in render)
@@ -942,6 +1015,7 @@ export default function ProfilePage() {
       </div>
       <TopBar title={profile.username} showBack />
       <ProfileAdBanner />
+        {isOwnProfile && <AdvertiserSurface variant="profile" />}
 
       <div className="border-b border-border">
         {profile.cover_image && (
@@ -1039,7 +1113,7 @@ export default function ProfilePage() {
           <div className="mb-3">
             <div className="flex items-center gap-2 mb-1">
               <h2 className="text-xl font-bold">{profile.username}</h2>
-              {profile.verified && <BadgeCheck className="w-5 h-5 text-primary" fill="currentColor" />}
+              {profile.verified && <VerifiedTick className="w-5 h-5 text-primary" />}
               {isRegulator && isOwnProfile && (
                 <button onClick={() => navigate('/regulator')} className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-violet-600/15 to-primary/10 border border-violet-500/30 text-[10px] font-black text-violet-600 dark:text-violet-400 hover:opacity-90 transition-opacity">
                   👑 Regulator
@@ -1294,11 +1368,11 @@ export default function ProfilePage() {
           )}
 
           <div className="flex gap-4">
-            <button onClick={() => setActiveTab('Following')} className="hover:underline">
+            <button onClick={() => navigate(`/profile/${profile.username}/following`)} className="hover:underline">
               <span className="font-bold">{formatNumber(profile.following_count)}</span> <span className="text-muted-foreground">Following</span>
             </button>
-            <button onClick={() => setActiveTab('Followers')} className="hover:underline">
-              <span className="font-bold">{formatNumber(profile.followers_count)}</span> <span className="text-muted-foreground">Followers</span>
+            <button onClick={() => navigate(`/profile/${profile.username}/followers`)} className="hover:underline">
+              <span className="font-bold">{formatNumber(profile.follower_count)}</span> <span className="text-muted-foreground">Followers</span>
             </button>
           </div>
 
@@ -1447,146 +1521,24 @@ export default function ProfilePage() {
       )}
       {profile && <div className="px-4 mt-1"><SubscriberBadge creatorId={profile.id} /></div>}
 
+      <ProfileGovernanceCard profileId={profile.id} username={profile.username} isOwnProfile={isOwnProfile} />
+
       {/* Tabs */}
       <div className="sticky top-14 z-30 bg-background border-b border-border">
         <div className="flex overflow-x-auto scrollbar-hide">
-          {tabs.map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`flex-shrink-0 px-4 py-4 font-semibold transition-colors border-b-2 ${activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/50'}`}>
-              {tab}
-            </button>
-          ))}
+          {tabs.map(tab => {
+            const slug = tab.toLowerCase();
+            return (
+              <button key={tab} onClick={() => navigate(`/profile/${profile.username}/${slug}`)}
+                className={`flex-shrink-0 px-4 py-4 font-semibold transition-colors border-b-2 ${activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/50'}`}>
+                {tab}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       <div>
-        {activeTab === 'Posts' && (
-          posts.length > 0 ? (
-            <div>
-              {pinnedPostId && posts.find(p => p.id === pinnedPostId) && (
-                <div className="border-b-2 border-primary/20 bg-primary/3">
-                  <div className="flex items-center gap-2 px-4 pt-3 pb-0">
-                    <span className="text-[10px] font-bold text-primary uppercase tracking-wide">📌 Pinned Post</span>
-                    {isOwnProfile && <button onClick={() => togglePinPost(pinnedPostId)} className="ml-auto text-[10px] text-muted-foreground hover:text-destructive transition-colors">Unpin</button>}
-                  </div>
-                  <PostCard post={posts.find(p => p.id === pinnedPostId)!} onUpdate={fetchProfile} />
-                </div>
-              )}
-              {posts.filter(p => p.id !== pinnedPostId).map(post => (
-                <div key={post.id} className="relative group">
-                  <PostCard post={post} onUpdate={fetchProfile} />
-                  {/* Impression milestone badge — ⭐ 1K · 🚀 10K (esbuild guard: no IIFE, plain conditional) */}
-                  {(post.views_count ?? 0) >= 10000 && (
-                    <div className="absolute top-3 left-14 z-10 flex items-center gap-0.5 px-1.5 py-0.5 bg-primary text-primary-foreground rounded-full text-[9px] font-black shadow pointer-events-none">
-                      🚀 {formatNumber(post.views_count ?? 0)}
-                    </div>
-                  )}
-                  {(post.views_count ?? 0) >= 1000 && (post.views_count ?? 0) < 10000 && (
-                    <div className="absolute top-3 left-14 z-10 flex items-center gap-0.5 px-1.5 py-0.5 bg-amber-500 text-white rounded-full text-[9px] font-black shadow pointer-events-none">
-                      ⭐ {formatNumber(post.views_count ?? 0)}
-                    </div>
-                  )}
-                  {isOwnProfile && (
-                    <button onClick={() => togglePinPost(post.id)} className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-bold text-muted-foreground hover:text-primary bg-background/90 px-2 py-1 rounded-full border border-border shadow-sm">
-                      {pinnedPostId === post.id ? 'Unpin' : '📌 Pin'}
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : <div className="text-center py-12 text-muted-foreground"><p>No posts yet</p></div>
-        )}
-
-        {activeTab === 'Threads' && isOwnProfile && (
-          <div className="flex items-center gap-2 px-4 pt-3 pb-0">
-            <button onClick={async () => { await navigator.clipboard.writeText(getPodcastRssUrl(profile.username ?? '')); toast.success('Podcast RSS URL copied!'); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-orange-500/30 bg-orange-500/5 text-orange-600 dark:text-orange-400 hover:bg-orange-500/10 transition-colors text-xs font-semibold">
-              <Rss className="w-3.5 h-3.5" />Copy Podcast RSS
-            </button>
-            <span className="text-[10px] text-muted-foreground">Subscribe in Apple Podcasts, Spotify…</span>
-          </div>
-        )}
-        {activeTab === 'Threads' && (
-          threads.length > 0 ? (
-            <>
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-muted/20">
-                <Rss className="w-4 h-4 text-orange-500" />
-                <span className="text-sm text-muted-foreground flex-1">Share your podcast RSS feed</span>
-                <button onClick={() => navigator.clipboard.writeText(getPodcastRssUrl(profile.username)).then(() => toast.success('RSS feed URL copied!'))}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/10 text-orange-600 dark:text-orange-400 text-xs font-semibold transition-colors">
-                  <Copy className="w-3 h-3" /> Copy RSS
-                </button>
-              </div>
-              {threads.map(thread => (
-                <div key={thread.id} onClick={() => navigate(`/thread/${thread.id}`)} className="border-b border-border p-4 hover:bg-muted/5 cursor-pointer">
-                  <h3 className="font-bold text-lg mb-2">{thread.title}</h3>
-                  <p className="text-muted-foreground line-clamp-3 mb-2">{thread.content.substring(0, 200)}...</p>
-                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                    <span>{formatNumber(thread.views_count)} views</span>
-                    <span>{formatNumber(thread.likes_count)} likes</span>
-                    <span>{formatDistanceToNow(new Date(thread.created_at), { addSuffix: true })}</span>
-                  </div>
-                </div>
-              ))}
-            </>
-          ) : <div className="text-center py-12 text-muted-foreground"><p>No threads yet</p></div>
-        )}
-
-        {activeTab === 'Replies' && (
-          replies.length > 0 ? replies.map((reply: any) => (
-            <div key={reply.id} className="border-b border-border p-4 hover:bg-muted/5">
-              <p className="text-sm text-muted-foreground mb-2">Replying to @{reply.posts?.user_profiles?.username}</p>
-              <p className="mb-2">{reply.content}</p>
-              <button onClick={() => navigate(`/post/${reply.post_id}`)} className="text-sm text-primary hover:underline">View conversation</button>
-            </div>
-          )) : <div className="text-center py-12 text-muted-foreground"><p>No replies yet</p></div>
-        )}
-
-        {activeTab === 'Media' && (
-          media.length > 0 ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 p-2">
-              {media.map(post => {
-                const mediaUrl = post.video_url || post.image_url || post.media_urls?.[0];
-                return (
-                  <div key={post.id} onClick={() => navigate(`/post/${post.id}`)} className="aspect-square bg-muted rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity">
-                    {post.is_video || post.video_url ? <video src={mediaUrl} className="w-full h-full object-cover" /> : <img src={mediaUrl} alt="Media" className="w-full h-full object-cover" />}
-                  </div>
-                );
-              })}
-            </div>
-          ) : <div className="text-center py-12 text-muted-foreground"><p>No media yet</p></div>
-        )}
-
-        {activeTab === 'Videos' && (
-          <div className="p-3">
-            {videoPosts.length === 0 ? (
-              <div className="text-center py-16 text-muted-foreground">
-                <Play className="w-14 h-14 mx-auto mb-4 opacity-20" />
-                <p className="font-semibold text-lg">No videos yet</p>
-                <p className="text-sm">Upload short videos to appear here</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {videoPosts.map(post => (
-                  <button key={post.id} onClick={() => navigate(`/videos?id=${post.id}`)} className="relative rounded-xl overflow-hidden bg-black aspect-[9/16] hover:scale-[1.02] active:scale-[0.98] transition-transform focus:outline-none">
-                    <video src={`${post.video_url}#t=0.5`} className="w-full h-full object-cover" muted preload="metadata" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                    <div className="absolute top-2 right-2 w-7 h-7 bg-black/50 rounded-full flex items-center justify-center">
-                      <Play className="w-3.5 h-3.5 text-white fill-white ml-0.5" />
-                    </div>
-                    <div className="absolute bottom-2 left-2 right-2">
-                      <p className="text-white text-[10px] font-medium line-clamp-2 mb-1 leading-tight">{post.content?.slice(0, 60)}</p>
-                      <div className="flex items-center gap-2">
-                        <span className="flex items-center gap-0.5 text-white/70 text-[10px]"><Heart className="w-2.5 h-2.5" />{formatNumber(post.likes_count ?? 0)}</span>
-                        <span className="flex items-center gap-0.5 text-white/70 text-[10px]"><Eye className="w-2.5 h-2.5" />{formatNumber(post.views_count ?? 0)}</span>
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         {activeTab === 'Podcasts' && (
           loadingPodcasts ? (
@@ -1644,13 +1596,13 @@ export default function ProfilePage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
                             {podEp && <span className="text-[10px] text-muted-foreground">Ep. {podEp}</span>}
-                            {pod.has_video && <span className="text-[10px] text-primary font-semibold">📹 Video</span>}
+                            {pod.video_url && <span className="text-[10px] text-primary font-semibold">📹 Video</span>}
                             {podSub && <span className="text-[10px] text-amber-600 font-semibold">⭐ Sub</span>}
                           </div>
                           <p className="font-bold text-sm line-clamp-2 leading-snug">{podTitle}</p>
                           <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                             {podDur && <span className="flex items-center gap-0.5"><Clock className="w-3 h-3" />{podDur}</span>}
-                            {(pod.listener_count ?? 0) > 0 && <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{formatNumber(pod.listener_count)}</span>}
+                            {(pod.spaces?.listener_count ?? 0) > 0 && <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{formatNumber(pod.spaces.listener_count)}</span>}
                             <span>{formatDistanceToNow(new Date(pod.created_at), { addSuffix: true })}</span>
                           </div>
                         </div>
@@ -1680,10 +1632,7 @@ export default function ProfilePage() {
               {giftHistory.map((sub: any) => {
                 const isActive = sub.status === 'active' && new Date(sub.expires_at) > new Date();
                 const isExpired = sub.status === 'expired' || (sub.expires_at && new Date(sub.expires_at) <= new Date());
-                const hint = sub.inboxHint?.body ?? '';
-                const gifterMatch = hint.match(/@(\w+)\s+gifted you/);
-                const gifterName = gifterMatch?.[1] ?? null;
-                const isReceived = sub.user_id === profile.id;
+                const isReceived = sub.recipient_id === profile.id;
                 return (
                   <div key={sub.id} className="p-4 hover:bg-muted/5 transition-colors flex items-center gap-3">
                     <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${isActive ? 'bg-gradient-to-br from-amber-500/20 to-yellow-500/20 border border-amber-500/30' : 'bg-muted border border-border'}`}>
@@ -1691,14 +1640,14 @@ export default function ProfilePage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-sm">{isReceived ? (gifterName ? `From @${gifterName}` : 'Premium Gift') : 'Gift Sent'}</span>
+                        <span className="font-semibold text-sm">{isReceived ? 'Premium Gift Received' : 'Premium Gift Sent'}</span>
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${isActive ? 'bg-amber-500/15 text-amber-600' : isExpired ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary'}`}>
                           {isActive ? '✓ Active' : isExpired ? 'Expired' : sub.status}
                         </span>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-600 font-semibold capitalize">{sub.plan}</span>
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {sub.started_at ? formatDistanceToNow(new Date(sub.started_at), { addSuffix: true }) : ''}
+                        {sub.created_at ? formatDistanceToNow(new Date(sub.created_at), { addSuffix: true }) : ''}
                         {sub.expires_at && ` · Expires ${new Date(sub.expires_at).toLocaleDateString()}`}
                       </p>
                       {isActive && sub.expires_at && (
@@ -1711,7 +1660,7 @@ export default function ProfilePage() {
                         </div>
                       )}
                     </div>
-                    <p className="text-base font-bold shrink-0 text-amber-600">${Number(sub.price).toFixed(2)}</p>
+                    <p className="text-base font-bold shrink-0 text-amber-600">${Number(sub.amount).toFixed(2)}</p>
                   </div>
                 );
               })}
@@ -1730,7 +1679,7 @@ export default function ProfilePage() {
           ) : (
             <div className="divide-y divide-border">
               {tipHistory.map((tip: any) => {
-                const isSent = tip.from_user_id === profile.id;
+                const isSent = tip.from_user_id === currentUser?.id;
                 const other = isSent ? tip.recipient : tip.sender;
                 const uname = other?.username ?? 'user';
                 return (
@@ -1767,16 +1716,16 @@ export default function ProfilePage() {
               {profileSeries.map((s: any) => {
                 let sProg: any = null;
                 try { const raw = localStorage.getItem('series_progress'); sProg = raw ? (JSON.parse(raw)[s.id] ?? null) : null; } catch { sProg = null; }
-                const sTotal = s.item_count ?? 0;
+                const sTotal = s.post_series_items?.[0]?.count ?? 0;
                 const sPct = sProg && sTotal > 0 ? Math.round((sProg.currentPart / sTotal) * 100) : 0;
                 return (
                   <div key={s.id} className="hover:bg-muted/20 transition-colors">
-                    <button onClick={() => navigate('/series')} className="w-full flex items-start gap-3 p-4 text-left">
+                    <button onClick={() => navigate(`/series/${s.id}`)} className="w-full flex items-start gap-3 p-4 text-left">
                       <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-primary/20 to-purple-500/20 flex items-center justify-center shrink-0 overflow-hidden border border-border">
-                        {s.cover_image ? <img src={s.cover_image} alt={s.name} className="w-full h-full object-cover" /> : <BookOpen className="w-7 h-7 text-primary" />}
+                        {s.cover_image ? <img src={s.cover_image} alt={s.title} className="w-full h-full object-cover" /> : <BookOpen className="w-7 h-7 text-primary" />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="font-bold text-sm truncate">{s.name}</p>
+                        <p className="font-bold text-sm truncate">{s.title}</p>
                         {s.description && <p className="text-xs text-muted-foreground mt-0.5 truncate">{s.description}</p>}
                         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                           <span className="text-[10px] font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">{sTotal} parts</span>
@@ -1788,7 +1737,7 @@ export default function ProfilePage() {
                       <ChevronRight className="w-4 h-4 text-muted-foreground mt-1 shrink-0" />
                     </button>
                     <div className="px-4 pb-3">
-                      <button onClick={() => navigate('/series')} className={`w-full flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold transition-colors ${sProg && sTotal > 0 ? 'bg-primary text-primary-foreground hover:opacity-90' : 'bg-muted hover:bg-muted/80 text-foreground'}`}>
+                      <button onClick={() => navigate(`/series/${s.id}`)} className={`w-full flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold transition-colors ${sProg && sTotal > 0 ? 'bg-primary text-primary-foreground hover:opacity-90' : 'bg-muted hover:bg-muted/80 text-foreground'}`}>
                         <Play className="w-3.5 h-3.5" />
                         {sProg && sTotal > 0 ? `Continue (Part ${sProg.currentPart})` : 'Start Reading'}
                       </button>
@@ -1800,32 +1749,6 @@ export default function ProfilePage() {
           )
         )}
 
-        {activeTab === 'Likes' && (
-          likedPosts.length > 0 ? likedPosts.map(post => <PostCard key={post.id} post={post} onUpdate={fetchProfile} />) : <div className="text-center py-12 text-muted-foreground"><p>No liked posts yet</p></div>
-        )}
-
-        {activeTab === 'Followers' && (
-          followers.length > 0 ? (
-            <div className="divide-y divide-border">
-              {followers.map(follower => (
-                <div key={follower.id} className="p-4 hover:bg-muted/5 flex items-center justify-between">
-                  <div className="flex items-center space-x-3 flex-1 cursor-pointer" onClick={() => navigate(`/profile/${follower.username}`)}>
-                    <div className="w-12 h-12 rounded-full bg-muted overflow-hidden">
-                      {follower.avatar_url ? <img src={follower.avatar_url} alt={follower.username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-lg font-bold">{follower.username[0].toUpperCase()}</div>}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1">
-                        <span className="font-bold">{follower.username}</span>
-                        {follower.verified && <BadgeCheck className="w-4 h-4 text-primary" fill="currentColor" />}
-                      </div>
-                      <p className="text-sm text-muted-foreground line-clamp-1">{follower.bio || `@${follower.username}`}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : <div className="text-center py-12 text-muted-foreground"><p>No followers yet</p></div>
-        )}
 
         {activeTab === 'Analytics' && isOwnProfile && (
           <div className="p-4 space-y-5">
@@ -1947,7 +1870,7 @@ export default function ProfilePage() {
                     <Users className="w-4 h-4 text-primary" />
                     <span className="text-sm">Followers</span>
                   </div>
-                  <span className="font-bold text-base">{(profile.followers_count ?? 0).toLocaleString()}</span>
+                  <span className="font-bold text-base">{(profile.follower_count ?? 0).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1997,28 +1920,6 @@ export default function ProfilePage() {
           </div>
         )}
 
-        {activeTab === 'Following' && (
-          following.length > 0 ? (
-            <div className="divide-y divide-border">
-              {following.map(followedUser => (
-                <div key={followedUser.id} className="p-4 hover:bg-muted/5 flex items-center justify-between">
-                  <div className="flex items-center space-x-3 flex-1 cursor-pointer" onClick={() => navigate(`/profile/${followedUser.username}`)}>
-                    <div className="w-12 h-12 rounded-full bg-muted overflow-hidden">
-                      {followedUser.avatar_url ? <img src={followedUser.avatar_url} alt={followedUser.username} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-lg font-bold">{followedUser.username[0].toUpperCase()}</div>}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1">
-                        <span className="font-bold">{followedUser.username}</span>
-                        {followedUser.verified && <BadgeCheck className="w-4 h-4 text-primary" fill="currentColor" />}
-                      </div>
-                      <p className="text-sm text-muted-foreground line-clamp-1">{followedUser.bio || `@${followedUser.username}`}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : <div className="text-center py-12 text-muted-foreground"><p>Not following anyone yet</p></div>
-        )}
       </div>
 
       {/* Highlight Viewer */}

@@ -2,7 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
-import { Mic, Square, Loader2, Radio } from 'lucide-react';
+import { Mic, Square, Loader2, Radio, SlidersHorizontal } from 'lucide-react';
+import { createStudioAudioPipeline, requestStudioMicrophone, chooseAudioMimeType, type StudioAudioPipeline } from '@/lib/studioAudio';
+import { TestagramMediaSession } from '@/lib/testagramMedia';
 
 
 interface LiveAudioBroadcasterProps {
@@ -28,9 +30,11 @@ export function LiveAudioBroadcaster({
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const pipelineRef = useRef<StudioAudioPipeline | null>(null);
+  const mediaSessionRef = useRef<TestagramMediaSession | null>(null);
 
   useEffect(() => {
-    return () => stopBroadcast();
+    return () => { void stopBroadcast(); };
   }, []);
 
   const startBroadcast = async () => {
@@ -44,19 +48,12 @@ export function LiveAudioBroadcaster({
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        } 
-      });
-      
+      const stream = await requestStudioMicrophone();
       streamRef.current = stream;
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 128000,
-      });
+      const pipeline = await createStudioAudioPipeline(stream);
+      pipelineRef.current = pipeline;
+      const mimeType = chooseAudioMimeType();
+      const mediaRecorder = new MediaRecorder(pipeline.stream, mimeType ? { mimeType, audioBitsPerSecond: 192000 } : { audioBitsPerSecond: 192000 });
       
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -68,8 +65,10 @@ export function LiveAudioBroadcaster({
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
         await uploadRecording(audioBlob);
+        await pipeline.stop();
+        pipelineRef.current = null;
       };
 
       mediaRecorder.start(5000); // Record in 5-second chunks
@@ -104,7 +103,10 @@ export function LiveAudioBroadcaster({
         timerRef.current = null;
       }
 
-      if (streamRef.current) {
+      await mediaSessionRef.current?.close();
+       mediaSessionRef.current = null;
+
+       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
       }
@@ -187,6 +189,7 @@ export function LiveAudioBroadcaster({
         </div>
       )}
 
+      <div className="flex items-center gap-2 text-xs text-muted-foreground"><SlidersHorizontal className="w-3.5 h-3.5 text-primary" /> Studio voice chain active · noise suppression · rumble removal · dynamics control</div>
       <p className="text-xs text-muted-foreground">
         {isBroadcasting 
           ? 'Your audio is being broadcast live to all listeners. Recording will be saved automatically.'

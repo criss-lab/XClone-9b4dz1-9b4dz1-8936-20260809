@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -14,6 +14,7 @@ import { formatNumber } from '@/lib/utils';
 import { LiveAudioBroadcaster } from './LiveAudioBroadcaster';
 import { LiveAudioPlayer } from './LiveAudioPlayer';
 import { SpaceRecordingsPlaylist } from './SpaceRecordingsPlaylist';
+import { TestagramMediaSession } from '@/lib/testagramMedia';
 
 interface JoinSpaceDialogProps {
   open: boolean;
@@ -63,53 +64,66 @@ export function JoinSpaceDialog({ open, onOpenChange, spaceId }: JoinSpaceDialog
       setLoading(false);
     }
   };
+  const mediaSessionRef = useRef<TestagramMediaSession | null>(null);
+  const localMediaStreamRef = useRef<MediaStream | null>(null);
+  const liveAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (!joined || !space?.is_live || !spaceId || !user || space.host?.id === user.id) return;
+    let cancelled = false;
+    const connect = async () => {
+      try {
+        let local: MediaStream | undefined;
+        if (role === 'speaker') {
+          local = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+          });
+          localMediaStreamRef.current = local;
+          local.getAudioTracks().forEach(track => { track.enabled = !isMuted; });
+        }
+        const session = await TestagramMediaSession.connectSpace(spaceId, role, local, remote => {
+          if (!liveAudioRef.current) return;
+          liveAudioRef.current.srcObject = remote;
+          liveAudioRef.current.muted = false;
+          void liveAudioRef.current.play().catch(() => undefined);
+        });
+        if (cancelled) {
+          await session.close();
+          local?.getTracks().forEach(track => track.stop());
+          return;
+        }
+        mediaSessionRef.current = session;
+      } catch (e) {
+        if (!cancelled) toast({ title: 'Audio connection unavailable', description: e instanceof Error ? e.message : 'Native media connection failed.', variant: 'destructive' });
+      }
+    };
+    void connect();
+    return () => {
+      cancelled = true;
+      void mediaSessionRef.current?.close();
+      mediaSessionRef.current = null;
+      localMediaStreamRef.current?.getTracks().forEach(track => track.stop());
+      localMediaStreamRef.current = null;
+      if (liveAudioRef.current) liveAudioRef.current.srcObject = null;
+    };
+  }, [joined, space?.is_live, spaceId, role, user?.id, space?.host?.id]);
+
+  useEffect(() => {
+    localMediaStreamRef.current?.getAudioTracks().forEach(track => { track.enabled = !isMuted; });
+  }, [isMuted]);
 
   const handleJoin = async () => {
     if (!user || !spaceId) return;
-
     setLoading(true);
     try {
-      // Check if already a participant
-      const { data: existing } = await supabase
-        .from('space_participants')
-        .select('id')
-        .eq('space_id', spaceId)
-        .eq('user_id', user.id)
-        .single();
-
-      if (!existing) {
-        // Add as participant
-        const { error: participantError } = await supabase
-          .from('space_participants')
-          .insert({
-            space_id: spaceId,
-            user_id: user.id,
-            role: role,
-          });
-
-        if (participantError) throw participantError;
-
-        // Increment listener count
-        const { error: updateError } = await supabase
-          .from('spaces')
-          .update({ listener_count: (space?.listener_count || 0) + 1 })
-          .eq('id', spaceId);
-
-        if (updateError) throw updateError;
-      }
-
+      const { error } = await supabase.rpc('join_audio_space', { p_space_id: spaceId });
+      if (error) throw error;
       setJoined(true);
-      toast({
-        title: 'Joined Space',
-        description: `You're now ${role === 'listener' ? 'listening to' : 'speaking in'} this Space`,
-      });
+      toast({ title: 'Joined Space', description: `You're now ${role === 'listener' ? 'listening to' : 'speaking in'} this Space` });
+      await fetchSpace();
     } catch (error: any) {
       console.error('Error joining space:', error);
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to join space',
-        variant: 'destructive',
-      });
+      toast({ title: 'Error', description: error.message || 'Failed to join space', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -117,38 +131,15 @@ export function JoinSpaceDialog({ open, onOpenChange, spaceId }: JoinSpaceDialog
 
   const handleLeave = async () => {
     if (!user || !spaceId) return;
-
     try {
-      // Remove participant
-      const { error: deleteError } = await supabase
-        .from('space_participants')
-        .delete()
-        .eq('space_id', spaceId)
-        .eq('user_id', user.id);
-
-      if (deleteError) throw deleteError;
-
-      // Decrement listener count
-      const { error: updateError } = await supabase
-        .from('spaces')
-        .update({ listener_count: Math.max(0, (space?.listener_count || 1) - 1) })
-        .eq('id', spaceId);
-
-      if (updateError) throw updateError;
-
+      const { error } = await supabase.rpc('leave_audio_space', { p_space_id: spaceId });
+      if (error) throw error;
       setJoined(false);
       onOpenChange(false);
-      toast({
-        title: 'Left Space',
-        description: 'You have left the audio space',
-      });
+      toast({ title: 'Left Space', description: 'You have left the audio space' });
     } catch (error: any) {
       console.error('Error leaving space:', error);
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to leave space',
-        variant: 'destructive',
-      });
+      toast({ title: 'Error', description: error.message || 'Failed to leave space', variant: 'destructive' });
     }
   };
 
@@ -184,7 +175,8 @@ export function JoinSpaceDialog({ open, onOpenChange, spaceId }: JoinSpaceDialog
           </DialogTitle>
         </DialogHeader>
 
-        {space && (
+        {space && (<>
+          <audio ref={liveAudioRef} autoPlay playsInline className="hidden" />
           <div className="space-y-6">
             <div>
               <h2 className="text-2xl font-bold mb-2">{space.title}</h2>
@@ -328,7 +320,7 @@ export function JoinSpaceDialog({ open, onOpenChange, spaceId }: JoinSpaceDialog
               </div>
             )}
           </div>
-        )}
+        </>)}
       </DialogContent>
     </Dialog>
   );

@@ -1,0 +1,936 @@
+name: Production Deployment Reconciliation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Exact Git commit SHA to deploy and prove"
+        required: false
+        type: string
+
+concurrency:
+  group: production-deployment-reconciliation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+  # Never repeat a Vercel deployment inside one reconciliation. The exact-SHA lookup
+  # below already reuses READY deployments, and repeated deploy attempts can
+  # consume Vercel Hobby deployment-rate limits without changing production.
+  MAX_DEPLOY_ATTEMPTS: "1"
+  APP_ORIGIN: "https://testagram.site"
+
+jobs:
+  reconcile-production:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Resolve target SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET_SHA="${{ github.event.inputs.target_sha || github.sha }}"
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::target_sha must be a full SHA"; exit 1; }
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact target revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Prove checkout SHA
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.target.outputs.sha }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
+        with:
+          version: 2.118.0
+
+      - name: Verify Supabase management authentication
+        id: supabase-auth
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SUPABASE_ACCESS_TOKEN" ]]; then
+            echo "::warning::Supabase management token is not configured; Supabase reconciliation will be skipped."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          output="$(SUPABASE_ACCESS_TOKEN="$SUPABASE_ACCESS_TOKEN" supabase projects list --output json 2>&1)"
+          status=$?
+          set -e
+          if (( status == 0 )); then
+            echo "Supabase management authentication passed."
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qiE '401|unauthorized|invalid.*token|authentication' <<<"$output"; then
+            echo "::warning::Supabase management API rejected the configured GitHub token (HTTP 401). Skipping optional Supabase reconciliation so Vercel production deployment can still be verified."
+            echo "::warning::Rotate/update SUPABASE_ACCESS_TOKEN in the GitHub production environment to restore Edge Function reconciliation."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$output"
+          echo "::error::Supabase management preflight failed for a non-authentication reason."
+          exit 1
+
+      - name: Reconcile and apply Supabase database migrations
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            SUPABASE_HOST="${SUPABASE_URL#https://}"
+            SUPABASE_HOST="${SUPABASE_HOST%%/*}"
+            PROJECT_REF="${SUPABASE_HOST%%.*}"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for migration reconciliation."; exit 1; }
+
+          # Production migration history predates the current repository and contains
+          # intentionally generated platform versions plus legacy migrations that are
+          # not a runnable linear queue. The TV control-plane migration is the verified
+          # production baseline. From this point forward CI only applies canonical
+          # timestamped migrations newer than that baseline, by migration name.
+          SUPABASE_PROJECT_REF="$PROJECT_REF" SUPABASE_ACCESS_TOKEN="$SUPABASE_ACCESS_TOKEN" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const projectRef = process.env.SUPABASE_PROJECT_REF;
+          const token = process.env.SUPABASE_ACCESS_TOKEN;
+          const baselineVersion = "20260928150000";
+          const baselineName = "tv_mux_hybrid_control_plane";
+          const migrationsDir = path.join(process.cwd(), "supabase", "migrations");
+          if (!token) throw new Error("SUPABASE_ACCESS_TOKEN is required for migration reconciliation.");
+          if (!fs.existsSync(migrationsDir)) throw new Error("supabase/migrations directory is missing.");
+
+          const historyUrl = "https://api.supabase.com/v1/projects/" + projectRef + "/database/migrations";
+          const response = await fetch(historyUrl, { headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+          const body = await response.text();
+          if (!response.ok) throw new Error("Supabase migration history lookup failed (HTTP " + response.status + "): " + body.slice(0, 500));
+
+          const remote = JSON.parse(body);
+          const applied = new Set(Array.isArray(remote) ? remote.map((m) => String(m?.name || "")).filter(Boolean) : []);
+          if (!applied.has(baselineName)) {
+            throw new Error("Verified migration baseline is missing from production history: " + baselineName);
+          }
+
+          const files = fs.readdirSync(migrationsDir)
+            .filter((name) => /^\d{14}_.+\.sql$/.test(name))
+            .sort((a, b) => a.localeCompare(b));
+          const pending = files.filter((file) => {
+            const version = file.slice(0, 14);
+            const name = file.slice(0, -4);
+            return version > baselineVersion && !applied.has(name);
+          });
+
+          console.log("Production migration records: " + applied.size);
+          console.log("Repository timestamped migrations: " + files.length);
+          console.log("Migration baseline: " + baselineName);
+          console.log("Pending migrations newer than baseline: " + pending.length);
+
+          for (const file of pending) {
+            const name = file.slice(0, -4);
+            const query = fs.readFileSync(path.join(migrationsDir, file), "utf8");
+            console.log("Applying migration newer than baseline: " + name);
+            const apply = await fetch(historyUrl, {
+              method: "POST",
+              headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ name, query }),
+            });
+            const applyBody = await apply.text();
+            if (!apply.ok) throw new Error("Migration failed for " + name + " (HTTP " + apply.status + "): " + applyBody.slice(0, 1000));
+            console.log("Applied migration: " + name);
+          }
+
+          console.log("Supabase migration reconciliation passed from verified baseline.");
+          NODE
+
+      - name: Retire legacy LiveKit Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve Supabase project ref for LiveKit retirement."; exit 1; }
+          for fn in livekit-tv-token livekit-token livekit-tv-guest-token livekit-space-token; do
+            echo "Retiring legacy Edge Function: $fn"
+            supabase functions delete "$fn" --project-ref "$PROJECT_REF" --yes || true
+          done
+          echo "Legacy LiveKit Edge Function retirement completed."
+
+      - name: Synchronize M-Pesa sandbox secrets into Supabase Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+          MPESA_ENV: ${{ secrets.MPESA_ENV }}
+          MPESA_CONSUMER_KEY: ${{ secrets.MPESA_CONSUMER_KEY }}
+          MPESA_CONSUMER_SECRET: ${{ secrets.MPESA_CONSUMER_SECRET }}
+          MPESA_SHORTCODE: ${{ secrets.MPESA_SHORTCODE }}
+          MPESA_PASSKEY: ${{ secrets.MPESA_PASSKEY }}
+          MPESA_USD_KES_RATE: ${{ secrets.MPESA_USD_KES_RATE }}
+          MPESA_B2C_SHORTCODE: ${{ secrets.MPESA_B2C_SHORTCODE }}
+          MPESA_INITIATOR_NAME: ${{ secrets.MPESA_INITIATOR_NAME }}
+          MPESA_SECURITY_CRED: ${{ secrets.MPESA_SECURITY_CRED }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for M-Pesa secret synchronization."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for M-Pesa secret synchronization."; exit 1; }
+
+          # M-Pesa is optional during the sandbox phase. Never substitute
+          # fake/default credentials: if the real sandbox configuration is not
+          # provisioned yet, keep reconciliation green and deploy the functions.
+          # The runtime config-status endpoint will report STK as not ready.
+          missing=()
+          [[ -n "$MPESA_ENV" ]] || missing+=(MPESA_ENV)
+          [[ -n "$MPESA_CONSUMER_KEY" ]] || missing+=(MPESA_CONSUMER_KEY)
+          [[ -n "$MPESA_CONSUMER_SECRET" ]] || missing+=(MPESA_CONSUMER_SECRET)
+          [[ -n "$MPESA_SHORTCODE" ]] || missing+=(MPESA_SHORTCODE)
+          [[ -n "$MPESA_PASSKEY" ]] || missing+=(MPESA_PASSKEY)
+          [[ -n "$MPESA_USD_KES_RATE" ]] || missing+=(MPESA_USD_KES_RATE)
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::warning::M-Pesa sandbox secrets are not fully provisioned; skipping secret synchronization."
+            echo "::warning::Missing sandbox configuration names: ${missing[*]}"
+            echo "M-Pesa functions will still be deployed; STK readiness remains false until real sandbox credentials are added."
+            exit 0
+          fi
+
+          case "$MPESA_ENV" in
+            sandbox) ;;
+            live)
+              echo "::error::Live M-Pesa configuration is intentionally blocked by this sandbox-only deployment gate. Set MPESA_ENV=sandbox."
+              exit 1
+              ;;
+            *) echo "::error::MPESA_ENV must be exactly 'sandbox' for the current deployment."; exit 1 ;;
+          esac
+
+          if ! [[ "$MPESA_USD_KES_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk "BEGIN { exit !($MPESA_USD_KES_RATE > 0) }"; then
+            echo "::error::MPESA_USD_KES_RATE must be a positive numeric value."
+            exit 1
+          fi
+
+          umask 077
+          TMP_ENV="$(mktemp)"
+          trap 'rm -f "$TMP_ENV"' EXIT
+          {
+            printf 'MPESA_ENV=%s\n' "$MPESA_ENV"
+            printf 'MPESA_CONSUMER_KEY=%s\n' "$MPESA_CONSUMER_KEY"
+            printf 'MPESA_CONSUMER_SECRET=%s\n' "$MPESA_CONSUMER_SECRET"
+            printf 'MPESA_SHORTCODE=%s\n' "$MPESA_SHORTCODE"
+            printf 'MPESA_PASSKEY=%s\n' "$MPESA_PASSKEY"
+            printf 'MPESA_USD_KES_RATE=%s\n' "$MPESA_USD_KES_RATE"
+            if [[ -n "$MPESA_B2C_SHORTCODE" ]]; then printf 'MPESA_B2C_SHORTCODE=%s\n' "$MPESA_B2C_SHORTCODE"; fi
+            if [[ -n "$MPESA_INITIATOR_NAME" ]]; then printf 'MPESA_INITIATOR_NAME=%s\n' "$MPESA_INITIATOR_NAME"; fi
+            if [[ -n "$MPESA_SECURITY_CRED" ]]; then printf 'MPESA_SECURITY_CRED=%s\n' "$MPESA_SECURITY_CRED"; fi
+          } > "$TMP_ENV"
+
+          supabase secrets set --project-ref "$PROJECT_REF" --env-file "$TMP_ENV"
+          echo "M-Pesa sandbox secrets synchronized without printing secret values."
+
+      - name: Deploy M-Pesa Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for M-Pesa Edge Function deployment."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for M-Pesa deployment."; exit 1; }
+          deploy_function() {
+            local name="$1"
+            local optional_arg="${2:-}"
+            local attempt=1
+            local max_attempts=4
+            while true; do
+              if [[ -n "$optional_arg" ]]; then
+                if supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF" "$optional_arg"; then
+                  return 0
+                fi
+              elif supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF"; then
+                return 0
+              fi
+              if (( attempt >= max_attempts )); then
+                echo "::error::Supabase Edge Function deployment failed after $max_attempts attempts: $name"
+                return 1
+              fi
+              local delay=$((attempt * 20))
+              echo "::warning::Supabase Edge Function deployment hit a transient registry/deployment failure for $name; retrying in ${delay}s (attempt $((attempt+1))/$max_attempts)."
+              sleep "$delay"
+              attempt=$((attempt+1))
+            done
+          }
+          deploy_function mpesa-stk-push "--no-verify-jwt"
+          deploy_function mpesa-stk-status
+          deploy_function mpesa-config-status
+          echo "M-Pesa sandbox Edge Functions deployed with callback-compatible JWT configuration."
+
+      - name: Deploy Fediverse Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for the Fediverse gateway deployment gate."; exit 1; }
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref."; exit 1; }
+          # Supabase can return transient HTTP 500s while building/rolling out an Edge Function.
+          # Treat deployment as a retryable infrastructure operation instead of failing the
+          # entire production reconciliation on the first registry/control-plane error.
+          deploy_function() {
+            local name="$1"
+            local flags="${2:-}"
+            local attempt=1
+            local max_attempts=4
+            while true; do
+              echo "Deploying Supabase Edge Function $name (attempt $attempt/$max_attempts)"
+              if [[ "$flags" == "--no-verify-jwt" ]]; then
+                if supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF" --no-verify-jwt; then
+                  return 0
+                fi
+              elif supabase functions deploy "$name" --use-api --project-ref "$PROJECT_REF"; then
+                return 0
+              fi
+              if (( attempt >= max_attempts )); then
+                echo "::error::Supabase Edge Function deployment failed after $max_attempts attempts: $name"
+                return 1
+              fi
+              local delay=$((attempt * 20))
+              echo "::warning::Supabase deployment for $name returned a retryable failure; waiting ${delay}s before attempt $((attempt+1))/$max_attempts."
+              sleep "$delay"
+              attempt=$((attempt+1))
+            done
+          }
+
+          deploy_function gateway-relay "--no-verify-jwt"
+          deploy_function federated-feed
+          deploy_function megalodon-gateway
+          # The production UI's Follow/Unfollow path is testagram-api -> federation-transport.
+          # Keep both gateway functions reconciled with the same exact source revision.
+          deploy_function testagram-api "--no-verify-jwt"
+          # Testagram's public ActivityPub actor URLs are canonical on testagram.site.
+          export FEDERATION_PUBLIC_ORIGIN="https://testagram.site"
+          deploy_function federation-transport "--no-verify-jwt"
+          # activitypub-federation was the retired duplicate client gateway. Remove the
+          # live Edge Function as part of reconciliation so production has one canonical
+          # outbound path: testagram-api -> federation-transport.
+          supabase functions delete activitypub-federation --project-ref "$PROJECT_REF" --yes || true
+
+          GATEWAY_URL="https://${PROJECT_REF}.supabase.co/functions/v1/gateway-relay?action=health"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 "$GATEWAY_URL" > fediverse-gateway-health.json
+          node -e 'const fs=require("node:fs"); const body=fs.readFileSync("fediverse-gateway-health.json","utf8").trim(); let p; try { p=JSON.parse(body); } catch { console.error("Fediverse gateway returned invalid JSON:", body); process.exit(1); } if (p?.ok !== true || p?.service !== "gateway-relay" || p?.backend !== "supabase") { console.error("Fediverse gateway contract failed:", JSON.stringify(p)); process.exit(1); } console.log("Fediverse gateway gate passed:", JSON.stringify(p));'
+
+      - name: Deploy Testagram Ads Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for the Testagram Ads deployment gate."; exit 1; }
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref."; exit 1; }
+          for fn in testagram-ad-campaign testagram-ads zenad-decision zenad-event testagram-ad-asset-upload zenad-campaign zenad-ad-asset-upload mpesa-ad-payment; do
+            if [[ "$fn" == "zenad-event" || "$fn" == "mpesa-ad-payment" ]]; then
+              supabase functions deploy "$fn" --use-api --project-ref "$PROJECT_REF" --no-verify-jwt
+            else
+              supabase functions deploy "$fn" --use-api --project-ref "$PROJECT_REF"
+            fi
+          done
+          node -e 'const fs=require("node:fs"); const p="supabase/migrations/20260919193000_testagram_ads_runtime_schema_repair.sql"; if(!fs.existsSync(p)){console.error("Canonical Testagram Ads runtime migration is missing:",p); process.exit(1)} console.log("Testagram Ads schema source present:",p);'
+
+      - name: Install pinned Vercel CLI
+        run: npm install --global vercel@54.15.1
+
+      - name: Synchronize SMS secrets into Vercel production
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SEND_SMS_HOOK_SECRETS: ${{ secrets.SEND_SMS_HOOK_SECRETS || secrets.SEND_SMS_HOOK_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SECRET_KEY }}
+          SMS_RATE_LIMIT_SECRET: ${{ secrets.SMS_RATE_LIMIT_SECRET }}
+          SMS_GATEWAY_URL: ${{ secrets.SMS_GATEWAY_URL || secrets.AFRICASTALKING_SMS_URL || vars.SMS_GATEWAY_URL }}
+          SMS_GATEWAY_API_KEY: ${{ secrets.SMS_GATEWAY_API_KEY || secrets.AFRICASTALKING_API_KEY }}
+          SMS_GATEWAY_USERNAME: ${{ secrets.SMS_GATEWAY_USERNAME || secrets.AFRICASTALKING_USERNAME || secrets.AFRICA_TALKING_USERNAME || secrets.AFRICAS_TALKING_USERNAME || secrets.AT_USERNAME || vars.SMS_GATEWAY_USERNAME || vars.AFRICASTALKING_USERNAME }}
+          SMS_SENDER_NAME: ${{ secrets.SMS_SENDER_NAME || secrets.AFRICASTALKING_SENDER_ID || vars.SMS_SENDER_NAME || 'Testagram' }}
+        run: |
+          set -euo pipefail
+
+          require_secret() {
+            local name="$1"
+            local value="$2"
+            if [[ -z "$value" ]]; then
+              echo "::error::Required GitHub secret/configuration is missing: $name"
+              exit 1
+            fi
+            printf '::add-mask::%s\n' "$value"
+          }
+
+          put_production_secret() {
+            local name="$1"
+            local value="$2"
+            require_secret "$name" "$value"
+            printf '%s' "$value" | vercel env add "$name" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          }
+
+          put_production_secret "SEND_SMS_HOOK_SECRETS" "$SEND_SMS_HOOK_SECRETS"
+          put_production_secret "SUPABASE_URL" "$SUPABASE_URL"
+          put_production_secret "SUPABASE_SERVICE_ROLE_KEY" "$SUPABASE_SERVICE_ROLE_KEY"
+          put_production_secret "SMS_RATE_LIMIT_SECRET" "$SMS_RATE_LIMIT_SECRET"
+          put_production_secret "SMS_GATEWAY_API_KEY" "$SMS_GATEWAY_API_KEY"
+
+          # Africa's Talking Sandbox has one fixed authentication username and a
+          # separate Sandbox API host. Keep the two values coupled so a stale
+          # live URL cannot be combined with Sandbox credentials.
+          if [[ -z "$SMS_GATEWAY_USERNAME" ]]; then
+            if [[ "$SMS_GATEWAY_URL" =~ (^|[./])sandbox([./]|$) ]]; then
+              SMS_GATEWAY_USERNAME="sandbox"
+              echo "Africa's Talking Sandbox endpoint detected; using the documented Sandbox username."
+            else
+              echo "::error::SMS_GATEWAY_USERNAME is missing. Configure the live Africa's Talking application username in GitHub production."
+              exit 1
+            fi
+          fi
+
+          if [[ "$SMS_GATEWAY_USERNAME" == "sandbox" ]]; then
+            SMS_GATEWAY_URL="https://api.sandbox.africastalking.com/version1/messaging"
+            echo "Africa's Talking Sandbox mode selected; using the canonical Sandbox SMS endpoint."
+          elif [[ "$SMS_GATEWAY_URL" =~ (^|[./])sandbox([./]|$) ]]; then
+            echo "::error::A Sandbox Africa's Talking endpoint cannot be used with a live application username."
+            exit 1
+          fi
+
+          put_production_secret "SMS_GATEWAY_URL" "$SMS_GATEWAY_URL"
+          put_production_secret "SMS_GATEWAY_USERNAME" "$SMS_GATEWAY_USERNAME"
+          if [[ -n "$SMS_SENDER_NAME" ]]; then
+            put_production_secret "SMS_SENDER_NAME" "$SMS_SENDER_NAME"
+          else
+            echo "SMS_SENDER_NAME not supplied; preserving provider/default sender configuration."
+          fi
+
+          echo "SMS production environment synchronized without printing secret values."
+
+      - name: Synchronize Cloudflare R2 secrets into Supabase Edge Functions
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_MEDIA_BUCKET: ${{ secrets.R2_MEDIA_BUCKET || vars.R2_MEDIA_BUCKET }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for R2 secret synchronization."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for R2 secret synchronization."; exit 1; }
+
+          missing=()
+          [[ -n "$R2_ACCOUNT_ID" ]] || missing+=(R2_ACCOUNT_ID)
+          [[ -n "$R2_ACCESS_KEY_ID" ]] || missing+=(R2_ACCESS_KEY_ID)
+          [[ -n "$R2_SECRET_ACCESS_KEY" ]] || missing+=(R2_SECRET_ACCESS_KEY)
+          [[ -n "$R2_MEDIA_BUCKET" ]] || missing+=(R2_MEDIA_BUCKET)
+          [[ -n "$R2_PUBLIC_BASE_URL" ]] || missing+=(R2_PUBLIC_BASE_URL)
+          if (( ${#missing[@]} > 0 )); then
+            echo "::warning::GitHub R2 configuration is incomplete: ${missing[*]}. Checking whether the required R2 secrets are already present in Supabase."
+            # Supabase CLI table output can contain ANSI escapes and spacing that make
+            # exact grep matching brittle. Normalize it to one secret name per line.
+            existing="$(supabase secrets list --project-ref "$PROJECT_REF" 2>/dev/null || true)"
+            # Normalize the CLI table defensively. Secret values are never printed.
+            secret_names="$(printf '%s\n' "$existing" | grep -oE '[A-Z][A-Z0-9_]+' | sort -u || true)"
+            has_secret() {
+              grep -Fxq "$1" <<<"$secret_names"
+            }
+            has_any() {
+              for candidate in "$@"; do
+                if has_secret "$candidate"; then return 0; fi
+              done
+              return 1
+            }
+
+            missing_remote=()
+            has_any CLOUDFLARE_ACCOUNT_ID R2_ACCOUNT_ID || missing_remote+=(CLOUDFLARE_ACCOUNT_ID)
+            has_any CLOUDFLARE_R2_ACCESS_KEY_ID R2_ACCESS_KEY_ID || missing_remote+=(CLOUDFLARE_R2_ACCESS_KEY_ID)
+            has_any CLOUDFLARE_R2_SECRET_ACCESS_KEY R2_SECRET_ACCESS_KEY || missing_remote+=(CLOUDFLARE_R2_SECRET_ACCESS_KEY)
+            has_any CLOUDFLARE_R2_BUCKET R2_MEDIA_BUCKET || missing_remote+=(CLOUDFLARE_R2_BUCKET)
+            has_any R2_PUBLIC_BASE_URL || missing_remote+=(R2_PUBLIC_BASE_URL)
+            if (( ${#missing_remote[@]} > 0 )); then
+              echo "::error::R2 configuration is incomplete in both GitHub and Supabase."
+              echo "::error::Missing Supabase Edge Function secret names: ${missing_remote[*]}"
+              echo "::error::Configure the R2 production secrets before enabling profile media."
+              exit 1
+            fi
+            echo "Required R2 secrets already exist in Supabase; redundant synchronization from GitHub is not required."
+            exit 0
+          fi
+
+          umask 077
+          TMP_ENV="$(mktemp)"
+          trap 'rm -f "$TMP_ENV"' EXIT
+          {
+            printf 'CLOUDFLARE_ACCOUNT_ID=%s\n' "$R2_ACCOUNT_ID"
+            printf 'CLOUDFLARE_R2_ACCESS_KEY_ID=%s\n' "$R2_ACCESS_KEY_ID"
+            printf 'CLOUDFLARE_R2_SECRET_ACCESS_KEY=%s\n' "$R2_SECRET_ACCESS_KEY"
+            printf 'CLOUDFLARE_R2_BUCKET=%s\n' "$R2_MEDIA_BUCKET"
+            printf 'R2_PUBLIC_BASE_URL=%s\n' "$R2_PUBLIC_BASE_URL"
+          } > "$TMP_ENV"
+          supabase secrets set --project-ref "$PROJECT_REF" --env-file "$TMP_ENV"
+          echo "Cloudflare R2 secrets synchronized to Supabase Edge Functions without printing values."
+
+      - name: Deploy profile media Edge Function
+        if: steps.supabase-auth.outputs.available == 'true'
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          PROJECT_REF="$SUPABASE_PROJECT_REF"
+          if [[ -z "$PROJECT_REF" ]]; then
+            PROJECT_REF="$(printf '%s' "$SUPABASE_URL" | sed -nE 's#https://([a-z0-9]+)\.supabase\.co/?$#\1#p')"
+          fi
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::SUPABASE_ACCESS_TOKEN is required for profile media deployment."; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]] || { echo "::error::Unable to resolve a valid Supabase project ref for profile media deployment."; exit 1; }
+
+          # Supabase function bundling can transiently time out while fetching JSR
+          # package metadata. Retry the control-plane operation instead of treating
+          # a 10s registry timeout as a source-code failure.
+          attempt=1
+          max_attempts=4
+          while true; do
+            echo "Deploying profile-media-upload (attempt $attempt/$max_attempts)"
+            if supabase functions deploy profile-media-upload --use-api --project-ref "$PROJECT_REF" --no-verify-jwt; then
+              break
+            fi
+            if (( attempt >= max_attempts )); then
+              echo "::error::Profile media Edge Function deployment failed after $max_attempts attempts."
+              exit 1
+            fi
+            delay=$((attempt * 20))
+            echo "::warning::Profile media deployment hit a transient bundling/registry failure; retrying in ${delay}s (attempt $((attempt+1))/$max_attempts)."
+            sleep "$delay"
+            attempt=$((attempt+1))
+          done
+          echo "Profile media Edge Function deployed with in-function bearer authentication."
+      - name: Synchronize Cloudflare R2 secrets into Vercel production
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{secrets.VERCEL_TOKEN}}
+          R2_ACCOUNT_ID: ${{secrets.R2_ACCOUNT_ID}}
+          R2_ACCESS_KEY_ID: ${{secrets.R2_ACCESS_KEY_ID}}
+          R2_SECRET_ACCESS_KEY: ${{secrets.R2_SECRET_ACCESS_KEY}}
+          R2_MEDIA_BUCKET: ${{secrets.R2_MEDIA_BUCKET || vars.R2_MEDIA_BUCKET}}
+          R2_PUBLIC_BASE_URL: ${{secrets.R2_PUBLIC_BASE_URL || vars.R2_PUBLIC_BASE_URL}}
+        run: |
+          set -euo pipefail
+          put_r2_secret() {
+            local name="$1"
+            local value="$2"
+            if [[ -z "$value" ]]; then echo "::error::Required R2 production configuration is missing: $name"; exit 1; fi
+            printf "::add-mask::%s\n" "$value"
+            printf "%s" "$value" | vercel env add "$name" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          }
+          put_r2_secret "R2_ACCOUNT_ID" "$R2_ACCOUNT_ID"
+          put_r2_secret "R2_ACCESS_KEY_ID" "$R2_ACCESS_KEY_ID"
+          put_r2_secret "R2_SECRET_ACCESS_KEY" "$R2_SECRET_ACCESS_KEY"
+          put_r2_secret "R2_MEDIA_BUCKET" "$R2_MEDIA_BUCKET"
+          if [[ -n "$R2_PUBLIC_BASE_URL" ]]; then put_r2_secret "R2_PUBLIC_BASE_URL" "$R2_PUBLIC_BASE_URL"; fi
+          printf "%s" "$APP_ORIGIN" | vercel env add "APP_ORIGIN" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+
+          # Vercel injects CRON_SECRET as Authorization: Bearer <secret> for
+          # production cron invocations. Generate it during reconciliation so
+          # the cleanup endpoint is fail-closed without requiring another
+          # manually maintained GitHub secret.
+          CRON_SECRET="$(openssl rand -hex 32)"
+          printf "::add-mask::%s\n" "$CRON_SECRET"
+          printf "%s" "$CRON_SECRET" | vercel env add "CRON_SECRET" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+
+          echo "R2 production environment synchronized without printing secret values."
+
+      - name: Synchronize Cloudflare backend credentials into Vercel production
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TESTAGRAM_CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_STREAM_ACCOUNT_ID || secrets.R2_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TESTAGRAM_CLOUDFLARE_STREAM_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_STREAM_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          require_secret() {
+            local name="$1"
+            local value="$2"
+            if [[ -z "$value" ]]; then
+              echo "::error::Required Cloudflare backend credential is missing from GitHub: $name"
+              exit 1
+            fi
+            printf '::add-mask::%s\n' "$value"
+          }
+
+          require_secret "CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_ACCOUNT_ID"
+          require_secret "CLOUDFLARE_API_TOKEN" "$CLOUDFLARE_API_TOKEN"
+
+          # Cloudflare remains the backend/control-plane provider. TV media delivery
+          # is now reconciled through Mux below, so this gate intentionally does NOT
+          # require Cloudflare Stream Live Input permissions.
+          CF_VERIFY_STATUS="$(curl --silent --show-error --output /tmp/cloudflare-token-verify.json --write-out '%{http_code}' \
+            --request GET \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/user/tokens/verify")"
+          if [[ "$CF_VERIFY_STATUS" != "200" ]]; then
+            echo "::error::Cloudflare API token verification failed (HTTP $CF_VERIFY_STATUS). Backend Cloudflare credentials were not synchronized."
+            exit 1
+          fi
+          node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync("/tmp/cloudflare-token-verify.json","utf8")); if(p?.success!==true || p?.result?.status!=="active"){console.error("::error::Cloudflare API token is not active."); process.exit(1)} console.log("Cloudflare backend token verification passed.");'
+
+          printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | vercel env add "CLOUDFLARE_ACCOUNT_ID" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$CLOUDFLARE_API_TOKEN" | vercel env add "CLOUDFLARE_API_TOKEN" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          echo "Cloudflare backend credentials synchronized without printing secret values."
+      - name: Synchronize Supabase TV control-plane credentials into Vercel production
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$VERCEL_TOKEN" ]] || { echo "::error::VERCEL_TOKEN is required."; exit 1; }
+          [[ -n "$SUPABASE_URL" ]] || { echo "::error::SUPABASE_URL is required for TV control-plane reconciliation."; exit 1; }
+          [[ -n "$SUPABASE_SERVICE_ROLE_KEY" ]] || { echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for server-side TV control-plane access."; exit 1; }
+          printf '::add-mask::%s\n' "$SUPABASE_SERVICE_ROLE_KEY"
+          printf '%s' "$SUPABASE_URL" | vercel env add "SUPABASE_URL" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$SUPABASE_SERVICE_ROLE_KEY" | vercel env add "SUPABASE_SERVICE_ROLE_KEY" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          echo "Supabase TV control-plane credentials synchronized without printing secret values."
+
+      - name: Diagnose Mux GitHub secret visibility
+        shell: bash
+        env:
+          MUX_TOKEN_ID: ${{ secrets.MUX_TOKEN_ID || secrets.MUX_ACCESS_TOKEN_ID }}
+          MUX_TOKEN_SECRET: ${{ secrets.MUX_TOKEN_SECRET || secrets.MUX_ACCESS_TOKEN_SECRET || secrets.MUX_SECRET_KEY }}
+          MUX_ENV_KEY: ${{ secrets.MUX_ENV_KEY }}
+          VITE_MUX_ENV_KEY: ${{ secrets.VITE_MUX_ENV_KEY }}
+          MUX_ACCESS_TOKEN_ID: ${{ secrets.MUX_ACCESS_TOKEN_ID }}
+          MUX_ACCESS_TOKEN_SECRET: ${{ secrets.MUX_ACCESS_TOKEN_SECRET }}
+          MUX_SECRET_KEY: ${{ secrets.MUX_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          echo "Mux GitHub secret visibility (values intentionally never printed):"
+          for name in MUX_TOKEN_ID MUX_TOKEN_SECRET MUX_ENV_KEY VITE_MUX_ENV_KEY MUX_ACCESS_TOKEN_ID MUX_ACCESS_TOKEN_SECRET MUX_SECRET_KEY; do
+            value="${!name:-}"
+            if [[ -n "$value" ]]; then
+              echo "$name=PRESENT"
+            else
+              echo "$name=ABSENT"
+            fi
+          done
+          if [[ -z "${MUX_TOKEN_ID:-}" ]]; then
+            echo "::error::No Mux access-token ID is visible to the production job."
+            exit 1
+          fi
+          if [[ -z "${MUX_TOKEN_SECRET:-}" ]]; then
+            echo "::error::No Mux access-token secret is visible to the production job. Accepted GitHub secret names: MUX_TOKEN_SECRET, MUX_ACCESS_TOKEN_SECRET, MUX_SECRET_KEY."
+            exit 1
+          fi
+          if [[ -z "${MUX_ENV_KEY:-}" && -z "${VITE_MUX_ENV_KEY:-}" ]]; then
+            echo "::error::No Mux environment key is visible to the production job."
+            exit 1
+          fi
+
+      - name: Synchronize SRS TV media gateway credentials into Vercel production
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          SRS_MEDIA_BASE_URL: ${{ vars.SRS_MEDIA_BASE_URL || 'https://media.testagram.site' }}
+          SRS_API_URL: ${{ vars.SRS_API_URL || 'https://media.testagram.site/srs-api' }}
+          SRS_API_TOKEN: ${{ secrets.SRS_API_TOKEN }}
+          SRS_FORWARD_SECRET: ${{ secrets.SRS_FORWARD_SECRET }}
+          TV_SECONDARY_DISTRIBUTION: ${{ vars.TV_SECONDARY_DISTRIBUTION }}
+        run: |
+          set -euo pipefail
+          [[ -n "$VERCEL_TOKEN" ]] || { echo "::error::VERCEL_TOKEN is required."; exit 1; }
+          [[ -n "$SRS_API_TOKEN" ]] || { echo "::error::SRS_API_TOKEN is required for Testagram TV."; exit 1; }
+          [[ -n "$SRS_FORWARD_SECRET" ]] || { echo "::error::SRS_FORWARD_SECRET is required for Testagram TV."; exit 1; }
+          printf '%s' "srs" | vercel env add "TV_DISTRIBUTION_PROVIDER" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$SRS_MEDIA_BASE_URL" | vercel env add "SRS_MEDIA_BASE_URL" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$SRS_API_URL" | vercel env add "SRS_API_URL" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$SRS_API_TOKEN" | vercel env add "SRS_API_TOKEN" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$SRS_FORWARD_SECRET" | vercel env add "SRS_FORWARD_SECRET" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "${TV_SECONDARY_DISTRIBUTION:-}" | vercel env add "TV_SECONDARY_DISTRIBUTION" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          echo "SRS TV media gateway credentials synchronized without printing secret values."
+      - name: Synchronize YouTube TV distribution credentials into Vercel production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "youtube" | vercel env add "TV_DISTRIBUTION_PROVIDER" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          if [[ -z "${YOUTUBE_CLIENT_ID:-}" || -z "${YOUTUBE_CLIENT_SECRET:-}" || -z "${YOUTUBE_REFRESH_TOKEN:-}" ]]; then
+            echo "::error::YouTube TV distribution credentials are incomplete in the GitHub production environment. YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, and YOUTUBE_REFRESH_TOKEN are required before production reconciliation can pass."
+            exit 1
+          fi
+          printf '%s' "$YOUTUBE_CLIENT_ID" | vercel env add "YOUTUBE_CLIENT_ID" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$YOUTUBE_CLIENT_SECRET" | vercel env add "YOUTUBE_CLIENT_SECRET" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$YOUTUBE_REFRESH_TOKEN" | vercel env add "YOUTUBE_REFRESH_TOKEN" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+      - name: Synchronize Mux TV credentials into Vercel production
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          MUX_TOKEN_ID: ${{ secrets.MUX_TOKEN_ID || secrets.MUX_ACCESS_TOKEN_ID }}
+          MUX_TOKEN_SECRET: ${{ secrets.MUX_TOKEN_SECRET || secrets.MUX_ACCESS_TOKEN_SECRET || secrets.MUX_SECRET_KEY }}
+          VITE_MUX_ENV_KEY: ${{ secrets.VITE_MUX_ENV_KEY || secrets.MUX_ENV_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$VERCEL_TOKEN" ]] || { echo "::error::VERCEL_TOKEN is required."; exit 1; }
+          [[ -n "$MUX_TOKEN_ID" ]] || { echo "::error::MUX_TOKEN_ID is required for Testagram TV."; exit 1; }
+          [[ -n "$MUX_TOKEN_SECRET" ]] || { echo "::error::MUX_TOKEN_SECRET is required for Testagram TV."; exit 1; }
+          printf '%s' "$MUX_TOKEN_ID" | vercel env add "MUX_TOKEN_ID" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          printf '%s' "$MUX_TOKEN_SECRET" | vercel env add "MUX_TOKEN_SECRET" production --force --sensitive --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          if [[ -n "$VITE_MUX_ENV_KEY" ]]; then
+            printf '%s' "$VITE_MUX_ENV_KEY" | vercel env add "VITE_MUX_ENV_KEY" production --force --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          fi
+          echo "Mux TV credentials synchronized without printing secret values."
+
+
+      - name: Pull production Vercel configuration
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Deploy and reconcile exact SHA
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
+            echo "Deployment reconciliation attempt $attempt/$MAX_DEPLOY_ATTEMPTS"
+            rm -f deployment-url.txt deployment-list.json health.txt
+
+            # Reuse an already READY production deployment for this exact commit when
+            # one exists. The Vercel Production Deploy workflow can finish just before
+            # reconciliation; creating a second deployment wastes the free-tier quota
+            # and previously caused the reconciliation gate (and therefore the capacity
+            # baseline) to be skipped even though production was already healthy.
+            existing_deploy_url="$(curl --fail --silent --show-error --location --retry 2 --retry-delay 2 \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&limit=50" \
+              | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{const p=JSON.parse(s);const d=(p.deployments||[]).find(x=>x.target==="production"&&x.state==="READY"&&x.meta?.githubCommitSha===process.env.TARGET_SHA);process.stdout.write(d?.url?("https://"+d.url):"")}catch{process.stdout.write("")}})' || true)"
+
+            if [[ -n "$existing_deploy_url" ]]; then
+              DEPLOY_URL="$existing_deploy_url"
+              echo "Reusing existing READY production deployment for exact SHA $TARGET_SHA: $DEPLOY_URL"
+            else
+              # Build on Vercel with its production environment, then deploy.
+              # Use Vercel's archive upload mode to avoid the Hobby api-upload-free
+              # per-file upload quota while preserving the exact-SHA build metadata.
+              vercel deploy --prod --yes --force --archive=tgz --token="$VERCEL_TOKEN" \
+                --build-env "TESTAGRAM_COMMIT_SHA=$TARGET_SHA" \
+                --env "TESTAGRAM_COMMIT_SHA=$TARGET_SHA" \
+                --meta "githubDeployment=1" \
+                --meta "githubCommitSha=$TARGET_SHA" \
+                --meta "githubCommitRef=main" \
+                --meta "githubCommitRepo=$REPO_NAME" \
+                --meta "githubCommitOrg=$REPO_OWNER" \
+                --meta "githubOrg=$REPO_OWNER" \
+                --meta "githubRepo=$REPO_NAME" > deployment-url.txt
+
+              # Vercel CLI emits Inspect/Production URLs plus progress/status lines.
+              # Extract the canonical Production URL instead of assuming the final line is a URL.
+              DEPLOY_URL="$(grep -E '^Production:[[:space:]]+https?://[^[:space:]]+' deployment-url.txt | tail -n 1 | sed -E 's/^Production:[[:space:]]+//; s/[[:space:]]+$//' || true)"
+              if [[ -z "$DEPLOY_URL" ]]; then
+                DEPLOY_URL="$(grep -Eo 'https?://[^[:space:]]+' deployment-url.txt | tail -n 1 | tr -d '\r' || true)"
+              fi
+              [[ "$DEPLOY_URL" =~ ^https?://[^[:space:]]+$ ]] || { echo "::warning::No canonical deployment URL found on attempt $attempt"; sleep 10; continue; }
+              echo "Created exact-SHA deployment: $DEPLOY_URL"
+            fi
+
+            echo "deployment_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+
+            vercel inspect "$DEPLOY_URL" --wait --token="$VERCEL_TOKEN" > deployment-inspect.txt
+
+            # Source-triggered Vercel deployments can race this explicit production deploy.
+            # Pin both custom-domain aliases to the exact deployment before liveness checks.
+            vercel alias set "$DEPLOY_URL" testagram.site --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+            vercel alias set "$DEPLOY_URL" www.testagram.site --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+
+            curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&limit=20" \
+              > deployment-list.json
+            node scripts/verify-vercel-deployment.mjs
+
+            # Diagnose custom-domain DNS before probing the public alias. A READY Vercel
+            # deployment can still be unreachable when the registrar/Cloudflare DNS zone
+            # is not resolving. Keep DNS failure distinct from build/deployment failure.
+            if command -v dig >/dev/null 2>&1; then
+              echo "DNS diagnostics for testagram.site:"
+              dig +short testagram.site A @1.1.1.1 || true
+              echo "DNS diagnostics for www.testagram.site:"
+              dig +short www.testagram.site CNAME @1.1.1.1 || true
+            fi
+
+            # Vercel CLI 54.15+ provides an authoritative DNS diagnosis. Preserve the
+            # JSON even when the command exits non-zero so the exact required record(s)
+            # are visible in the failed run.
+            domain_verify_ok=0
+            if vercel domains verify testagram.site --project "$VERCEL_PROJECT_ID" --format json --non-interactive > domain-verify.json 2>&1; then
+              domain_verify_ok=1
+              echo "Custom domain DNS verification passed."
+            else
+              echo "::warning::Custom domain DNS verification is not valid yet."
+              node -e 'const fs=require("node:fs"); const raw=fs.readFileSync("domain-verify.json","utf8").trim(); try { const p=JSON.parse(raw); console.log(JSON.stringify({status:p.status,ok:p.ok,reason:p.reason,message:p.message,recommended:p.recommended,conflicts:p.conflicts,next:p.next}, null, 2)); } catch { console.log("Vercel DNS verification returned non-JSON output:"); console.log(raw); }'
+            fi
+
+            # Probe the public production alias. Do NOT create another Vercel deployment
+            # when this fails: repeated deployments cannot repair external DNS and waste
+            # build time/credits. The exact READY deployment above remains the artifact
+            # under test, while this loop only retries the external DNS path.
+            health_ok=0
+            for dns_attempt in $(seq 1 12); do
+              if curl --fail --silent --show-error --location --retry 2 --retry-delay 2 \
+                "https://testagram.site/api/health" > health.txt; then
+                health_ok=1
+                break
+              fi
+              echo "::warning::Public production health probe failed ($dns_attempt/12) for deployment $DEPLOY_URL"
+              if [[ "$domain_verify_ok" -ne 1 ]]; then
+                echo "Custom-domain DNS is the remaining gate; waiting 15s before rechecking without redeploying."
+              else
+                echo "DNS verification passed but the public health path is not responding; waiting 15s before rechecking."
+              fi
+              sleep 15
+            done
+            if [[ "$health_ok" -ne 1 ]]; then
+              echo "::error::Public production health remained unreachable after 12 DNS/health checks."
+              cat health.txt || true
+              echo "The Vercel deployment is READY; no additional deployment was created because redeploying cannot repair external DNS."
+              if [[ -f domain-verify.json ]]; then
+                echo "Vercel domain verification evidence:"
+                cat domain-verify.json
+              fi
+              exit 1
+            fi
+            node -e 'const fs=require("node:fs"); const body=fs.readFileSync("health.txt","utf8").trim(); let payload; try { payload=JSON.parse(body); } catch (error) { console.error("Liveness endpoint did not return valid JSON:", error instanceof Error ? error.message : error); console.error(body); process.exit(1); } const expected=process.env.TARGET_SHA; if (payload?.ok !== true || payload?.service !== "testagram" || payload?.edge !== "reachable" || payload?.commit !== expected) { console.error("Liveness contract failed:", JSON.stringify({expected_commit:expected,payload})); process.exit(1); } console.log("Liveness contract passed:", JSON.stringify(payload));'
+
+            # /api/health is intentionally liveness-only. Database traffic stays on
+            # /api/ready so the 2,000-request capacity test does not amplify DB load.
+            curl --fail --silent --show-error --location --retry 3 --retry-delay 2               "https://testagram.site/api/ready" > ready.txt || {
+              echo "::warning::Public production readiness probe failed on attempt $attempt"
+              cat ready.txt || true
+              sleep 10
+              continue
+            }
+            node -e 'const fs=require("node:fs"); const body=fs.readFileSync("ready.txt","utf8").trim(); let payload; try { payload=JSON.parse(body); } catch (error) { console.error("Readiness endpoint did not return valid JSON:", error instanceof Error ? error.message : error); console.error(body); process.exit(1); } if (payload?.ok !== true || payload?.database !== "reachable") { console.error("Readiness contract failed:", JSON.stringify(payload)); process.exit(1); } console.log("Readiness contract passed:", JSON.stringify(payload));'
+
+            echo "Exact SHA, production READY state, liveness, and separate database readiness passed."
+            exit 0
+          done
+          echo "::error::Production deployment reconciliation exhausted its 3-attempt circuit breaker."
+          exit 1
+
+      - name: Emit immutable gate evidence
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          # shellcheck disable=SC2129
+          {
+            echo "target_sha=$TARGET_SHA"
+            echo "deployment_url=${{ steps.deploy.outputs.deployment_url }}"
+            echo "gate=build-typecheck-lint-deploy-sha-liveness-readiness"
+            echo "status=passed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# Story media reconciliation CI trigger marker.
+
+# Final story backend reconciliation trigger.
+
+# Final story schema/UI reconciliation trigger v2.
+
+# Live reconciliation trigger: verify the repaired production gate on the next main push.
+# Search reconciliation trigger: deploy the direct-RPC and live-Fediverse search path.
+# Mall canonical-profile typecheck reconciliation: 2026-09-20.

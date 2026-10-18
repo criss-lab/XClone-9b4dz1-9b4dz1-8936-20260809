@@ -1,0 +1,40 @@
+services:
+  srs:
+    image: ossrs/srs:v6
+    restart: unless-stopped
+    command: ["./objs/srs", "-c", "/etc/srs/srs.conf"]
+    environment:
+      SRS_RTC_SERVER_CANDIDATE: ${SRS_PUBLIC_IP:?set SRS_PUBLIC_IP}
+      SRS_RTC_SERVER_ENABLED: "on"
+      SRS_RTC_SERVER_LISTEN: "8000"
+      SRS_RTC_SERVER_TCP_ENABLED: "on"
+      SRS_RTC_SERVER_TCP_LISTEN: "8000"
+      SRS_VHOST_RTC_ENABLED: "on"
+      SRS_VHOST_RTC_RTC_TO_RTMP: "on"
+    volumes:
+      - ./srs.conf:/etc/srs/srs.conf:ro
+    expose:
+      - "1935"
+      - "1985"
+    ports:
+      - "8000:8000/udp"
+      - "8000:8000/tcp"
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - srs
+    environment:
+      SRS_DOMAIN: ${SRS_DOMAIN:-media.testagram.site}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
