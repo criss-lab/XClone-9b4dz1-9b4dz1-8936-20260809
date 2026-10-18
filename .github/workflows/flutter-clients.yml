@@ -1,0 +1,145 @@
+name: Flutter Web and Android parity gates
+
+on:
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - 'docs/flutter-migration-plan.md'
+      - 'docs/flutter-migration-release-gates.md'
+      - 'docs/flutter-parity-inventory.json'
+      - 'docs/flutter-route-parity.json'
+      - 'docs/mobile-architecture.md'
+      - 'scripts/update-flutter-route-parity.mjs'
+      - 'scripts/update-flutter-parity-inventory.mjs'
+      - 'scripts/validate-flutter-parity-inventory.mjs'
+      - 'scripts/validate-flutter-route-progress.mjs'
+      - '.github/workflows/flutter-clients.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - 'docs/flutter-migration-plan.md'
+      - 'docs/flutter-parity-inventory.json'
+      - 'docs/flutter-route-parity.json'
+      - 'scripts/update-flutter-route-parity.mjs'
+      - 'docs/mobile-architecture.md'
+      - 'scripts/update-flutter-parity-inventory.mjs'
+      - 'scripts/validate-flutter-parity-inventory.mjs'
+      - 'scripts/validate-flutter-route-progress.mjs'
+      - 'docs/flutter-migration-release-gates.md'
+      - '.github/workflows/flutter-clients.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-clients-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    name: Verify no existing source surfaces are omitted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/validate-flutter-parity-inventory.mjs
+      - name: Regenerate and verify Flutter route parity
+        run: |
+          node scripts/update-flutter-route-parity.mjs
+          node -e "const d = JSON.parse(require('node:fs').readFileSync('docs/flutter-route-parity.json', 'utf8')); if (d.routes.length < 200 || d.counts.native_shell_routes < 1 || d.counts.legacy_web_fallbacks !== 0) process.exit(1); console.log(JSON.stringify(d.counts));"
+          git diff --exit-code -- docs/flutter-route-parity.json
+      - name: Prevent Flutter route coverage regressions
+        run: node scripts/validate-flutter-route-progress.mjs
+
+  flutter:
+    name: Analyze, test and build both targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: inventory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Resolve Flutter dependencies
+        working-directory: mobile
+        run: flutter pub get
+      - name: Diagnose TV Dart formatter diff
+        working-directory: mobile
+        shell: bash
+        run: |
+          for file in lib/features/tv/tv_page.dart lib/features/tv/tv_stream_prefetch_web.dart lib/features/tv/tv_web_player_web.dart; do
+            dart format --output=show "$file" > /tmp/tv.formatted.dart
+            diff -u "$file" /tmp/tv.formatted.dart || true
+          done
+      - name: Diagnose remaining Dart formatter diffs
+        working-directory: mobile
+        shell: bash
+        run: |
+          set +e
+          for file in lib/features/fediverse/fediverse_feed_policy.dart lib/features/fediverse/fediverse_page.dart test/features/fediverse/fediverse_feed_policy_test.dart lib/features/native_route/native_feature_page.dart lib/features/wallet/wallet_page.dart lib/features/wallet/wallet_read_model.dart test/features/wallet/wallet_read_model_test.dart lib/features/wallet/wallet_send_page.dart lib/features/wallet/wallet_security_page.dart lib/features/wallet/wallet_mpesa_page.dart lib/features/wallet/wallet_savings_page.dart test/features/wallet/wallet_savings_page_test.dart lib/app/testagram_app.dart lib/features/creator/referral_page.dart lib/features/creator/rewards_page.dart lib/features/marketplace/wishlist_page.dart lib/features/wallet/wallet_auxiliary_page.dart lib/features/social/lists_pages.dart lib/features/social/polls_page.dart lib/features/settings/legal_pages.dart lib/features/settings/active_sessions_page.dart lib/features/social/thread_interaction_page.dart lib/features/creator/analytics_pages.dart; do
+            dart format --output=show "$file" > /tmp/formatted.dart
+            diff -u "$file" /tmp/formatted.dart || true
+          done
+      - name: Enforce formatting
+        working-directory: mobile
+        run: dart format --output=none --set-exit-if-changed lib test
+      - name: Validate Flutter IPTV preload and cache contract
+        run: node scripts/validate-flutter-iptv-cache.mjs
+      - name: Analyze Flutter source
+        working-directory: mobile
+        run: flutter analyze --fatal-infos --fatal-warnings
+      - name: Run widget and session policy tests
+        working-directory: mobile
+        run: flutter test --coverage
+      - name: Build Flutter Web preview
+        working-directory: mobile
+        env:
+          SUPABASE_URL: ${{ vars.TESTAGRAM_SUPABASE_URL || 'https://ffrhglgkukgsuhxenena.supabase.co' }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.TESTAGRAM_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_h51Z3EHP2LN5o7HdRAB3Og_uhUA3oya' }}
+        run: >-
+          flutter build web --release --no-wasm-dry-run
+          --dart-define=SUPABASE_URL="$SUPABASE_URL"
+          --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY"
+          --dart-define=TESTAGRAM_SITE_URL=https://testagram.site
+      - name: Build native Android debug APK
+        working-directory: mobile
+        env:
+          SUPABASE_URL: ${{ vars.TESTAGRAM_SUPABASE_URL || 'https://ffrhglgkukgsuhxenena.supabase.co' }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.TESTAGRAM_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_h51Z3EHP2LN5o7HdRAB3Og_uhUA3oya' }}
+        run: >-
+          flutter build apk --debug
+          --dart-define=SUPABASE_URL="$SUPABASE_URL"
+          --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY"
+          --dart-define=TESTAGRAM_SITE_URL=https://testagram.site
+      - name: Verify artifacts and package identity
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          test -s build/web/index.html
+          test -s build/app/outputs/flutter-apk/app-debug.apk
+          grep -q 'applicationId = "com.xclone.app"' android/app/build.gradle.kts
+          echo 'Flutter Web and Android debug artifacts exist; Android package identity is preserved.'
+      - name: Upload Flutter Web preview (not production deployment)
+        uses: actions/upload-artifact@v4
+        with:
+          name: testagram-flutter-web-${{ github.sha }}
+          path: mobile/build/web/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Flutter Android debug APK (not a production release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: testagram-flutter-android-debug-${{ github.sha }}
+          path: mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
