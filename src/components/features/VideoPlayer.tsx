@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Heart, MessageCircle, Repeat2, Share, Volume2, VolumeX,
   Play, DollarSign, Crown, BadgeCheck, X, Send, Loader2,
-  UserPlus, UserCheck, Quote, Copy, Check, Bookmark, BookmarkCheck, Layers, Download,
+  UserPlus, UserCheck, Quote, Copy, Check, Bookmark, BookmarkCheck, Layers, Download, Maximize2, Minimize2,
 } from 'lucide-react';
 import { Post } from '@/types/app-types';
 import { formatNumber } from '@/lib/utils';
@@ -10,8 +10,9 @@ import { useAuth } from '@/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
-import { VideoMonetizationAd } from './VideoMonetizationAd';
+import { ExoClickVastPreRoll } from './ExoClickVastPreRoll';
 import { usePremium } from '@/hooks/usePremium';
+import { UniversalVideoPlayer } from './UniversalVideoPlayer';
 
 interface VideoPlayerProps {
   post: Post;
@@ -28,25 +29,37 @@ interface Reply {
   user_profiles: { username: string; avatar_url: string | null } | null;
 }
 
+function normalizeVideoReplies(rows: any[] | null | undefined): Reply[] {
+  return (rows ?? []).map((row) => ({ ...row, user_profiles: Array.isArray(row?.user_profiles) ? row.user_profiles[0] ?? null : row?.user_profiles ?? null }));
+}
+
 // @__PURE__ annotation prevents esbuild non-determinism on module-level Map construction
 const authorPremiumCache: Map<string, boolean> = /* @__PURE__ */ new Map();
 
+const VIDEO_SOUND_STORAGE_KEY = 'testagram-video-sound';
+function readVideoSoundPreference(): boolean {
+  try { return localStorage.getItem(VIDEO_SOUND_STORAGE_KEY) === 'on'; } catch { return false; }
+}
+
 export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPreload }: VideoPlayerProps) {
   const videoRef       = useRef<HTMLVideoElement>(null);
-  const viewCounterRef = useRef(0); // per-page view counter — replaces module-level _counter
   const progressRef    = useRef<HTMLDivElement>(null);
   const lastTapRef     = useRef<{ time: number; x: number; y: number } | null>(null);
   const heartTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swipeStartRef  = useRef<{ y: number; time: number } | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef(isActive);
+  activeRef.current = isActive;
 
   const { user }                = useAuth();
-  const { isActive: isPremium } = usePremium();
+  const { isActive: isPremium, loading: premiumLoading } = usePremium();
   const navigate                = useNavigate();
   const { toast }               = useToast();
 
   const [isPlaying, setIsPlaying]               = useState(false);
-  const [isMuted, setIsMuted]                   = useState(true);
+  const [isMuted, setIsMuted]                   = useState(() => !readVideoSoundPreference());
+  const [isFullscreen, setIsFullscreen]         = useState(false);
   const [isLiked, setIsLiked]                   = useState(false);
   const [isReposted, setIsReposted]             = useState(false);
   const [isFollowing, setIsFollowing]           = useState(false);
@@ -57,9 +70,15 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
 
   // Ads
   const [showPrerollAd, setShowPrerollAd]       = useState(false);
-  const [showMidrollAd, setShowMidrollAd]       = useState(false);
-  const [adDoneForThisPost, setAdDoneForThisPost] = useState(false);
-  const [midrollDone, setMidrollDone]           = useState(false);
+  const [premiumCheckTimedOut, setPremiumCheckTimedOut] = useState(false);
+  const prerollSeenRef = useRef(false);
+  const prerollPostIdRef = useRef(post.id);
+
+  useEffect(() => {
+    if (!premiumLoading) return;
+    const timeout = window.setTimeout(() => setPremiumCheckTimedOut(true), 6_000);
+    return () => window.clearTimeout(timeout);
+  }, [premiumLoading, post.id]);
 
   // Progress bar
   const [videoProgress, setVideoProgress]       = useState(0);
@@ -90,6 +109,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
 
   // Caption expand/collapse
   const [captionExpanded, setCaptionExpanded]   = useState(false);
+  const [shellReady, setShellReady]             = useState(false);
 
   /* ── Load initial like / repost / follow state ──────────────────────── */
   useEffect(() => {
@@ -132,54 +152,75 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
       });
   }, [post.user_id]);
 
+  useEffect(() => {
+    if (!isActive || !shellRef.current) return;
+    const raf = requestAnimationFrame(() => setShellReady(true));
+    return () => cancelAnimationFrame(raf);
+  }, [isActive]);
+
   /* ── Play / pause on active change ──────────────────────────────────── */
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     if (isActive) {
-      trackView();
-      viewCounterRef.current++;
-      const shouldShowAd = !isPremium && !adDoneForThisPost &&
-        (post.is_monetized || viewCounterRef.current % 3 === 0);
-      if (shouldShowAd) {
-        setShowPrerollAd(true);
-        setAdDoneForThisPost(true);
-      } else {
-        video.play().then(() => setIsPlaying(true)).catch(() => {});
+      if (prerollPostIdRef.current !== post.id) {
+        prerollPostIdRef.current = post.id;
+        prerollSeenRef.current = false;
+        setShowPrerollAd(false);
       }
+      const soundOn = readVideoSoundPreference();
+      setIsMuted(!soundOn);
+      trackView();
+      if (premiumLoading && !premiumCheckTimedOut) {
+        // Keep content paused briefly while entitlement resolves, but never
+        // leave a reel frozen forever if the premium-status RPC stalls.
+        video.pause();
+        setIsPlaying(false);
+        return;
+      }
+      if (premiumLoading && premiumCheckTimedOut) {
+        // Entitlement is unknown: prioritize playback and do not risk showing
+        // ads to a premium viewer because the status service is unavailable.
+        prerollSeenRef.current = true;
+        video.muted = !soundOn;
+        video.play().then(() => setIsPlaying(true)).catch(() => {});
+        return;
+      }
+      // One VAST ad opportunity for each distinct reel. A post is marked
+      // seen once, so returning to the same reel does not duplicate the ad.
+      if (!isPremium && !prerollSeenRef.current) {
+        prerollSeenRef.current = true;
+        video.pause();
+        setIsPlaying(false);
+        setShowPrerollAd(true);
+        return;
+      }
+      video.muted = !soundOn;
+      video.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
-      // Mute and pause when scrolling away
+      // Stop both content and any in-flight ad when the viewer swipes away.
       video.pause();
-      video.muted = true;
-      setIsMuted(true);
       setIsPlaying(false);
+      setShowPrerollAd(false);
       setShowComments(false);
       setShowRepostSheet(false);
       setShowShareSheet(false);
     }
-  }, [isActive]);
+  }, [isActive, isPremium, premiumLoading, premiumCheckTimedOut, post.id]);
 
   /* ── Ad complete ─────────────────────────────────────────────────────── */
-  const handleAdComplete = () => {
+  const handleAdComplete = useCallback(() => {
     setShowPrerollAd(false);
-    setShowMidrollAd(false);
     const video = videoRef.current;
-    if (video) video.play().then(() => setIsPlaying(true)).catch(() => {});
-  };
+    if (video && activeRef.current) video.play().then(() => setIsPlaying(true)).catch(() => {});
+  }, []);
 
   /* ── Time update → progress + mid-roll trigger ───────────────────────── */
   const handleTimeUpdate = () => {
     const video = videoRef.current;
     if (!video || isDragging) return;
-    const pct = video.currentTime / (video.duration || 1);
-    setVideoProgress(pct * 100);
-    if (midrollDone || !post.is_monetized || isPremium) return;
-    if (pct >= 0.5) {
-      setMidrollDone(true);
-      video.pause();
-      setShowMidrollAd(true);
-    }
+    setVideoProgress((video.currentTime / (video.duration || 1)) * 100);
   };
 
   /* ── Track view — one per user per session (dedup via browsing_history) ── */
@@ -219,7 +260,25 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     if (!video) return;
     video.muted = !video.muted;
     setIsMuted(video.muted);
+    try { localStorage.setItem(VIDEO_SOUND_STORAGE_KEY, video.muted ? 'off' : 'on'); } catch {}
+    if (!video.muted && video.paused && isActive) video.play().catch(() => {});
   };
+
+  const toggleFullscreen = useCallback(async () => {
+    const target = videoRef.current?.parentElement?.parentElement ?? videoRef.current;
+    if (!target) return;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await target.requestFullscreen?.();
+      setIsFullscreen(!!document.fullscreenElement);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    const onFullscreen = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFullscreen);
+    return () => document.removeEventListener('fullscreenchange', onFullscreen);
+  }, []);
 
   /* ── Like — one-time only (no unlike) ───────────────────────────────── */
   const triggerLike = useCallback(async () => {
@@ -232,9 +291,8 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
       await supabase.from('likes').insert({ user_id: user.id, post_id: post.id });
       await supabase.from('posts').update({ likes_count: newCount }).eq('id', post.id);
       if (post.user_id !== user.id) {
-        await supabase.from('notifications').insert({
-          user_id: post.user_id, type: 'like', from_user_id: user.id, post_id: post.id,
-        });
+        await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'like', actor_id: user.id, post_id: post.id,
+         });
       }
       onUpdate?.();
     } catch (_) {
@@ -253,7 +311,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     try {
       if (nowFollowing) {
         await supabase.from('follows').insert({ follower_id: user.id, following_id: post.user_id });
-        await supabase.from('notifications').insert({ user_id: post.user_id, type: 'follow', from_user_id: user.id });
+        await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'follow', actor_id: user.id  });
       } else {
         await supabase.from('follows').delete().match({ follower_id: user.id, following_id: post.user_id });
       }
@@ -277,7 +335,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
         await supabase.from('reposts').insert({ user_id: user.id, post_id: post.id });
         await supabase.from('posts').update({ reposts_count: newCount }).eq('id', post.id);
         if (post.user_id !== user.id)
-          await supabase.from('notifications').insert({ user_id: post.user_id, type: 'repost', from_user_id: user.id, post_id: post.id });
+          await supabase.from('notifications').insert({ recipient_id: post.user_id, kind: 'repost', actor_id: user.id, post_id: post.id  });
         toast({ title: 'Reposted' });
       } else {
         await supabase.from('reposts').delete().match({ user_id: user.id, post_id: post.id });
@@ -386,11 +444,11 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     setCommentsLoading(true);
     const { data } = await supabase
       .from('replies')
-      .select('id, content, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, created_at, profiles(username, avatar_url)')
       .eq('post_id', post.id)
       .order('created_at', { ascending: false })
       .limit(50);
-    setComments((data as Reply[]) || []);
+    setComments(normalizeVideoReplies(data));
     setCommentsLoading(false);
   };
 
@@ -403,10 +461,10 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     const { data: inserted } = await supabase
       .from('replies')
       .insert({ post_id: post.id, user_id: user.id, content: text })
-      .select('id, content, created_at, user_profiles(username, avatar_url)')
+      .select('id, content, created_at, profiles(username, avatar_url)')
       .single();
     if (inserted) {
-      setComments(prev => [inserted as Reply, ...prev]);
+      setComments(prev => [normalizeVideoReplies([inserted])[0], ...prev]);
       setRepliesCount(c => c + 1);
     }
     setPosting(false);
@@ -571,51 +629,35 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
 
   return (
     <div
-      className="relative h-screen w-full max-w-full bg-black snap-start snap-always overflow-hidden"
+      className="relative isolate h-[100dvh] min-h-[100svh] w-full max-w-full overflow-hidden overscroll-none bg-black snap-start snap-always select-none"
       onTouchStart={e => { handleTouchStart(e); handleLongPressStart(); }}
       onTouchEnd={e => { handleTouchEndSwipe(e); handleLongPressEnd(); }}
       onMouseDown={handleLongPressStart}
       onMouseUp={handleLongPressEnd}
       onMouseLeave={handleLongPressEnd}
+      onContextMenu={e => e.preventDefault()}
+      onDragStart={e => e.preventDefault()}
+      role="region"
+      aria-label={`Video by ${post.user_id}`}
+      style={{ touchAction: 'pan-y', WebkitTapHighlightColor: 'transparent' }}
     >
-      {/* Pre-roll ad */}
-      {showPrerollAd && (
-        <VideoMonetizationAd
-          postId={post.id}
-          creatorUserId={post.user_id}
-          onAdComplete={handleAdComplete}
-          skipAfterSeconds={5}
-        />
-      )}
+      {/* ExoClick VAST vertical pre-roll; the player resumes on completion/no-fill. */}
+      {showPrerollAd && isActive && <ExoClickVastPreRoll onComplete={handleAdComplete} />}
 
-      {/* Mid-roll ad */}
-      {showMidrollAd && (
-        <div className="absolute inset-0 z-50 flex flex-col">
-          <div className="absolute top-2 right-2 z-10 bg-black/60 text-white/70 text-[10px] font-bold px-2 py-0.5 rounded-full">
-            Mid-roll
-          </div>
-          <VideoMonetizationAd
-            postId={post.id}
-            creatorUserId={post.user_id}
-            onAdComplete={handleAdComplete}
-            skipAfterSeconds={5}
-          />
-        </div>
-      )}
-
-      {/* ── Video element ────────────────────────────────────────────────── */}
-      <video
+      {/* ── Universal video engine ──────────────────────────────────────── */}
+      <UniversalVideoPlayer
         ref={videoRef}
         src={cancelPreload ? '' : (post.video_url || '')}
-        loop
-        playsInline
-        muted={isMuted}
+        active={isActive && !showPrerollAd && (isPremium || prerollSeenRef.current || premiumCheckTimedOut)}
         preload={shouldPreload ? 'auto' : 'metadata'}
-        className="h-full w-full object-cover"
+        muted={isMuted}
+        loop
+        className="h-full w-full object-cover bg-black"
         style={{ maxWidth: '100vw' }}
-        onTimeUpdate={handleTimeUpdate}
         onClick={handleVideoTap}
-        onTouchEnd={handleVideoTap}
+        onTimeUpdate={handleTimeUpdate}
+        onPlaying={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
       />
 
       {/* ── Long-press 2× speed overlay ────────────────────────────────── */}
@@ -649,10 +691,17 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
       >
         {isMuted ? <VolumeX className="w-5 h-5 text-white" /> : <Volume2 className="w-5 h-5 text-white" />}
       </button>
+      <button
+        onClick={toggleFullscreen}
+        className="absolute top-4 right-16 z-30 p-3 bg-black/60 backdrop-blur-sm rounded-full hover:bg-black/80 active:scale-95 transition-all shadow-lg"
+        style={{ touchAction: 'manipulation' }}
+        aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+      >
+        {isFullscreen ? <Minimize2 className="w-5 h-5 text-white" /> : <Maximize2 className="w-5 h-5 text-white" />}
+      </button>
 
       {/* ── Seek / progress bar ───────────────────────────────────────────── */}
-      {!showPrerollAd && !showMidrollAd && (
-        <div
+      <div
           ref={progressRef}
           className="absolute left-0 right-0 z-30 cursor-pointer"
           style={{ bottom: showComments ? '70vh' : '88px', touchAction: 'none' }}
@@ -665,19 +714,14 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
           onTouchEnd={handleProgressTouchEnd}
         >
           <div className="py-3 px-0">
-            <div className="relative h-1 bg-white/20 rounded-full mx-0">
+            <div ref={shellRef} className="relative h-1 bg-white/20 rounded-full mx-0">
               <div className="absolute left-0 top-0 h-full bg-white rounded-full transition-none"
                 style={{ width: `${videoProgress}%` }} />
               <div className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow-md shadow-black/50 -ml-1.5 transition-opacity"
                 style={{ left: `${videoProgress}%`, opacity: isDragging ? 1 : 0.85 }} />
-              {post.is_monetized && !isPremium && !midrollDone && (
-                <div className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-amber-400 border border-black/40"
-                  style={{ left: '50%', marginLeft: '-4px' }} title="Ad at 50%" />
-              )}
             </div>
           </div>
         </div>
-      )}
 
       {/* ── Main overlay: author info + action buttons ────────────────────── */}
       <div
@@ -742,7 +786,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
         </div>
 
         {/* Center: play icon when paused */}
-        {!isPlaying && !showPrerollAd && (
+        {!isPlaying && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="w-16 h-16 bg-black/50 rounded-full flex items-center justify-center">
               <Play className="w-8 h-8 text-white ml-1" fill="currentColor" />

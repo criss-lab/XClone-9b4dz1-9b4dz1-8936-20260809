@@ -1,0 +1,65 @@
+name: Frontend Production Quality Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: frontend-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            echo "Dependency install attempt ${attempt}/3"
+            if npm ci --no-audit --no-fund > /tmp/npm-ci-attempt.log 2>&1; then
+              cat /tmp/npm-ci-attempt.log
+              exit 0
+            else
+              status=$?
+            fi
+            cat /tmp/npm-ci-attempt.log
+            if [ "${attempt}" -lt 3 ] && grep -Eqi 'statusCode: 50[234]|HTTP[^[:cntrl:]]*50[234]|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|socket hang up|network timeout' /tmp/npm-ci-attempt.log; then
+              delay=$((attempt * 15))
+              echo "Transient upstream/network failure detected (exit ${status}); retrying in ${delay}s." >&2
+              sleep "${delay}"
+              continue
+            fi
+            echo "Dependency installation failed without a retryable network error (exit ${status}), or all retries were exhausted." >&2
+            exit "${status}"
+          done
+          exit 1
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+# Keep the gate independently visible on every PR and main push.

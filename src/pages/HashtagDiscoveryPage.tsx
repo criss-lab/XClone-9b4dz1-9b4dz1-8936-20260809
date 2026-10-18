@@ -56,7 +56,7 @@ export default function HashtagDiscoveryPage() {
         const since48h = new Date(Date.now() - 48 * 3600000).toISOString();
         const { data } = await supabase
           .from('posts')
-          .select('*, user_profiles(id, username, avatar_url, verified)')
+          .select('*, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
           .is('community_id', null)
           .eq('is_video', false)
           .gte('created_at', since48h)
@@ -72,7 +72,7 @@ export default function HashtagDiscoveryPage() {
         const since48h = new Date(Date.now() - 48 * 3600000).toISOString();
         const { data } = await supabase
           .from('posts')
-          .select('*, user_profiles(id, username, avatar_url, verified)')
+          .select('*, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
           .eq('is_video', true)
           .gte('created_at', since48h)
           .order('views_count', { ascending: false })
@@ -80,9 +80,9 @@ export default function HashtagDiscoveryPage() {
         setRecommendedVideos(data ?? []);
       } else if (tab === 'Creators') {
         const { data } = await supabase
-          .from('user_profiles')
-          .select('id, username, avatar_url, verified, followers_count, bio, is_creator, creator_tier')
-          .order('followers_count', { ascending: false })
+          .from('profiles')
+          .select('id, username, avatar_url, verified, follower_count, bio, is_creator, creator_tier')
+          .order('follower_count', { ascending: false })
           .limit(30);
         setRecommendedCreators((data ?? []).filter((u: any) => u.id !== user?.id));
         if (user) {
@@ -92,11 +92,15 @@ export default function HashtagDiscoveryPage() {
       } else if (tab === 'Threads') {
         const { data } = await supabase
           .from('threads')
-          .select('*, user_profiles(id, username, avatar_url, verified)')
+          .select('*, user_profiles:profiles!posts_author_id_fkey(id, username, avatar_url, verified_tier)')
           .eq('is_published', true)
           .order('likes_count', { ascending: false })
           .limit(20);
-        setRecommendedThreads(data ?? []);
+        const rows = data ?? [];
+         const ownerIds = [...new Set(rows.map((r: any) => r.owner_id).filter(Boolean))];
+         const { data: profiles } = ownerIds.length ? await supabase.from('profiles').select('id, username, avatar_url, verified_tier').in('id', ownerIds) : { data: [] as any[] };
+         const byOwner = new Map((profiles ?? []).map((p: any) => [p.id, p]));
+         setRecommendedThreads(rows.map((r: any) => ({ ...r, user_profiles: byOwner.get(r.owner_id) ?? null })));
       }
     } catch (err) {
       console.error('[fetchTabContent]', err);
@@ -134,19 +138,30 @@ export default function HashtagDiscoveryPage() {
               .order('created_at', { ascending: false })
               .limit(100)
           : Promise.resolve({ data: [] }),
-        supabase.from('trending_hashtags')
-          .select('trend_score, hourly_posts, daily_posts, hashtags(id, tag, usage_count)')
-          .order('trend_score', { ascending: false })
-          .limit(30),
+        supabase.from('hashtags')
+          .select('id, tag, usage_count, post_count, federated_post_count, follower_count, last_used_at')
+          .gte('last_used_at', new Date(Date.now() - 30 * 24 * 3600000).toISOString())
+          .order('last_used_at', { ascending: false })
+          .limit(100),
       ]);
       const followed = ((followRes as any).data ?? []).map((f: any) => f.hashtags).filter(Boolean);
       setFollowedHashtags(followed);
       setFollowedIds(followed.map((h: any) => h.id));
-      setTrendingHashtags(
-        ((trendRes.data ?? []) as any[])
-          .filter((r: any) => r.hashtags)
-          .map((r: any) => ({ ...r.hashtags, trend_score: r.trend_score, hourly_posts: r.hourly_posts, daily_posts: r.daily_posts }))
-      );
+      const stopTags = new Set(['the','and','for','with','from','this','that','you','are','was','has','have','not','but','of','to','in','on','a','an','it','is','as','or','porn','nudes','onlyfans','sexwork','nsfw']);
+      const rankedTrends = ((trendRes.data ?? []) as any[])
+        .filter((h: any) => h?.id && /^[a-z0-9][a-z0-9_-]{2,63}$/i.test(String(h.tag ?? '')))
+        .filter((h: any) => !stopTags.has(String(h.tag).toLowerCase()))
+        .map((h: any) => {
+          const local = Number(h.post_count ?? h.usage_count ?? 0);
+          const federated = Number(h.federated_post_count ?? 0);
+          const ageHours = Math.max(1, (Date.now() - new Date(h.last_used_at ?? Date.now()).getTime()) / 3600000);
+          const freshness = Math.exp(-ageHours / (24 * 14));
+          return { ...h, _totalPosts: local + federated, _trendScore: Math.log1p(local + federated) * 8 * freshness + Math.log1p(Number(h.follower_count ?? 0)) * 2 };
+        })
+        .filter((h: any) => h._totalPosts > 0)
+        .sort((a: any, b: any) => b._trendScore - a._trendScore)
+        .slice(0, 30);
+      setTrendingHashtags(rankedTrends);
       setLoading(false);
     };
     load();
@@ -358,7 +373,7 @@ export default function HashtagDiscoveryPage() {
                           {creator.is_creator && <span className="text-[9px] bg-purple-500/10 text-purple-600 font-bold px-1.5 py-0.5 rounded-full border border-purple-500/20">Creator</span>}
                         </div>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                          <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{formatNumber(creator.followers_count ?? 0)}</span>
+                          <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{formatNumber(creator.follower_count ?? 0)}</span>
                           {creator.bio && <span className="truncate max-w-[120px]">{creator.bio.slice(0, 50)}</span>}
                         </div>
                       </div>
@@ -506,17 +521,17 @@ export default function HashtagDiscoveryPage() {
                           <div className="flex items-center gap-1.5">
                             <Hash className="w-4 h-4 text-primary shrink-0" />
                             <span className="font-bold text-sm">{h.tag}</span>
-                            {!query && h.trend_score > 50 && (
+                            {!query && (h.federated_post_count ?? 0) > 0 && (
                               <TrendingUp className="w-3.5 h-3.5 text-orange-500 shrink-0" />
                             )}
                           </div>
                           <div className="flex items-center gap-3 mt-0.5">
                             <span className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Users className="w-3 h-3" />{formatNumber(h.usage_count ?? 0)} posts
+                              <Users className="w-3 h-3" />{formatNumber(Number(h.post_count ?? h.usage_count ?? 0) + Number(h.federated_post_count ?? 0))} posts
                             </span>
-                            {h.daily_posts > 0 && (
+                            {Number(h.federated_post_count ?? 0) > 0 && (
                               <span className="text-xs text-orange-500 font-semibold">
-                                +{formatNumber(h.daily_posts)}/day
+                                +{formatNumber(h.federated_post_count ?? 0)} federated
                               </span>
                             )}
                           </div>

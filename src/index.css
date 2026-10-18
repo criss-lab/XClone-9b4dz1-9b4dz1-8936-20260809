@@ -2,179 +2,559 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ======================== */
-/* CSS Variables – Light Theme (default) */
-/* ======================== */
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 5%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 5%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 5%;
-
-    --primary: 142 76% 32%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 0 0% 95%;
-    --secondary-foreground: 0 0% 9%;
-
-    --muted: 0 0% 95%;
-    --muted-foreground: 0 0% 42%;
-
-    --accent: 142 76% 32%;
-    --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 0 0% 88%;
-    --input: 0 0% 88%;
-    --ring: 142 76% 32%;
-
-    --radius: 0.75rem;
-  }
-
-  /* ======================== */
-  /* Dark Theme */
-  /* ======================== */
-  .dark {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 98%;
-
-    --card: 0 0% 7%;
-    --card-foreground: 0 0% 98%;
-
-    --popover: 0 0% 7%;
-    --popover-foreground: 0 0% 98%;
-
-    --primary: 142 76% 36%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 0 0% 14%;
-    --secondary-foreground: 0 0% 98%;
-
-    --muted: 0 0% 14%;
-    --muted-foreground: 0 0% 64%;
-
-    --accent: 142 76% 36%;
-    --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 0 0% 15%;
-    --input: 0 0% 15%;
-    --ring: 142 76% 36%;
-  }
-
-  body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
-    transition: background-color 0.2s ease, color 0.2s ease;
-  }
+  :root { --background: 0 0% 100%; --foreground: 0 0% 5%; --card: 0 0% 100%; --card-foreground: 0 0% 5%; --popover: 0 0% 100%; --popover-foreground: 0 0% 5%; --primary: 142 76% 32%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 95%; --secondary-foreground: 0 0% 9%; --muted: 0 0% 95%; --muted-foreground: 0 0% 42%; --accent: 142 76% 32%; --accent-foreground: 0 0% 100%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 0 0% 88%; --input: 0 0% 88%; --ring: 142 76% 32%; --radius: 0.75rem; }
+  .dark { --background: 0 0% 0%; --foreground: 0 0% 98%; --card: 0 0% 7%; --card-foreground: 0 0% 98%; --popover: 0 0% 7%; --popover-foreground: 0 0% 98%; --primary: 142 76% 36%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 14%; --secondary-foreground: 0 0% 98%; --accent: 142 76% 36%; --accent-foreground: 0 0% 100%; --destructive: 0 62% 50%; --destructive-foreground: 0 0% 100%; --border: 0 0% 15%; --input: 0 0% 15%; --ring: 142 76% 36%; }
+  body { @apply bg-background text-foreground; font-feature-settings: "rlig" 1, "calt" 1; transition: background-color 0.2s ease, color 0.2s ease; }
 }
 
-/* ======================== */
-/* Scrollbars */
-/* ======================== */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.5); }
-
-/* ======================== */
-/* Animations */
-/* ======================== */
 html { scroll-behavior: smooth; }
-
-@keyframes slideIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes slideInLeft {
-  from { opacity: 0; transform: translateX(-10px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-@keyframes scaleIn {
-  from { opacity: 0; transform: scale(0.95); }
-  to   { opacity: 1; transform: scale(1); }
-}
-
-.animate-slide-in     { animation: slideIn 0.3s ease-out; }
-.animate-slide-left   { animation: slideInLeft 0.3s ease-out; }
-.animate-fade-in      { animation: fadeIn 0.3s ease-out; }
-.animate-scale-in     { animation: scaleIn 0.2s ease-out; }
-
-/* ======================== */
-/* Post content */
-/* ======================== */
+@keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideInLeft { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+.animate-slide-in { animation: slideIn 0.3s ease-out; }
+.animate-slide-left { animation: slideInLeft 0.3s ease-out; }
+.animate-fade-in { animation: fadeIn 0.3s ease-out; }
+.animate-scale-in { animation: scaleIn 0.2s ease-out; }
 .post-content a { @apply text-primary hover:underline; }
-
-/* ======================== */
-/* Overflow / responsive */
-/* ======================== */
 * { max-width: 100%; word-wrap: break-word; overflow-wrap: break-word; box-sizing: border-box; }
 html, body { overflow-x: hidden; width: 100%; }
+
+/* Native/WebView edge-to-edge contract. The Android shell draws behind the
+   system bars; fixed UI owns only the safe-area padding, never the viewport. */
+html, body, #root { min-height: 100%; }
+body { min-height: 100dvh; margin: 0; }
+.tg-shell { min-height: 100dvh; min-height: 100svh; }
+.safe-area-top { padding-top: env(safe-area-inset-top, 0px); }
+.safe-area-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+@supports (height: 100dvh) {
+  .tg-shell { min-height: 100dvh; }
+}
 img, video, iframe, svg { max-width: 100%; height: auto; }
 pre, code { white-space: pre-wrap; word-break: break-all; }
+.video-feed-container { height: 100svh; overflow-y: scroll; scroll-snap-type: y mandatory; -webkit-overflow-scrolling: touch; }
+.video-feed-item { height: 100svh; scroll-snap-align: start; scroll-snap-stop: always; position: relative; }
+.glass-light { background: hsl(var(--background) / 0.85); color: hsl(var(--foreground)); border-color: hsl(var(--border) / 0.8); backdrop-filter: blur(12px); }
+.dark .glass-light { background: hsl(var(--background) / 0.75); color: hsl(var(--foreground)); border-color: hsl(var(--border) / 0.8); }
 
-/* ======================== */
-/* TikTok-style video feed */
-/* ======================== */
-.video-feed-container {
-  height: 100svh;
-  overflow-y: scroll;
-  scroll-snap-type: y mandatory;
+/* Theme contract: every semantic surface follows the active user appearance. */
+html { background: hsl(var(--background)); color-scheme: light; }
+html.dark { color-scheme: dark; }
+body { background-color: hsl(var(--background)); color: hsl(var(--foreground)); }
+.bg-background { background-color: hsl(var(--background)); }
+.bg-card { background-color: hsl(var(--card)); }
+.bg-popover { background-color: hsl(var(--popover)); }
+.text-foreground { color: hsl(var(--foreground)); }
+.text-muted-foreground { color: hsl(var(--muted-foreground)); }
+.border-border { border-color: hsl(var(--border)); }
+.divide-border > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)); }
+
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.animate-live-pulse { animation: livePulse 1.4s ease-in-out infinite; }
+@keyframes floatUp { 0% { opacity: 1; transform: translateY(0) scale(1); } 80% { opacity: 0.7; transform: translateY(-120px) scale(1.2); } 100% { opacity: 0; transform: translateY(-160px) scale(0.8); } }
+:root:not(.dark) .border-border { border-color: hsl(0 0% 88%); }
+:root:not(.dark) [class~="bg-muted/50"] { background-color: hsl(0 0% 96% / 0.5); }
+
+/* Surgical profile header collision guard. Attribute selectors avoid escaping Tailwind's gap-2.5 class. */
+.border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 {
+  margin-top: 0 !important;
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 1rem;
+  row-gap: 0.75rem;
+}
+.border-b.border-border:has(> .h-48 img[alt="Cover"]) > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 { margin-top: -4rem !important; }
+.border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 > [class~="flex"][class~="flex-wrap"][class~="items-center"][class~="gap-2.5"][class~="mt-4"][class~="max-w-full"] {
+  min-width: 0;
+  width: 100%;
+  margin-top: 1rem !important;
+  justify-content: flex-end;
+  align-content: flex-start;
+}
+@media (max-width: 639px) {
+  .border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 { grid-template-columns: minmax(0, 1fr); row-gap: 0.75rem; }
+  .border-b.border-border:has(> .h-48 img[alt="Cover"]) > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 { margin-top: -4rem !important; }
+  .border-b.border-border > .px-4.pb-4 > .flex.justify-between.items-start.-mt-16.mb-4 > [class~="flex"][class~="flex-wrap"][class~="items-center"][class~="gap-2.5"][class~="mt-4"][class~="max-w-full"] { justify-content: flex-start; margin-top: 0.25rem !important; }
+}
+
+
+/* ── Testagram UI system v2 ─────────────────────────────────────────────── */
+:root {
+  --tg-surface: 0 0% 100%;
+  --tg-surface-raised: 0 0% 99%;
+  --tg-shadow: 0 18px 50px -32px hsl(142 76% 32% / .32);
+}
+.dark {
+  --tg-surface: 0 0% 5%;
+  --tg-surface-raised: 0 0% 7%;
+  --tg-shadow: 0 18px 50px -32px hsl(142 76% 42% / .28);
+}
+body {
+  background:
+    radial-gradient(circle at 10% -10%, hsl(var(--primary) / .07), transparent 28rem),
+    radial-gradient(circle at 95% 0%, hsl(265 80% 60% / .05), transparent 24rem),
+    hsl(var(--background));
+}
+.tg-shell { min-height: 100dvh; }
+.tg-main {
+  width: min(100%, 720px);
+  background: hsl(var(--tg-surface) / .92);
+  box-shadow: var(--tg-shadow);
+}
+.tg-topbar {
+  background: hsl(var(--background) / .78);
+  backdrop-filter: blur(20px) saturate(1.35);
+  -webkit-backdrop-filter: blur(20px) saturate(1.35);
+}
+.tg-nav-item {
+  position: relative;
+  border: 1px solid transparent;
+  transition: background .18s ease, border-color .18s ease, transform .18s ease;
+}
+.tg-nav-item:hover { background: hsl(var(--muted) / .72); border-color: hsl(var(--border)); transform: translateX(2px); }
+.tg-nav-item[data-active="true"] {
+  background: linear-gradient(90deg, hsl(var(--primary) / .13), hsl(var(--primary) / .04));
+  border-color: hsl(var(--primary) / .18);
+  color: hsl(var(--primary));
+}
+.tg-nav-item[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+}
+.tg-card {
+  background: hsl(var(--card) / .96);
+  border: 1px solid hsl(var(--border) / .78);
+  border-radius: 1.1rem;
+  box-shadow: 0 8px 30px -24px hsl(0 0% 0% / .45);
+}
+.tg-focus:focus-visible { outline: 3px solid hsl(var(--ring) / .32); outline-offset: 2px; }
+@media (max-width: 1023px) {
+  .tg-main { width: 100%; border-inline: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tg-nav-item, .tg-nav-item:hover { transition: none; transform: none; }
+}
+
+/* Mobile/WebView polish: keep the page visually continuous with the native shell. */
+html, body { -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; }
+button, a { -webkit-tap-highlight-color: transparent; }
+
+
+/* ── Testagram Texture Pack v3 ────────────────────────────────────────────
+   Visual-only refinement: preserves the existing Testagram palette/layout while
+   adding depth, tactile surfaces, cleaner hierarchy and premium touch feedback.
+   No external images/fonts are required, so the APK remains lightweight/offline-safe.
+*/
+:root {
+  --tg-texture-opacity: .34;
+  --tg-radius-card: 1.05rem;
+  --tg-radius-control: .82rem;
+  --tg-elevation-1: 0 1px 2px hsl(0 0% 0% / .05), 0 10px 30px -24px hsl(var(--primary) / .22);
+  --tg-elevation-2: 0 8px 30px -20px hsl(0 0% 0% / .22), 0 18px 50px -34px hsl(var(--primary) / .18);
+}
+.dark {
+  --tg-texture-opacity: .22;
+  --tg-elevation-1: 0 1px 2px hsl(0 0% 0% / .42), 0 12px 32px -24px hsl(var(--primary) / .24);
+  --tg-elevation-2: 0 10px 34px -22px hsl(0 0% 0% / .62), 0 20px 55px -34px hsl(var(--primary) / .20);
+}
+
+/* Fine grain + soft light bloom. The texture is intentionally extremely subtle:
+   it should be felt as depth, never read as a noisy wallpaper. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: var(--tg-texture-opacity);
+  background-image:
+    radial-gradient(circle at 15% 12%, hsl(var(--primary) / .055) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 82% 34%, hsl(var(--foreground) / .035) 0 1px, transparent 1.5px),
+    linear-gradient(115deg, transparent 0 47%, hsl(var(--primary) / .018) 50%, transparent 53%);
+  background-size: 19px 19px, 23px 23px, 100% 100%;
+  mix-blend-mode: soft-light;
+}
+body {
+  background:
+    radial-gradient(900px 420px at 50% -180px, hsl(var(--primary) / .11), transparent 68%),
+    radial-gradient(600px 340px at 100% 12%, hsl(var(--accent) / .055), transparent 70%),
+    hsl(var(--background));
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Consistent tactile surfaces without changing existing component markup. */
+.tg-card,
+[class*="rounded-xl"][class*="border"],
+[class*="rounded-2xl"][class*="border"] {
+  border-color: hsl(var(--border) / .72);
+  box-shadow: var(--tg-elevation-1);
+}
+.tg-card:hover {
+  border-color: hsl(var(--primary) / .20);
+  box-shadow: var(--tg-elevation-2);
+}
+.dark .tg-card,
+.dark [class*="rounded-xl"][class*="border"],
+.dark [class*="rounded-2xl"][class*="border"] {
+  background-image: linear-gradient(135deg, hsl(var(--foreground) / .018), transparent 42%);
+}
+
+/* Inputs/buttons get a more polished, consistent physical response. */
+button,
+[role="button"],
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+button,
+[role="button"] {
+  transition:
+    transform .16s cubic-bezier(.2,.8,.2,1),
+    box-shadow .16s ease,
+    background-color .16s ease,
+    border-color .16s ease,
+    opacity .16s ease;
+}
+button:active,
+[role="button"]:active {
+  transform: scale(.975);
+}
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+input,
+textarea,
+select {
+  border-radius: var(--tg-radius-control);
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  border-color: hsl(var(--ring) / .72);
+  box-shadow: 0 0 0 3px hsl(var(--ring) / .12), 0 8px 22px -18px hsl(var(--ring) / .35);
+  outline: none;
+}
+
+/* Media texture: preserve image/video content while making framing feel intentional. */
+img,
+video {
+  image-rendering: auto;
+}
+img:not([class*="rounded"]):not([class*="avatar"]),
+video:not([class*="rounded"]) {
+  border-radius: .85rem;
+}
+video {
+  background: hsl(var(--muted));
+}
+.media-frame,
+[class*="aspect-video"] {
+  isolation: isolate;
+  overflow: hidden;
+  background: hsl(var(--muted));
+}
+.media-frame::after,
+[class*="aspect-video"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 55%, hsl(0 0% 0% / .08));
+  opacity: .7;
+}
+
+/* Premium but restrained motion for page transitions and popovers. */
+@keyframes tgRiseSoft {
+  from { opacity: 0; transform: translateY(7px) scale(.992); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes tgShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.tg-enter { animation: tgRiseSoft .24s cubic-bezier(.2,.8,.2,1) both; }
+.tg-skeleton {
+  background: linear-gradient(90deg,
+    hsl(var(--muted)) 20%,
+    hsl(var(--foreground) / .055) 38%,
+    hsl(var(--muted)) 56%);
+  background-size: 220% 100%;
+  animation: tgShimmer 1.35s ease-in-out infinite;
+}
+
+/* Scrollbars become nearly invisible until needed. */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: hsl(var(--muted-foreground) / .24); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / .42); }
+
+/* Mobile/WebView: keep touch targets comfortable without introducing native chrome. */
+@media (max-width: 639px) {
+  .tg-card {
+    border-radius: .95rem;
+  }
+  .tg-topbar {
+    box-shadow: 0 8px 28px -26px hsl(0 0% 0% / .5);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+  button:active,
+  [role="button"]:active { transform: none; }
+}
+
+
+/* Native Android/WebView stability contract.
+   Keep the native shell on deterministic scrolling/painting paths. These rules
+   intentionally remove expensive visual effects only inside the APK; the web
+   experience retains the full visual treatment. */
+html[data-tg-platform="android"] {
+  scroll-behavior: auto;
+  overscroll-behavior-x: none;
+}
+html[data-tg-platform="android"] body {
   -webkit-overflow-scrolling: touch;
 }
-.video-feed-item {
-  height: 100svh;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
+html[data-tg-platform="android"] body::before {
+  display: none;
+}
+html[data-tg-platform="android"] .tg-topbar,
+html[data-tg-platform="android"] .glass-light,
+html[data-tg-platform="android"] [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html[data-tg-platform="android"] .tg-topbar {
+  background: hsl(var(--background));
+}
+html[data-tg-platform="android"] .tg-card:hover {
+  box-shadow: var(--tg-elevation-1);
+  border-color: hsl(var(--border) / .72);
+}
+@media (max-width: 639px) {
+  html[data-tg-platform="android"] button,
+  html[data-tg-platform="android"] [role="button"] {
+    transition-property: background-color, border-color, opacity, box-shadow;
+  }
+}
+
+
+/* ── Flutter-feel rigid shell contract ───────────────────────────────────
+   Shared interaction primitives for web + Android WebView. Keep surfaces
+   bounded, touch targets stable, safe-area aware and motion deterministic. */
+:root {
+  --tg-motion-fast: 140ms;
+  --tg-motion-standard: 220ms;
+  --tg-ease: cubic-bezier(.2,.8,.2,1);
+  --tg-control-min: 44px;
+  --tg-radius-shell: 20px;
+}
+.tg-rigid-shell {
   position: relative;
+  isolation: isolate;
+  contain: layout paint style;
+  overscroll-behavior: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+.tg-touch-control {
+  min-width: var(--tg-control-min);
+  min-height: var(--tg-control-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform var(--tg-motion-fast) var(--tg-ease), background-color var(--tg-motion-fast) ease, box-shadow var(--tg-motion-fast) ease;
+}
+.tg-touch-control:active { transform: scale(.96); }
+.tg-surface {
+  background: hsl(var(--card) / .96);
+  border: 1px solid hsl(var(--border) / .78);
+  border-radius: var(--tg-radius-shell);
+  box-shadow: var(--tg-elevation-1, 0 8px 30px -24px hsl(0 0% 0% / .45));
+}
+.tg-topbar { min-height: calc(64px + env(safe-area-inset-top, 0px)); padding-top: env(safe-area-inset-top, 0px); }
+.tg-bottomnav { padding-bottom: env(safe-area-inset-bottom, 0px); min-height: calc(64px + env(safe-area-inset-bottom, 0px)); }
+.tg-bottomnav-inner { min-height: 64px; }
+.tg-drawer-surface { border-radius: 0 24px 24px 0; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.tg-fab { bottom: calc(76px + env(safe-area-inset-bottom, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); }
+@media (prefers-reduced-motion: reduce) {
+  .tg-touch-control { transition: none; }
+  .tg-touch-control:active { transform: none; }
 }
 
-/* ======================== */
-/* Theme-aware glass effects */
-/* ======================== */
-.glass-light { background: rgba(255,255,255,0.85); backdrop-filter: blur(12px); }
-.dark .glass-light { background: rgba(0,0,0,0.75); backdrop-filter: blur(12px); }
 
-/* ======================== */
-/* Pulse animation for live badge */
-/* ======================== */
-@keyframes livePulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
+/* Testagram social-app home shell: compact, bounded, tactile and feed-first.
+   Scoped to HomeHubPage so other routes retain their existing layout. */
+.tg-social-home-shell {
+  --tg-home-rail: 720px;
+  min-height: 100dvh;
+  background: hsl(var(--background));
+  isolation: isolate;
 }
-.animate-live-pulse { animation: livePulse 1.4s ease-in-out infinite; }
+.tg-social-home-shell > :not(:first-child) {
+  width: 100%;
+  max-width: var(--tg-home-rail);
+  margin-inline: auto;
+}
+.tg-social-home-shell > :nth-child(4) {
+  position: sticky;
+  top: calc(56px + env(safe-area-inset-top, 0px));
+  z-index: 30;
+  border-inline: 1px solid hsl(var(--border) / .9);
+  background: hsl(var(--background) / .98);
+  box-shadow: 0 5px 0 hsl(var(--background)), 0 7px 0 hsl(var(--border) / .45);
+}
+.tg-social-home-shell > :nth-child(4) > div {
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.tg-social-home-shell > :nth-child(4) > div::-webkit-scrollbar { display: none; }
+.tg-social-home-shell > :nth-child(4) button {
+  min-height: 48px;
+  border-bottom-width: 3px;
+  border-radius: 0;
+  letter-spacing: -.01em;
+}
+.tg-social-home-shell > :nth-child(5) {
+  border-inline: 1px solid hsl(var(--border) / .9);
+  border-bottom: 1px solid hsl(var(--border) / .9);
+  padding: 10px 12px;
+  background: hsl(var(--card));
+}
+.tg-social-home-shell > :nth-child(5) button {
+  min-height: 44px;
+  border-width: 1px;
+  border-radius: 12px;
+  box-shadow: 0 2px 0 hsl(var(--border) / .7);
+}
+.tg-social-home-shell > :nth-child(5) button:active {
+  box-shadow: none;
+  transform: translateY(1px);
+}
+.tg-social-home-shell > :nth-child(n+6) {
+  border-inline: 1px solid hsl(var(--border) / .9);
+}
+.tg-social-home-shell > :last-child {
+  border-bottom: 1px solid hsl(var(--border) / .9);
+}
+.tg-social-home-shell [class*="border-b"][class*="border-border"] {
+  border-bottom-color: hsl(var(--border));
+}
+.tg-social-home-shell > :nth-child(8) {
+  border-top: 1px solid hsl(var(--border) / .9);
+  border-bottom: 1px solid hsl(var(--border) / .9);
+}
+@media (min-width: 1024px) {
+  .tg-social-home-shell > :not(:first-child) {
+    border-inline: 1px solid hsl(var(--border) / .72);
+  }
+  .tg-social-home-shell > :nth-child(4) {
+    top: 64px;
+  }
+}
+@media (max-width: 639px) {
+  .tg-social-home-shell { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  .tg-social-home-shell > :not(:first-child) {
+    max-width: none;
+    margin-inline: 0;
+  }
+  .tg-social-home-shell > :nth-child(4) {
+    top: calc(56px + env(safe-area-inset-top, 0px));
+    border-inline: 0;
+  }
+  .tg-social-home-shell > :nth-child(5),
+  .tg-social-home-shell > :nth-child(n+6) {
+    border-inline: 0;
+  }
+  .tg-social-home-shell > :nth-child(4) button {
+    min-width: 88px;
+    padding-inline: 13px;
+    min-height: 46px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tg-social-home-shell > :nth-child(4) > div { scroll-behavior: auto; }
+}
 
-/* ======================== */
-/* Float-up reaction animation (live spaces, community chat) */
-/* ======================== */
-@keyframes floatUp {
-  0%   { opacity: 1; transform: translateY(0) scale(1); }
-  80%  { opacity: 0.7; transform: translateY(-120px) scale(1.2); }
-  100% { opacity: 0; transform: translateY(-160px) scale(0.8); }
-}
 
-/* ======================== */
-/* Light theme specific overrides */
-/* ======================== */
-:root:not(.dark) .border-border {
-  border-color: hsl(0 0% 88%);
+/* Firm social-feed treatment: flat post rows, clear separators, stable controls.
+   Avoid the floating website-card look on the home feed only. */
+.tg-social-home-shell {
+  background: hsl(var(--background));
 }
-:root:not(.dark) .bg-muted\/50 {
-  background-color: hsl(0 0% 96% / 0.5);
+.tg-social-home-shell .tg-home-feed-list {
+  border-top: 1px solid hsl(var(--border));
+}
+.tg-social-home-shell .tg-home-feed-row {
+  min-width: 0;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+}
+.tg-social-home-shell .tg-home-feed-row > div {
+  min-width: 0;
+}
+.tg-social-home-shell .tg-home-feed-row .tg-card,
+.tg-social-home-shell .tg-home-feed-row [class*="rounded-xl"][class*="border"],
+.tg-social-home-shell .tg-home-feed-row [class*="rounded-2xl"][class*="border"] {
+  border-radius: 0;
+  box-shadow: none;
+}
+.tg-social-home-shell .tg-home-feed-row [class*="border-b"][class*="border-border"] {
+  border-bottom-color: hsl(var(--border));
+}
+.tg-social-home-shell > :nth-child(4) {
+  box-shadow: 0 2px 0 hsl(var(--border) / .85);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.tg-social-home-shell > :nth-child(5) {
+  border-radius: 0;
+  box-shadow: none;
+}
+.tg-social-home-shell > :nth-child(5) button {
+  border-radius: 10px;
+  box-shadow: 0 2px 0 hsl(var(--border) / .85);
+  font-size: 12px;
+  font-weight: 800;
+}
+.tg-social-home-shell button:focus-visible,
+.tg-social-home-shell a:focus-visible {
+  outline: 3px solid hsl(var(--ring) / .55);
+  outline-offset: 2px;
+}
+@media (max-width: 639px) {
+  .tg-social-home-shell .tg-home-feed-row {
+    border-bottom-width: 1px;
+  }
+  .tg-social-home-shell .tg-home-feed-row .tg-card,
+  .tg-social-home-shell .tg-home-feed-row [class*="rounded-xl"][class*="border"],
+  .tg-social-home-shell .tg-home-feed-row [class*="rounded-2xl"][class*="border"] {
+    border-inline: 0;
+  }
 }
