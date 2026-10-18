@@ -4,9 +4,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 serve(async (req) => {
   const url = new URL(req.url);
   // Expect /podcast-rss?username=johndoe  OR  /podcast-rss/johndoe
-  const username = url.searchParams.get('username') || url.pathname.split('/').pop();
+  const username = (url.searchParams.get('username') || url.pathname.split('/').pop() || '').trim().replace(/^@/, '');
+  const community = (url.searchParams.get('community') || '').trim();
 
-  if (!username) {
+  if (!username && !community) {
     return new Response('Missing username', { status: 400 });
   }
 
@@ -15,12 +16,31 @@ serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
   );
 
-  // Fetch user profile
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('id, username, bio, avatar_url')
-    .eq('username', username)
-    .maybeSingle();
+  // Resolve either a profile username or a community owner.
+  let resolvedUserId: string | null = null;
+  if (community) {
+    const { data: communityRow } = await supabase
+      .from('communities')
+      .select('owner_id, display_name')
+      .eq('name', community)
+      .maybeSingle();
+    resolvedUserId = communityRow?.owner_id ?? null;
+  } else {
+    const { data: profileRow } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('username', username)
+      .maybeSingle();
+    resolvedUserId = profileRow?.id ?? null;
+  }
+
+  const { data: profile } = resolvedUserId
+    ? await supabase
+        .from('profiles')
+        .select('id, username, bio, avatar_url')
+        .eq('id', resolvedUserId)
+        .maybeSingle()
+    : { data: null };
 
   if (!profile) {
     return new Response('User not found', { status: 404 });
@@ -30,7 +50,7 @@ serve(async (req) => {
   const { data: recordings } = await supabase
     .from('space_recordings')
     .select('*, spaces(title, description, category, artwork_url, episode_number)')
-    .eq('user_id', profile.id)
+     .eq('user_id', profile.id)
     .order('created_at', { ascending: false })
     .limit(50);
 
