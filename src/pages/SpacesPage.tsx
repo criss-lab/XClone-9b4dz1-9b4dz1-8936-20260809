@@ -18,7 +18,9 @@ import { JoinSpaceDialog } from '@/components/features/JoinSpaceDialog';
 import { ManageSpaceDialog } from '@/components/features/ManageSpaceDialog';
 import { toast } from 'sonner';
 import { useSEO } from '@/hooks/useSEO';
+import { useGovernance } from '@/lib/governance';
 import { PageAdBanner } from '@/components/features/AdSenseAd';
+import { CommunitySpotlightStrip } from '@/components/features/CommunitySpotlightStrip';
 function SpacesAdBanner() { return <PageAdBanner />; }
 
 // Module-level constants — esbuild-safe
@@ -39,7 +41,7 @@ const SPACE_TABS = ['live', 'recordings', 'upcoming', 'playlists'] as const;
 type SpaceTab = typeof SPACE_TABS[number];
 
 // Live reaction emojis at module scope (esbuild guard)
-const LIVE_EMOJIS = ['❤️', '🔥', '🎉', '👏', '🤣', '💯'] as const;
+const LIVE_EMOJIS = ['❤️'] as const;
 
 // Tab definitions at module scope (esbuild guard)
 const SPACE_TAB_DEFS = [
@@ -71,6 +73,7 @@ interface Playlist { id: string; name: string; items: string[]; }
 
 export default function SpacesPage() {
   const { user } = useAuth();
+  const { governance } = useGovernance();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [spaces, setSpaces] = useState<Space[]>([]);
@@ -84,6 +87,7 @@ export default function SpacesPage() {
   const [showManageDialog, setShowManageDialog] = useState(false);
   const [selectedSpace, setSelectedSpace] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
+  const [hostCapability, setHostCapability] = useState({ canHost: false, isOwner: false, isVerified: false, loading: true });
   const [liveViewerCounts, setLiveViewerCounts] = useState<{ [id: string]: number }>({});
   const [activeCategory, setActiveCategory] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -142,7 +146,7 @@ export default function SpacesPage() {
     const clipUrl = `${window.location.origin}/space-recording/${clipRecId}?t=${clipStart}&end=${clipEnd}`;
     const shareTitle = `Clip: ${clipRecTitle.slice(0, 60)}`;
     if (navigator.share) {
-      await navigator.share({ title: shareTitle, url: clipUrl }).catch(() => {});
+      await navigator.share({ title: shareTitle, url: clipUrl }).then(() => {}).catch(() => {});
     } else {
       navigator.clipboard.writeText(clipUrl).then(() => { setClipCopied(true); setTimeout(() => setClipCopied(false), 2500); });
     }
@@ -161,10 +165,17 @@ export default function SpacesPage() {
   const handleEpTip = useCallback(async () => {
     if (!user || !tipEpHostId || !tipEpAmount || !tipEpId) return;
     setSendingEpTip(true);
-    const { error: deductErr } = await supabase.rpc('deduct_from_wallet', { p_user_id: user.id, p_amount: tipEpAmount });
-    if (deductErr) { toast.error('Insufficient wallet balance'); setSendingEpTip(false); return; }
-    await supabase.rpc('add_to_wallet', { p_user_id: tipEpHostId, p_amount: tipEpAmount }).catch(() => {});
-    await supabase.from('tips').insert({ from_user_id: user.id, to_user_id: tipEpHostId, amount: tipEpAmount }).catch(() => {});
+    const { error: transferErr } = await supabase.rpc('send_wallet_tip', {
+      p_to_user_id: tipEpHostId,
+      p_amount: tipEpAmount,
+      p_note: `Tip for Space recording ${tipEpId}`,
+    });
+    if (transferErr) {
+      const message = transferErr.message?.includes('INSUFFICIENT_FUNDS') ? 'Insufficient wallet balance' : transferErr.message || 'Unable to send tip';
+      toast.error(message);
+      setSendingEpTip(false);
+      return;
+    }
     toast.success(`$${tipEpAmount} tip sent to @${tipEpHostName}!`);
     setTippedEpIds(prev => new Set([...prev, tipEpId!]));
     setTipEpId(null);
@@ -176,7 +187,7 @@ export default function SpacesPage() {
   // ── Playlist share ────────────────────────────────────────────────────────
   const sharePlaylist = useCallback((pl: Playlist) => {
     const url = `${window.location.origin}/spaces?playlist=${pl.id}`;
-    if (navigator.share) { navigator.share({ title: pl.name, url }).catch(() => {}); }
+    if (navigator.share) { navigator.share({ title: pl.name, url }).then(() => {}).catch(() => {}); }
     else { navigator.clipboard.writeText(url).then(() => toast.success('Playlist link copied!')); }
   }, []);
 
@@ -272,9 +283,37 @@ export default function SpacesPage() {
   }, [spaces]);
 
   const fetchUserProfile = async () => {
-    if (!user) return;
-    const { data } = await supabase.from('user_profiles').select('verified, subscriber_count, followers_count, creator_tier, username').eq('id', user.id).single();
-    if (data) setUserProfile(data);
+    if (!user) {
+      setHostCapability({ canHost: false, isOwner: false, isVerified: false, loading: false });
+      return;
+    }
+    setHostCapability(prev => ({ ...prev, loading: true }));
+    const [{ data: profile }, { data: capability, error: capabilityError }, { data: ownerFlag }] = await Promise.all([
+      supabase.from('profiles').select('verified, subscriber_count, follower_count, creator_tier, username').eq('id', user.id).single(),
+      supabase.rpc('get_audio_space_host_capability'),
+      supabase.rpc('testagram_is_owner'),
+    ]);
+    if (profile) setUserProfile(profile);
+    if (!capabilityError && capability) {
+      const row = Array.isArray(capability) ? capability[0] : capability;
+      const isOwner = Boolean(row?.is_owner) || (!capabilityError && Boolean(ownerFlag));
+      const isVerified = Boolean(row?.is_verified) || Boolean(profile?.verified);
+      setHostCapability({
+        canHost: isOwner || Boolean(row?.can_host),
+        isOwner,
+        isVerified,
+        loading: false,
+      });
+    } else {
+      const isOwner = Boolean(ownerFlag);
+      const isVerified = Boolean(profile?.verified);
+      setHostCapability({
+        canHost: isOwner || isVerified,
+        isOwner,
+        isVerified,
+        loading: false,
+      });
+    }
   };
 
   const fetchFollowingHosts = async () => {
@@ -318,7 +357,7 @@ export default function SpacesPage() {
   const handleShareSpace = useCallback((id: string, title: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `${window.location.origin}/spaces?space=${id}`;
-    if (navigator.share) { navigator.share({ title, url }).catch(() => {}); }
+    if (navigator.share) { navigator.share({ title, url }).then(() => {}).catch(() => {}); }
     else { navigator.clipboard.writeText(url).then(() => { setCopiedId(id); setTimeout(() => setCopiedId(null), 2000); toast.success('Link copied!'); }); }
   }, []);
 
@@ -332,7 +371,7 @@ export default function SpacesPage() {
 
   const fetchAllRecordings = async () => {
     const { data } = await supabase.from('space_recordings')
-      .select('*, user_profiles(*), spaces(title, description, category, artwork_url, episode_number, chapters, tags, subscriber_only, host:user_profiles!spaces_host_id_fkey(*))')
+      .select('*, profiles(*), spaces(title, description, category, artwork_url, episode_number, chapters, tags, subscriber_only, host:user_profiles!spaces_host_id_fkey(*))')
       .order('created_at', { ascending: false }).limit(40);
     if (data) setAllRecordings(data);
   };
@@ -345,7 +384,11 @@ export default function SpacesPage() {
 
   const handleStartSpace = () => {
     if (!user) { navigate('/auth'); return; }
-    if (!userProfile?.verified) { toast.error('Only verified users can start Audio Spaces'); return; }
+    if (hostCapability.loading) { toast.info('Checking Space host access…'); return; }
+    if (!hostCapability.canHost) {
+      toast.error('Only verified accounts can start Audio Spaces');
+      return;
+    }
     setShowStartDialog(true);
   };
 
@@ -378,6 +421,7 @@ export default function SpacesPage() {
   return (
     <div className="min-h-screen bg-background pb-16 md:pb-0">
       <TopBar title="Spaces" />
+      <CommunitySpotlightStrip />
 
       {/* Floating live reactions */}
       <div className="pointer-events-none fixed inset-0 z-[100] overflow-hidden">
@@ -398,11 +442,29 @@ export default function SpacesPage() {
             </h2>
             <p className="text-sm text-muted-foreground mt-0.5">Live podcasts, panels & conversations</p>
           </div>
-          {user && (
-            <Button className="rounded-full shadow-lg shadow-primary/20" onClick={handleStartSpace}>
-              <Mic className="w-4 h-4 mr-1.5" />Go Live
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              className="hidden sm:flex rounded-full border-border text-foreground hover:bg-muted"
+              onClick={() => navigate('/tv')}
+            >
+              <Radio className="w-4 h-4 mr-1.5" />Watch TV
             </Button>
-          )}
+            {governance.is_owner && (
+              <Button
+                variant="outline"
+                className="rounded-full border-red-500/30 text-red-600 hover:bg-red-500/10"
+                onClick={() => navigate('/tv-studio')}
+              >
+                <Video className="w-4 h-4 mr-1.5" />TV Production Studio
+              </Button>
+            )}
+            {user && (
+              <Button className="rounded-full shadow-lg shadow-primary/20" onClick={handleStartSpace}>
+                <Mic className="w-4 h-4 mr-1.5" />Go Live
+              </Button>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground flex-wrap">
           <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><strong className="text-foreground">{spaces.length}</strong> live now</span>
@@ -412,6 +474,34 @@ export default function SpacesPage() {
             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-orange-500 transition-colors ml-auto">
             <Rss className="w-3.5 h-3.5" /> RSS
           </button>
+        </div>
+      </div>
+
+      {/* Studio chooser: make the two creator studios discoverable from the Spaces hub. */}
+      <div className="px-4 py-3 border-b border-border bg-muted/20">
+        <div className={governance.is_owner ? "grid grid-cols-2 gap-2" : "grid grid-cols-1 gap-2"}>
+          <button
+            type="button"
+            onClick={handleStartSpace}
+            className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-left hover:bg-primary/10 transition-colors"
+          >
+            <div className="flex items-center gap-2 font-bold text-sm">
+              <Mic className="w-4 h-4 text-primary" /> Audio Studio
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">Live rooms, podcasts & panels</p>
+          </button>
+          {governance.is_owner && (
+            <button
+              type="button"
+              onClick={() => navigate('/tv-studio')}
+              className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 text-left hover:bg-red-500/10 transition-colors"
+            >
+              <div className="flex items-center gap-2 font-bold text-sm">
+                <Video className="w-4 h-4 text-red-600" /> TV Production Studio
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">Camera, screen, local recording & live broadcast</p>
+            </button>
+          )}
         </div>
       </div>
 
@@ -455,7 +545,7 @@ export default function SpacesPage() {
       <SpacesAdBanner />
 
       {/* Verified badge info */}
-      {user && !userProfile?.verified && (
+      {user && !hostCapability.loading && !hostCapability.canHost && !hostCapability.isOwner && (
         <div className="mx-4 mt-4 flex items-center gap-3 p-3 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-xl">
           <Lock className="w-5 h-5 text-orange-500 flex-shrink-0" />
           <div>

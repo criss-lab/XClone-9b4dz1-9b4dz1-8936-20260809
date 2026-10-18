@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Home, Bell, User, Flame, UserSearch, Inbox, ShieldCheck, MessageSquare, HelpCircle } from 'lucide-react';
+import { Home, Bell, User, Flame, UserSearch, Inbox, ShieldCheck, MessageSquare, HelpCircle, Tv } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/lib/supabase';
 import { useIsRegulator } from '@/hooks/useFeatureUnlock';
+import { backendCapabilities } from '@/services/testagramCapabilityClient';
 
 export function BottomNav() {
   const navigate = useNavigate();
@@ -46,21 +47,27 @@ export function BottomNav() {
     } catch { /* browser may block audio without prior user gesture */ }
   };
 
-  // Poll local unread notification count every 60s
+  // Notification badge must use the same canonical capability contract as
+  // NotificationsPage. The legacy direct query used user_id/read while the
+  // canonical notifications API uses recipient_id/read_at, which could make
+  // the bottom badge non-zero while /notifications was empty.
   useEffect(() => {
-    if (!user) { setUnreadNotifs(0); setUnreadMessages(0); return; }
+    if (!user) { setUnreadNotifs(0); setUnreadMessages(0); prevNotifs.current = -1; return; }
     let mounted = true;
+    let notifChannel: ReturnType<typeof supabase.channel> | null = null;
+
     const fetchCounts = async () => {
-      const { count: notifCount } = await supabase
-        .from('notifications')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('read', false);
-      if (mounted) {
-        const nc = notifCount ?? 0;
-        if (prevNotifs.current >= 0 && nc > prevNotifs.current) playBeep();
-        prevNotifs.current = nc;
-        setUnreadNotifs(nc);
+      if (!mounted) return;
+      try {
+        const result = await backendCapabilities.getUnreadNotificationCount();
+        if (mounted) {
+          const nc = Math.max(0, Number(result.count) || 0);
+          if (prevNotifs.current >= 0 && nc > prevNotifs.current) playBeep();
+          prevNotifs.current = nc;
+          setUnreadNotifs(nc);
+        }
+      } catch (error) {
+        console.debug('[bottom-nav] canonical notification count unavailable', error);
       }
 
       const { data: convData } = await supabase
@@ -81,33 +88,48 @@ export function BottomNav() {
           prevMessages.current = dc;
           setUnreadMessages(dc);
         }
-      } else {
-        if (mounted) {
-          prevMessages.current = 0;
-          setUnreadMessages(0);
-        }
+      } else if (mounted) {
+        prevMessages.current = 0;
+        setUnreadMessages(0);
       }
     };
-    fetchCounts();
-    const iv = setInterval(fetchCounts, 15_000);
 
-    // Real-time subscription for instant badge updates
+    void fetchCounts();
+    const iv = setInterval(() => void fetchCounts(), 15_000);
+
+    // Subscribe using the canonical notification capability's realtime contract
+    // (recipient_id=eq.<user>) rather than the obsolete user_id filter.
+    void backendCapabilities.getNotificationSubscription().then((contract) => {
+      if (!mounted || !contract.authenticated || contract.table !== 'notifications') return;
+      if (contract.filter !== `recipient_id=eq.${user.id}`) return;
+      notifChannel = supabase
+        .channel(`bottomnav-notifs-${user.id}`)
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
+          filter: contract.filter,
+        }, () => { void fetchCounts(); })
+        .subscribe((status) => {
+          if (status === 'CHANNEL_ERROR') console.debug('[bottom-nav] notification realtime unavailable; polling remains active');
+        });
+    }).catch((error) => console.debug('[bottom-nav] notification realtime contract unavailable', error));
+
     const sub = supabase
-      .channel(`bottomnav-notifs-${user.id}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'notifications',
-        filter: `user_id=eq.${user.id}`,
-      }, () => { if (mounted) fetchCounts(); })
+      .channel(`bottomnav-messages-${user.id}`)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
         table: 'direct_messages',
-      }, () => { if (mounted) fetchCounts(); })
+      }, () => { if (mounted) void fetchCounts(); })
       .subscribe();
 
-    return () => { mounted = false; clearInterval(iv); supabase.removeChannel(sub); };
+    return () => {
+      mounted = false;
+      clearInterval(iv);
+      if (notifChannel) void supabase.removeChannel(notifChannel);
+      void supabase.removeChannel(sub);
+    };
   }, [user?.id]);
 
   // Clear notification badge when visiting relevant pages
@@ -236,6 +258,7 @@ export function BottomNav() {
     { icon: MessageSquare,label: 'Messages', path: '/messages',  badge: unreadMessages,  requireAuth: true },
     { icon: Flame,        label: 'Streak',   path: '/daily-rewards', badge: streakDay, badgeStyle: 'bg-orange-500', requireAuth: true },
     { icon: Inbox,        label: 'Inbox',    path: '/platform-inbox', requireAuth: true, badge: unreadInbox + (isReg ? pendingAppeals : 0) },
+    { icon: Tv,           label: 'World TV',  path: '/iptv',           badge: 0 },
     { icon: Bell,         label: 'Alerts',   path: '/notifications', requireAuth: true,  badge: unreadNotifs },
     { icon: HelpCircle,   label: 'Help',     path: '/help',      badge: unreadHelpReplies, badgeStyle: 'bg-green-500', requireAuth: false },
     { icon: User,         label: 'Profile',  path: user ? `/profile/${user.username}` : '/auth', badge: 0, requireAuth: true },
@@ -252,10 +275,11 @@ export function BottomNav() {
 
   return (
     <nav
-      className={`lg:hidden fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur-md border-t border-border z-50 transition-transform duration-300 ease-in-out ${
+      className={`lg:hidden fixed bottom-0 left-0 right-0 z-50 transition-transform duration-300 ease-in-out ${
         visible ? 'translate-y-0' : 'translate-y-full'
       }`}
     >
+      <div className="bg-background/85 backdrop-blur-2xl border-t border-border/70 shadow-[0_-12px_40px_-28px_hsl(0_0%_0%_/_0.7)]" style={{ marginBottom: "env(safe-area-inset-bottom, 0px)" }}>
       {/* Policy footer link — tiny, always visible above nav */}
       <div className="border-t border-border/50 flex justify-center pt-1 pb-0.5">
         <button onClick={() => navigate('/policy')}
@@ -264,7 +288,7 @@ export function BottomNav() {
           <span>Content Policy</span>
         </button>
       </div>
-      <div className="flex justify-around items-center h-14 safe-area-bottom">
+      <div className="flex justify-around items-center h-16 px-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname === item.path ||
@@ -274,7 +298,7 @@ export function BottomNav() {
             <button
               key={item.path}
               onClick={() => handleNavClick(item.path, item.requireAuth)}
-              className={`flex flex-col items-center justify-center flex-1 h-full transition-all duration-200 active:scale-90 ${
+              className={`tg-nav-item tg-touch-control flex flex-col items-center justify-center flex-1 h-full rounded-xl transition-all duration-200 active:scale-90 ${
                 isActive ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -294,6 +318,7 @@ export function BottomNav() {
           );
         })}
       </div>
+    </div>
     </nav>
   );
 }

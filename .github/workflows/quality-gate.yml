@@ -1,0 +1,110 @@
+name: Quality Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.*'
+      - 'eslint.config.*'
+      - '_build.cjs'
+      - 'supabase/**'
+      - '.github/workflows/quality-gate.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.*'
+      - 'eslint.config.*'
+      - '_build.cjs'
+      - '.github/workflows/quality-gate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web typecheck, lint, build and interaction contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify checked-out revision
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git rev-parse HEAD
+      - name: Reject uncommitted source mutation
+        run: |
+          if ! git diff --quiet -- src; then
+            echo 'Working tree source mutation detected before validation.'
+            git diff -- src
+            exit 1
+          fi
+      - name: Typecheck web application
+        run: |
+          if grep -nE 'communicationService\.editMessage\([^,()]+,[^,()]+\)' src/pages/MessagesPage.tsx; then
+            echo 'Stale two-argument MessagesPage editMessage call remains.'
+            exit 1
+          fi
+          npx tsc --noEmit
+      - name: Lint web application
+        run: npm run lint
+      - name: Build application
+        run: npm run build
+      - name: Verify PostCard canonical interaction contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/components/features/PostCard.tsx
+          test -f src/services/postInteractionService.ts
+          grep -q "togglePostLike" src/components/features/PostCard.tsx
+          grep -q "togglePostRepost" src/components/features/PostCard.tsx
+          grep -q "createFederatedReply" src/components/features/PostCard.tsx
+          grep -q "remoteStatusUri" src/components/features/PostCard.tsx
+          grep -q "isFederatedPost" src/components/features/PostCard.tsx
+          grep -q "favorite" src/services/postInteractionService.ts
+          grep -q "unfavorite" src/services/postInteractionService.ts
+          grep -q "boost" src/services/postInteractionService.ts
+          grep -q "unboost" src/services/postInteractionService.ts
+          grep -q "reply" src/services/postInteractionService.ts
+          if grep -q "supabase.from('post_likes')" src/components/features/PostCard.tsx; then exit 1; fi
+          if grep -q "supabase.from('post_reposts')" src/components/features/PostCard.tsx; then exit 1; fi
+          if grep -q "supabase.from('replies')" src/components/features/PostCard.tsx; then exit 1; fi
+          if grep -qE "from\\(['\"]post_likes['\"]\\)|from\\(['\"]post_reposts['\"]\\)|from\\(['\"]replies['\"]\\)" src/components/features/PostCard.tsx; then exit 1; fi
+          # Independent interaction architecture: each local interaction domain has
+          # its own service/page, while post detail remains a composition surface.
+          for f in             src/features/likes/likesService.ts             src/features/replies/repliesService.ts             src/features/reposts/repostsService.ts             src/features/quotes/quotesService.ts             src/features/quoteLikes/quoteLikesService.ts             src/pages/PostInteractionPage.tsx; do
+            test -f "$f"
+          done
+          if grep -qE "supabase\\.from\\(['\"]replies['\"]\\)|supabase\\.from\\(['\"]reply_likes['\"]\\)" src/pages/PostThreadPage.tsx; then
+            echo 'Nested reply persistence/read path remains in PostThreadPage.'
+            exit 1
+          fi
+          if grep -qE "supabase\\.from\\(['\"]replies['\"]\\)|supabase\\.from\\(['\"]reply_likes['\"]\\)" src/components/features/PostCard.tsx; then
+            echo 'Nested reply persistence/read path remains in PostCard.'
+            exit 1
+          fi
+
+# Verification trigger: run the canonical gate against the committed tree only.
