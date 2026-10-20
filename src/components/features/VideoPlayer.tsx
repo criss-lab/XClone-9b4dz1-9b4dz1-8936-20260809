@@ -93,7 +93,8 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
 
   /* ── Load initial like / repost / follow state ──────────────────────── */
   useEffect(() => {
-    if (!user) return;
+    // Cards are mounted in a list, but only fetch interaction state for the visible clip.
+    if (!user || !isActive) return;
     const uid = user.id;
     // Check like
     supabase.from('likes').select('id').eq('user_id', uid).eq('post_id', post.id).maybeSingle()
@@ -109,10 +110,12 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
       supabase.from('follows').select('id').eq('follower_id', uid).eq('following_id', post.user_id).maybeSingle()
         .then(({ data }) => { if (data) setIsFollowing(true); });
     }
-  }, [user?.id, post.id, post.user_id]);
+  }, [user?.id, post.id, post.user_id, isActive]);
 
   /* ── Author premium cache ────────────────────────────────────────────── */
   useEffect(() => {
+    // Don't fan out one premium-subscription request per off-screen feed card.
+    if (!isActive) return;
     const uid = post.user_id;
     if (authorPremiumCache.has(uid)) {
       setIsAuthorPremium(authorPremiumCache.get(uid)!);
@@ -130,7 +133,7 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
         authorPremiumCache.set(uid, has);
         setIsAuthorPremium(has);
       });
-  }, [post.user_id]);
+  }, [post.user_id, isActive]);
 
   /* ── Play / pause on active change ──────────────────────────────────── */
   useEffect(() => {
