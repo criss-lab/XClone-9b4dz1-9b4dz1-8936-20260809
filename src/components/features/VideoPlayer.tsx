@@ -160,6 +160,16 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
     }
   }, [isActive]);
 
+  // Fully release media resources for off-screen cards. Removing src alone does
+  // not consistently abort buffering/decoding across mobile browsers; load() resets it.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || isActive || (shouldPreload && !cancelPreload)) return;
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }, [isActive, shouldPreload, cancelPreload, post.video_url]);
+
   /* ── Ad complete ─────────────────────────────────────────────────────── */
   const handleAdComplete = () => {
     setShowPrerollAd(false);
