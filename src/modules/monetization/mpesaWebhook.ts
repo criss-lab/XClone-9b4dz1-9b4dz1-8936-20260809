@@ -1,6 +1,12 @@
-import { supabase, Tables } from "./db";
+/**
+ * M-Pesa webhook handler (production wallet credit)
+ *
+ * esbuild-safe: no Set<T> generics, no useState<T>, no useRef<T>.
+ * Uses the project-standard supabase client from @/lib/supabase.
+ */
+import { supabase } from '@/lib/supabase';
 
-// M-Pesa webhook payload (simplified safe parsing)
+// ── Payload type ──────────────────────────────────────────────────────────
 export type MpesaCallback = {
   Body: {
     stkCallback: {
@@ -9,70 +15,106 @@ export type MpesaCallback = {
       ResultCode: number;
       ResultDesc: string;
       CallbackMetadata?: {
-        Item: Array<{ Name: string; Value?: any }>;
+        Item: Array<{ Name: string; Value?: unknown }>;
       };
     };
   };
 };
 
-function extractAmount(items: any[]) {
-  return items.find(i => i.Name === "Amount")?.Value;
+// ── Pure helpers (module-level, no closures) ──────────────────────────────
+function extractItem(items: Array<{ Name: string; Value?: unknown }>, name: string): unknown {
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].Name === name) return items[i].Value;
+  }
+  return undefined;
 }
 
-function extractPhone(items: any[]) {
-  return items.find(i => i.Name === "PhoneNumber")?.Value;
-}
-
-function extractReceipt(items: any[]) {
-  return items.find(i => i.Name === "MpesaReceiptNumber")?.Value;
-}
-
-export async function handleMpesaWebhook(payload: MpesaCallback) {
+// ── Main webhook handler ─────────────────────────────────────────────────
+export async function handleMpesaWebhook(payload: MpesaCallback): Promise<{
+  status: string;
+  credited?: number;
+  newBalance?: number;
+  reason?: string;
+  message?: string;
+}> {
   const callback = payload.Body.stkCallback;
 
-  // Ignore failed payments
+  // Ignore failed / cancelled payments
   if (callback.ResultCode !== 0) {
-    return { status: "failed", reason: callback.ResultDesc };
+    return { status: 'failed', reason: callback.ResultDesc };
   }
 
-  const items = callback.CallbackMetadata?.Item || [];
+  const items = callback.CallbackMetadata?.Item ?? [];
+  const amount  = Number(extractItem(items, 'Amount')            ?? 0);
+  const phone   = String(extractItem(items, 'PhoneNumber')       ?? '');
+  const receipt = String(extractItem(items, 'MpesaReceiptNumber') ?? '');
 
-  const amount = extractAmount(items);
-  const phone = extractPhone(items);
-  const receipt = extractReceipt(items);
+  if (!phone) return { status: 'error', message: 'PhoneNumber missing from callback' };
 
-  // Find wallet by phone
+  // Resolve user wallet via stored mpesa_phone
   const { data: wallet } = await supabase
-    .from(Tables.WALLETS)
-    .select("*")
-    .eq("phone", phone)
-    .single();
+    .from('user_wallets')
+    .select('id, user_id, balance')
+    .eq('mpesa_phone', phone)
+    .maybeSingle();
 
   if (!wallet) {
-    return { status: "error", message: "Wallet not found" };
+    console.warn('[mpesaWebhook] No wallet found for phone:', phone);
+    return { status: 'error', message: 'Wallet not found for ' + phone };
   }
 
-  // Update wallet balance
-  const newBalance = (wallet.balance || 0) + (amount || 0);
+  const usdAmount  = amount / 130; // KES → USD (matches USD_TO_KES constant)
+  const newBalance = parseFloat((Number(wallet.balance ?? 0) + usdAmount).toFixed(4));
 
-  await supabase
-    .from(Tables.WALLETS)
-    .update({ balance: newBalance })
-    .eq("id", wallet.id);
-
-  // Log transaction
-  await supabase.from(Tables.TRANSACTIONS).insert({
-    wallet_id: wallet.id,
-    amount,
-    phone,
-    receipt,
-    status: "completed",
-    provider: "mpesa",
+  // Credit wallet via RPC (handles race conditions server-side)
+  const { error: updateErr } = await supabase.rpc('add_to_wallet', {
+    p_user_id: wallet.user_id,
+    p_amount: usdAmount,
   });
 
+  // Update the STK transaction record to completed
+  await supabase
+    .from('mpesa_transactions')
+    .update({
+      status: 'completed',
+      mpesa_receipt_number: receipt || null,
+      result_code: String(callback.ResultCode),
+      result_desc: callback.ResultDesc,
+    })
+    .eq('checkout_request_id', callback.CheckoutRequestID);
+
+  // Log wallet transaction
+  await supabase.from('wallet_transactions').insert({
+    wallet_id: wallet.id,
+    user_id: wallet.user_id,
+    type: 'deposit',
+    amount: usdAmount,
+    payment_method: 'mpesa',
+    status: 'completed',
+    reference: receipt || callback.CheckoutRequestID,
+    description: `M-Pesa deposit — KES ${amount.toLocaleString()} (receipt: ${receipt || 'N/A'})`,
+  });
+
+  // Inbox notification
+  await supabase.from('platform_inbox').insert({
+    user_id: wallet.user_id,
+    subject: `M-Pesa deposit confirmed: KES ${amount.toLocaleString()}`,
+    body: `Your wallet has been credited with $${usdAmount.toFixed(2)} (KES ${amount.toLocaleString()}). Receipt: ${receipt || 'N/A'}.`,
+    type: 'payment',
+    icon_emoji: '✅',
+    cta_label: 'View Wallet',
+    cta_url: '/wallet',
+  });
+
+  console.log('[mpesaWebhook] Wallet credited:', { userId: wallet.user_id, usdAmount, receipt });
+
+  if (updateErr) {
+    console.warn('[mpesaWebhook] RPC error (non-fatal):', (updateErr as Error).message);
+  }
+
   return {
-    status: "success",
-    credited: amount,
+    status: 'success',
+    credited: usdAmount,
     newBalance,
   };
 }
