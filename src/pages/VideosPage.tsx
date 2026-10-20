@@ -16,9 +16,9 @@ import { toast } from 'sonner';
 const VIDEO_SPEED_OPTIONS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const VIDEO_SEARCH_DEBOUNCE_MS = 400;
 
-const PRELOAD_AHEAD = 3;
+const PRELOAD_AHEAD = 1;
 // PRELOAD_CANCEL_BEHIND: release buffering for videos more than this many slots behind current
-const PRELOAD_CANCEL_BEHIND = 2;
+const PRELOAD_CANCEL_BEHIND = 1;
 const PAGE_SIZE = 20;
 // Inject a video ad every AD_INTERVAL videos
 const AD_INTERVAL = 5;
@@ -346,7 +346,7 @@ export default function VideosPage() {
       setActiveIndex(targetIdx);
       setPreloadMap(prev => {
         const map = { ...prev };
-        for (let i = Math.max(0, targetIdx - 1); i <= targetIdx + PRELOAD_AHEAD && i < videos.length; i++) {
+        for (let i = targetIdx; i <= targetIdx + PRELOAD_AHEAD && i < videos.length; i++) {
           map[i] = true;
         }
         return map;
@@ -396,7 +396,7 @@ export default function VideosPage() {
         setVideos(newVideos);
         // esbuild guard: plain untyped object (no Record<N,T> annotation)
         const init: any = {};
-        for (let i = 0; i < Math.min(4, newVideos.length); i++) init[i] = true;
+        for (let i = 0; i < Math.min(PRELOAD_AHEAD + 1, newVideos.length); i++) init[i] = true;
         setPreloadMap(init);
         setCancelMap({});
       } else {
@@ -427,20 +427,19 @@ export default function VideosPage() {
         activeIndexRef.current = idx;
         setActiveIndex(idx);
 
-        // Preload ahead
-        setPreloadMap(prev => {
-          const map = { ...prev };
+        // Only the active clip and one successor may fetch media.
+        setPreloadMap(() => {
+          const map: any = {};
           for (let i = idx; i <= idx + PRELOAD_AHEAD && i < videos.length; i++) {
             map[i] = true;
           }
           return map;
         });
-        // Cancel buffering for slots too far behind (release memory)
+        // Release distant clips, and clear cancellation when scrolling back to them.
         setCancelMap(prev => {
           const map = { ...prev };
-          for (let i = 0; i < idx - PRELOAD_CANCEL_BEHIND; i++) {
-            if (!map[i]) map[i] = true;
-          }
+          for (let i = 0; i < idx - PRELOAD_CANCEL_BEHIND; i++) map[i] = true;
+          for (let i = Math.max(0, idx - PRELOAD_CANCEL_BEHIND); i <= idx + PRELOAD_AHEAD; i++) delete map[i];
           return map;
         });
 
