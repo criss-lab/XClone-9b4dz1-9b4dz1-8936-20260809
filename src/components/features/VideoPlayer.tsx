@@ -606,11 +606,11 @@ export function VideoPlayer({ post, isActive, onUpdate, shouldPreload, cancelPre
       {/* ── Video element ────────────────────────────────────────────────── */}
       <video
         ref={videoRef}
-        src={cancelPreload ? '' : (post.video_url || '')}
+        src={cancelPreload || (!isActive && !shouldPreload) ? undefined : (post.video_url || undefined)}
         loop
         playsInline
         muted={isMuted}
-        preload={shouldPreload ? 'auto' : 'metadata'}
+        preload={isActive ? 'auto' : shouldPreload ? 'metadata' : 'none'}
         className="h-full w-full object-cover"
         style={{ maxWidth: '100vw' }}
         onTimeUpdate={handleTimeUpdate}
